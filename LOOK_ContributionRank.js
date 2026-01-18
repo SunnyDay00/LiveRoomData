@@ -18,7 +18,22 @@
 // ==============================
 var ID_HEADER = "com.netease.play:id/headerUiContainer";
 var ID_VFLIPPER = "com.netease.play:id/vflipper";
-var ID_RANKTEXT = "com.netease.play:id/rankText";
+
+// 注意：rankText 是其他界面的组件，不应该点击
+// var ID_RANKTEXT = "com.netease.play:id/rankText";
+
+// 礼物弹幕相关ID
+var GIFT_NOTICE_IDS = [
+  "com.netease.play:id/liveNoticeRootContainer",
+  "com.netease.play:id/imageBg",
+  "com.netease.play:id/noticeContent",
+  "com.netease.play:id/liveNoticeContainer",
+  "com.netease.play:id/liveNotice",
+  "com.netease.play:id/liveIcon"
+];
+
+// 礼物弹幕等待时间（毫秒）
+var GIFT_OVERLAY_WAIT_MS = 3000;
 
 var DEFAULT_CLICK_COUNT = 5;
 var DEFAULT_CLICK_WAIT_MS = 1500;
@@ -65,6 +80,20 @@ function findRet(tag, options) {
   return ret;
 }
 
+// 安全获取数组长度（兼容引擎特殊数组）
+function safeLength(arr) {
+  if (arr == null) { return 0; }
+  try {
+    var len = arr.getLength();
+    if (len != null) { return len; }
+  } catch (e1) {}
+  try {
+    var len2 = arr.length;
+    if (len2 != null) { return len2; }
+  } catch (e2) {}
+  return 0;
+}
+
 function getViews(tag, options) {
   var ret = findRet(tag, options);
   if (ret != null) {
@@ -72,7 +101,16 @@ function getViews(tag, options) {
       return ret.views;
     }
   }
-  return [];
+  return null;
+}
+
+// 检查views是否有元素
+function hasViews(views) {
+  if (views == null) { return false; }
+  try {
+    if (views[0] != null) { return true; }
+  } catch (e) {}
+  return false;
 }
 
 function getParent(v) {
@@ -117,10 +155,40 @@ function backAndWait(stepName, waitMs) {
 }
 
 // ==============================
-// 进入魅力榜
+// 礼物弹幕检测
+// ==============================
+function hasGiftOverlay() {
+  // 直接检查每个ID，使用 hasViews 辅助函数
+  if (hasViews(getViews("id:com.netease.play:id/liveNoticeRootContainer", {maxStep: 3}))) { return true; }
+  if (hasViews(getViews("id:com.netease.play:id/imageBg", {maxStep: 3}))) { return true; }
+  if (hasViews(getViews("id:com.netease.play:id/noticeContent", {maxStep: 3}))) { return true; }
+  if (hasViews(getViews("id:com.netease.play:id/liveNoticeContainer", {maxStep: 3}))) { return true; }
+  if (hasViews(getViews("id:com.netease.play:id/liveNotice", {maxStep: 3}))) { return true; }
+  if (hasViews(getViews("id:com.netease.play:id/liveIcon", {maxStep: 3}))) { return true; }
+  return false;
+}
+
+function waitForGiftOverlayToDisappear() {
+  if (hasGiftOverlay()) {
+    logi("检测到礼物弹幕，等待 " + GIFT_OVERLAY_WAIT_MS + "ms...");
+    sleepMs(GIFT_OVERLAY_WAIT_MS);
+    
+    // 再次检查
+    if (hasGiftOverlay()) {
+      logi("礼物弹幕仍存在，继续等待...");
+      sleepMs(GIFT_OVERLAY_WAIT_MS);
+    }
+  }
+}
+
+// ==============================
+// 进入魅力榜（通过 vflipper 下的 TextView）
 // ==============================
 function enterCharmRankFromLive(clickWaitMs) {
   logi("开始查找魅力榜入口...");
+  
+  // 首先等待礼物弹幕消失
+  waitForGiftOverlayToDisappear();
   
   var header = getViews("id:" + ID_HEADER, {maxStep: 2});
   if (header.length <= 0) { 
@@ -129,46 +197,41 @@ function enterCharmRankFromLive(clickWaitMs) {
   }
   logi("找到header容器");
 
-  // 方式1：通过 vflipper 查找
+  // 只通过 vflipper 下的 TextView 进入（不使用 rankText）
   var vf = getViews("id:" + ID_VFLIPPER, {root: header[0], maxStep: 2});
   logi("vflipper查找结果: 数量=" + vf.length);
 
-  // 方式2：通过 rankText 查找
-  var rt = getViews("id:" + ID_RANKTEXT, {root: header[0], maxStep: 2});
-  logi("rankText查找结果: 数量=" + rt.length);
+  if (vf.length <= 0) {
+    loge("未找到 vflipper 组件");
+    return false;
+  }
+
+  // 查找 vflipper 下的所有 TextView
+  var tvs = getViews("className:android.widget.TextView", {root: vf[0], flag: "find_all", maxStep: 3});
+  logi("vflipper下找到 " + tvs.length + " 个TextView");
 
   var clicked = false;
   var i = 0;
   
-  // 优先尝试 rankText
-  if (rt.length > 0) {
-    logi("尝试通过rankText入口...");
-    if (isClickable(rt[0])) {
-      clicked = clickObj(rt[0], "CHARM_ENTRY_RANKTEXT");
-    } else {
-      var p = getParent(rt[0]);
-      if (p != null) {
-        if (isClickable(p)) {
-          clicked = clickObj(p, "CHARM_ENTRY_RANKTEXT_PARENT");
-        }
+  // 遍历所有 TextView，找到可点击的并点击
+  for (i = 0; i < tvs.length; i = i + 1) {
+    if (isClickable(tvs[i])) {
+      logi("找到可点击的TextView，尝试点击...");
+      clicked = clickObj(tvs[i], "CHARM_ENTRY_VFLIPPER_TV");
+      if (clicked) {
+        sleepMs(clickWaitMs);
+        break;
       }
     }
-    if (clicked) {
-      sleepMs(clickWaitMs);
-    }
   }
-  
+
+  // 如果没有可点击的TextView，尝试点击第一个TextView
   if (!clicked) {
-    if (vf.length > 0) {
-      logi("尝试通过vflipper入口...");
-      var tvs = getViews("className:android.widget.TextView", {root: vf[0], flag: "find_all", maxStep: 3});
-      for (i = 0; i < tvs.length; i = i + 1) {
-        if (isClickable(tvs[i])) {
-          clickObj(tvs[i], "CHARM_ENTRY_TEXTVIEW");
-          sleepMs(clickWaitMs);
-          clicked = true;
-          break;
-        }
+    if (tvs.length > 0) {
+      logi("没有可点击的TextView，尝试点击第一个...");
+      clicked = clickObj(tvs[0], "CHARM_ENTRY_FIRST_TV");
+      if (clicked) {
+        sleepMs(clickWaitMs);
       }
     }
   }

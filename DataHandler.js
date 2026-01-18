@@ -54,6 +54,7 @@ function dbInit(dbName) {
         "create table records(" +
         "id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT," +
         "ts VARCHAR(32) NULL," +
+        "app_name VARCHAR(64) NULL," +
         "homeid VARCHAR(64) NULL," +
         "homename VARCHAR(128) NULL," +
         "fansnumber VARCHAR(64) NULL," +
@@ -84,8 +85,9 @@ function dbInsertRow(row) {
 
   try {
     var sql =
-      "insert into records(ts,homeid,homename,fansnumber,homeip,uesenumber,ueseid,uesename,consumption,ueseip) values(" +
+      "insert into records(ts,app_name,homeid,homename,fansnumber,homeip,uesenumber,ueseid,uesename,consumption,ueseip) values(" +
       "'" + sqlEsc(nowStr()) + "'," +
+      "'" + sqlEsc(row.app_name) + "'," +
       "'" + sqlEsc(row.homeid) + "'," +
       "'" + sqlEsc(row.homename) + "'," +
       "'" + sqlEsc(row.fansnumber) + "'," +
@@ -126,11 +128,11 @@ function getInsertCount() {
 // 主入口 - 通过函数参数接收数据
 // callScript("DataHandler", action, param1, param2, ...)
 // action: "init" -> param1=dbName
-// action: "insert" -> param1-param9 = 数据字段
+// action: "insert" -> param1=app_name, param2-param10 = 数据字段
 // action: "close" -> 无参数
 // action: "getCount" -> 无参数
 // ==============================
-function main(action, param1, param2, param3, param4, param5, param6, param7, param8, param9) {
+function main(action, param1, param2, param3, param4, param5, param6, param7, param8, param9, param10) {
   logi("action=" + action);
   
   if (action == "init") {
@@ -139,17 +141,18 @@ function main(action, param1, param2, param3, param4, param5, param6, param7, pa
     return ok;
   } 
   else if (action == "insert") {
-    // param1-param9: homeid, homename, fansnumber, homeip, uesenumber, ueseid, uesename, consumption, ueseip
+    // param1=app_name, param2-param10: homeid, homename, fansnumber, homeip, uesenumber, ueseid, uesename, consumption, ueseip
     var row = {
-      homeid: param1,
-      homename: param2,
-      fansnumber: param3,
-      homeip: param4,
-      uesenumber: param5,
-      ueseid: param6,
-      uesename: param7,
-      consumption: param8,
-      ueseip: param9
+      app_name: param1,
+      homeid: param2,
+      homename: param3,
+      fansnumber: param4,
+      homeip: param5,
+      uesenumber: param6,
+      ueseid: param7,
+      uesename: param8,
+      consumption: param9,
+      ueseip: param10
     };
     var ok = dbInsertRow(row);
     return g_insertCount;

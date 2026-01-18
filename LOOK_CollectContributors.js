@@ -19,6 +19,9 @@ var ID_USER_ID = "com.netease.play:id/id";
 var ID_USER_NAME = "com.netease.play:id/artist_name";
 var ID_NUM = "com.netease.play:id/num";
 
+// 应用名称（用于数据库记录）
+var APP_NAME = "LOOK直播";
+
 var DEFAULT_CLICK_COUNT = 5;
 var DEFAULT_CLICK_WAIT_MS = 1500;
 var DEFAULT_STOP_AFTER_ROWS = 200;
@@ -345,9 +348,10 @@ function collectContributors(hostInfo, clickCount, clickWaitMs, stopAfterRows) {
       var userInfo = readUserDetail();
 
       // 调用数据处理脚本保存数据
-      // callScript("DataHandler", "insert", homeid, homename, fansnumber, homeip, uesenumber, ueseid, uesename, consumption, ueseip)
+      // callScript("DataHandler", "insert", app_name, homeid, homename, fansnumber, homeip, uesenumber, ueseid, uesename, consumption, ueseip)
       try {
         totalInserted = callScript("DataHandler", "insert", 
+          APP_NAME,
           hostInfo.id, hostInfo.name, hostInfo.fans, hostInfo.ip,
           uesenumber, userInfo.id, userInfo.name, userInfo.consumption, userInfo.ip);
         wrote = wrote + 1;

@@ -203,8 +203,11 @@ function main() {
 
   sleepMs(CONFIG.APP_RESTART_WAIT_MS);
 
-  // Step 3: 启动崩溃监控线程
-  startMonitorThread();
+  // Step 3: 崩溃监控（已禁用）
+  // 由于 currentPackage() 函数在此引擎中不可用，监控功能无法正常工作
+  // 如需启用，需要找到引擎支持的前台检测方法
+  // startMonitorThread();
+  logi("崩溃监控已禁用（currentPackage不可用）");
 
   logi("调用 LOOK_StartLiveRoom...");
   try {
