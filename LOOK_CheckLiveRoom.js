@@ -89,13 +89,18 @@ function getFirstView(tag, options) {
 // 礼物弹幕检测
 // ==============================
 function hasGiftOverlay() {
-  // 直接检查每个ID是否存在
-  if (hasView("id:com.netease.play:id/liveNoticeRootContainer", {maxStep: 3})) { return true; }
-  if (hasView("id:com.netease.play:id/imageBg", {maxStep: 3})) { return true; }
-  if (hasView("id:com.netease.play:id/noticeContent", {maxStep: 3})) { return true; }
-  if (hasView("id:com.netease.play:id/liveNoticeContainer", {maxStep: 3})) { return true; }
-  if (hasView("id:com.netease.play:id/liveNotice", {maxStep: 3})) { return true; }
-  if (hasView("id:com.netease.play:id/liveIcon", {maxStep: 3})) { return true; }
+  var ids = GIFT_NOTICE_IDS;
+  if (ids == null) {
+    return false;
+  }
+  var len = ids.length;
+  var i = 0;
+  for (i = 0; i < len; i = i + 1) {
+    var id = ids[i];
+    if (hasView("id:" + id, {maxStep: 3})) {
+      return true;
+    }
+  }
   return false;
 }
 

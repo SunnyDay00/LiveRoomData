@@ -186,36 +186,37 @@ function getNumNearLabel(labelText) {
     return numText;
   }
   
-  // 遍历父控件的子控件
-  var childCount = 0;
-  try {
-    if (parent.size != null) { childCount = parent.size; }
-    else if (parent.length != null) { childCount = parent.length; }
-  } catch (e) {}
-  
+  // 遍历父控件的子控件，逐个索引检查直到为空
+  var maxTry = 100;
   var i = 0;
-  for (i = 0; i < childCount; i = i + 1) {
-    try {
-      var child = parent[i];
-      if (child != null) {
-        var childId = "";
-        try { childId = "" + child.id; } catch (e) {}
-        var childText = "";
-        try { childText = "" + child.text; } catch (e) {}
-        
-        if (childText == labelText) { continue; }
-        
-        if (childId.indexOf("num") >= 0) {
-          if (childText != "" && childText != "null" && childText != "undefined") {
-            return childText;
-          }
-        }
-        
-        if (childText != "" && childText != "null" && childText != "undefined" && childText != labelText) {
-          return childText;
-        }
+  for (i = 0; i < maxTry; i = i + 1) {
+    var child = null;
+    try { child = parent[i]; } catch (e1) {}
+    if (child == null) {
+      try { child = parent.get(i); } catch (e2) {}
+    }
+    if (child == null) {
+      try { child = parent.getChildAt(i); } catch (e3) {}
+    }
+    if (child == null || child === undefined) { break; }
+    
+    var childId = "";
+    try { childId = "" + child.id; } catch (e4) {}
+    var childText = "";
+    try { childText = "" + child.text; } catch (e5) {}
+    
+    if (child === labelView) { continue; }
+    if (childText == labelText) { continue; }
+    
+    if (childId.indexOf("num") >= 0) {
+      if (childText != "" && childText != "null" && childText != "undefined") {
+        return childText;
       }
-    } catch (e) {}
+    }
+    
+    if (childText != "" && childText != "null" && childText != "undefined" && childText != labelText) {
+      return childText;
+    }
   }
   return "";
 }
@@ -341,17 +342,24 @@ function getBottomRightText(rootObj) {
 }
 
 // 辅助函数：获取子控件数量
+// 辅助函数：获取子控件数量
+// 辅助函数：获取子控件数量
 function getChildCount(v) {
-  var cnt = 0;
-  try {
-    if (v.childCount != null) { cnt = v.childCount; }
-    else if (v.getChildCount != null) { cnt = v.getChildCount(); }
-    else if (v.size != null) { 
-      if (typeof v.size === 'function') { cnt = v.size(); } else { cnt = v.size; }
+  if (v == null) { return 0; }
+  var maxTry = 200;
+  var i = 0;
+  for (i = 0; i < maxTry; i = i + 1) {
+    var child = null;
+    try { child = v[i]; } catch (e1) {}
+    if (child == null) {
+      try { child = v.get(i); } catch (e2) {}
     }
-    else if (v.length != null) { cnt = v.length; }
-  } catch (e) {}
-  return cnt;
+    if (child == null) {
+      try { child = v.getChildAt(i); } catch (e3) {}
+    }
+    if (child == null || child === undefined) { return i; }
+  }
+  return maxTry;
 }
 
 // 辅助函数：获取指定索引的子控件
@@ -367,6 +375,7 @@ function getChildAt(v, i) {
   return child;
 }
 
+// 辅助函数：获取组件的文本和左坐标，如果无效返回 null
 // 辅助函数：获取组件的文本和左坐标，如果无效返回 null
 function getViewTextInfo(v) {
   try {
@@ -584,7 +593,7 @@ function collectContributors(hostInfo, clickCount, clickWaitMs, stopAfterRows) {
     var uesenumber = rankStr;
     
     // [新增] 每次处理新用户前，检查是否被弹窗阻挡
-    callScript("LOOK_PopupHandler");
+    callScript("PopupHandler");
     
     var Consumption = getRightMostText(row);
     if (Consumption == "null" || Consumption == "undefined" || Consumption == "") {
@@ -597,7 +606,7 @@ function collectContributors(hostInfo, clickCount, clickWaitMs, stopAfterRows) {
 
     if (!isDetailPage()) {
       logw("未进入用户详情，可能是被弹窗遮挡");
-      callScript("LOOK_PopupHandler"); // 尝试消除弹窗
+      callScript("PopupHandler"); // 尝试消除弹窗
       backAndWait("USER_DETAIL_BACK_FAILSAFE", clickWaitMs);
     } else {
       var userInfo = readUserDetail();

@@ -16,7 +16,7 @@
 // 配置
 // ==============================
 var DB_NAME = "look_collect";
-var TABLE_NAME = "records_v3";
+var TABLE_NAME = "records_v4";
 var g_db = null;
 
 // ==============================
@@ -27,6 +27,23 @@ function nowStr() {
   var utcTime = new Date().getTime();
   var beijingOffset = 8 * 60 * 60 * 1000; // 8小时转换为毫秒
   return "" + (utcTime + beijingOffset);
+}
+
+// 补零工具函数 (提取到全局)
+function pad2Zero(n) {
+  if (n < 10) { return "0" + n; }
+  return "" + n;
+}
+
+function getNowDateStr() {
+  try {
+    // Format disabled because EasyJS Date is broken; return Beijing timestamp string only.
+    var now = new Date().getTime();
+    var beijing = now + 8 * 60 * 60 * 1000;
+    return "" + beijing;
+  } catch (e) {
+    return "";
+  }
 }
 
 function logi(msg) {
@@ -71,7 +88,8 @@ function dbOpen() {
         + "uesename VARCHAR, "
         + "consumption VARCHAR, "
         + "ueseip VARCHAR, "
-        + "summary_consumption VARCHAR"
+        + "summary_consumption VARCHAR, "
+        + "record_time VARCHAR"
         + ");";
       g_db.exeSql(createSql);
       logi("create table " + TABLE_NAME);
@@ -130,10 +148,13 @@ function getInsertCount() {
 function dbInsertRow(appName, homeid, homename, fansnumber, homeip,
   uesenumber, ueseid, uesename, consumption, ueseip, summaryConsumption) {
   if (g_db == null) { return -1; }
+  
+  var recordTime = getNowDateStr();
+  
   var sql = ""
     + "INSERT INTO " + TABLE_NAME + " ("
     + "app_name, homeid, homename, fansnumber, homeip, "
-    + "uesenumber, ueseid, uesename, consumption, ueseip, summary_consumption"
+    + "uesenumber, ueseid, uesename, consumption, ueseip, summary_consumption, record_time"
     + ") VALUES ("
     + "'" + sqlEsc(appName) + "', "
     + "'" + sqlEsc(homeid) + "', "
@@ -145,10 +166,11 @@ function dbInsertRow(appName, homeid, homename, fansnumber, homeip,
     + "'" + sqlEsc(uesename) + "', "
     + "'" + sqlEsc(consumption) + "', "
     + "'" + sqlEsc(ueseip) + "', "
-    + "'" + sqlEsc(summaryConsumption) + "'"
+    + "'" + sqlEsc(summaryConsumption) + "', "
+    + "'" + sqlEsc(recordTime) + "'"
     + ");";
 
-  logi("Insert: homeid=" + homeid + ", ueseid=" + ueseid + ", consumption=" + consumption + ", summary=" + summaryConsumption);
+  logi("Insert: homeid=" + homeid + ", ueseid=" + ueseid + ", consumption=" + consumption + ", record_time=" + recordTime);
 
   try {
     g_db.exeSql(sql);

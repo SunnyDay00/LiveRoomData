@@ -6,7 +6,7 @@
  * 2. 这里的 "跳过" 按钮
  * 
  * 使用方式：
- *   var handled = callScript("LOOK_PopupHandler");
+ *   var handled = callScript("PopupHandler");
  *   if (handled) { sleep(1000); }
  */
 
