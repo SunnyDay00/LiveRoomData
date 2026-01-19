@@ -66,7 +66,10 @@ var CONFIG = {
 // 工具函数
 // ==============================
 function nowStr() { 
-  return "" + (new Date().getTime()); 
+  // 获取UTC时间戳,然后加上北京时间偏移(UTC+8小时)
+  var utcTime = new Date().getTime();
+  var beijingOffset = 8 * 60 * 60 * 1000; // 8小时转换为毫秒
+  return "" + (utcTime + beijingOffset);
 }
 
 function logi(msg) { 
@@ -212,7 +215,7 @@ function main() {
   logi("调用 LOOK_StartLiveRoom...");
   try {
     var result = callScript("LOOK_StartLiveRoom", CONFIG);
-    logi("LOOK_StartLiveRoom 执行完成: " + JSON.stringify(result));
+    logi("LOOK_StartLiveRoom 执行完成: " + result);
   } catch (e) {
     loge("callScript LOOK_StartLiveRoom 异常: " + e);
   }

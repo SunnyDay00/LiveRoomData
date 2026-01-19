@@ -54,7 +54,10 @@ var g_liveClickCount = 0;
 // 工具函数
 // ==============================
 function nowStr() { 
-  return "" + (new Date().getTime()); 
+  // 获取UTC时间戳,然后加上北京时间偏移(UTC+8小时)
+  var utcTime = new Date().getTime();
+  var beijingOffset = 8 * 60 * 60 * 1000; // 8小时转换为毫秒
+  return "" + (utcTime + beijingOffset);
 }
 
 function logi(msg) { 
@@ -220,12 +223,11 @@ function restartApp(reason) {
 function isHomePage() {
   var ret = findRet("id:" + CONFIG.ID_TAB, {flag: "find_all", maxStep: 2});
   if (ret == null) { return false; }
-  if (ret.length < 4) { return false; }
+  // 宽松检测：只要有2个以上的TAB就认为是首页，防止加载延迟导致误判
+  if (ret.length < 2) { return false; }
 
-  var hasRec = false;
-  var hasTt = false;
-  var hasChat = false;
-  var hasLook = false;
+  var validCount = 0;
+  var seen = {};
 
   var count = ret.length;
   var i = 0;
@@ -234,14 +236,18 @@ function isHomePage() {
       var v = ret.views[i];
       if (v == null) { continue; }
       var t = "" + v.text;
-      if (t == "推荐") { hasRec = true; }
-      if (t == "听听") { hasTt = true; }
-      if (t == "一起聊") { hasChat = true; }
-      if (t == "看看") { hasLook = true; }
+      // 检查是否是已知的TAB名称
+      if (t == "推荐" || t == "听听" || t == "一起聊" || t == "看看") {
+        if (!seen[t]) {
+          seen[t] = true;
+          validCount = validCount + 1;
+        }
+      }
     } catch (e) {}
   }
 
-  if (hasRec && hasTt && hasChat && hasLook) {
+  // 只要找到2个及以上有效TAB，就认为是首页
+  if (validCount >= 2) {
     return true;
   }
   return false;
@@ -399,21 +405,23 @@ function processOneLive(cardObj, roomKey) {
 
   // Step 3: 采集主播信息
   logi("[STEP_3] 采集主播信息...");
-  var hostInfo = null;
+  var hostResult = null;
   try {
     // callScript("LOOK_HostInfo", retryCount, clickWaitMs)
-    // 返回 hostInfo 对象或 null
-    hostInfo = callScript("LOOK_HostInfo", CONFIG.ENTER_LIVE_RETRY, CONFIG.CLICK_WAIT_MS);
+    // 返回 { success: true, hostInfo: {...} }
+    hostResult = callScript("LOOK_HostInfo", CONFIG.ENTER_LIVE_RETRY, CONFIG.CLICK_WAIT_MS);
   } catch (e) {
     loge("[STEP_3] callScript error: " + e);
   }
   
-  if (hostInfo == null) {
+  if (hostResult == null || !hostResult.success || hostResult.hostInfo == null) {
     loge("[STEP_3] 采集主播信息失败");
     debugPause("STEP_3", "采集主播信息失败");
     backAndWait("BACK_HOST_FAIL");
     return false;
   }
+  
+  var hostInfo = hostResult.hostInfo;
   
   logi("[STEP_3] 主播信息: id=" + hostInfo.id + " name=" + hostInfo.name);
 
@@ -430,7 +438,13 @@ function processOneLive(cardObj, roomKey) {
 
   // Step 5: 返回首页
   logi("[STEP_5] 返回首页...");
-  backAndWait("BACK_LIVE_TO_HOME");
+  
+  // 检查是否已经在首页（防止ContributionRank已退出）
+  if (isHomePage()) {
+    logi("已在首页，无需返回");
+  } else {
+    backAndWait("BACK_LIVE_TO_HOME");
+  }
   ensureHome();
   goRecommendTab();
 

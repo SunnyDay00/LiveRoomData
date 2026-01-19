@@ -29,7 +29,10 @@ var DEFAULT_RETRY_COUNT = 3;
 // 工具函数
 // ==============================
 function nowStr() { 
-  return "" + (new Date().getTime()); 
+  // 获取UTC时间戳,然后加上北京时间偏移(UTC+8小时)
+  var utcTime = new Date().getTime();
+  var beijingOffset = 8 * 60 * 60 * 1000; // 8小时转换为毫秒
+  return "" + (utcTime + beijingOffset);
 }
 
 function logi(msg) { 
@@ -243,8 +246,9 @@ function readDetailBasic() {
   logi("ip=" + obj.ip);
   obj.fans = getNumNearLabel("粉丝");
   logi("fans=" + obj.fans);
-  obj.consumption = getNumNearLabel("消费音符");
-  logi("consumption=" + obj.consumption);
+  logi("fans=" + obj.fans);
+  // obj.consumption = getNumNearLabel("消费音符");
+  // logi("consumption=" + obj.consumption);
   logi("读取主播详情完成");
 
   return obj;
@@ -262,33 +266,39 @@ function enterHostDetailFromLive(clickWaitMs) {
   logi("找到header容器");
 
   var clicked = false;
+  var avatarView = null;
+  var bgView = null;
   
-  // 方式1: 优先点击 bgView（总是可点击）
+  // 查找 avatar 和 bgView
+  if (hasView("id:" + ID_AVATAR, {maxStep: 2})) {
+    avatarView = getFirstView("id:" + ID_AVATAR, {maxStep: 2});
+  }
   if (hasView("id:" + ID_BGVIEW, {maxStep: 2})) {
-    var bgView = getFirstView("id:" + ID_BGVIEW, {maxStep: 2});
-    if (bgView != null) {
-      logi("尝试通过bgView进入...");
-      clickObj(bgView, "CLICK_BGVIEW");
-      sleepMs(clickWaitMs);
-      clicked = true;
-    }
+    bgView = getFirstView("id:" + ID_BGVIEW, {maxStep: 2});
+  }
+
+  // 方式1: 优先点击 avatar（需可点击）
+  if (avatarView != null && avatarView.clickable) {
+    logi("尝试通过avatar进入...");
+    clickObj(avatarView, "CLICK_AVATAR");
+    sleepMs(clickWaitMs);
+    clicked = true;
+  } else if (bgView != null && bgView.clickable) {
+    // 方式2: 其次点击 bgView（需可点击）
+    logi("尝试通过bgView进入...");
+    clickObj(bgView, "CLICK_BGVIEW");
+    sleepMs(clickWaitMs);
+    clicked = true;
+  } else if (avatarView != null) {
+    // 方式3: 兜底点击 avatar（忽略 clickable）
+    logi("尝试通过avatar兜底进入...");
+    clickObj(avatarView, "CLICK_AVATAR_FALLBACK");
+    sleepMs(clickWaitMs);
+    clicked = true;
   }
   
-  // 方式2: 如果 bgView 没找到，尝试 avatar
   if (!clicked) {
-    if (hasView("id:" + ID_AVATAR, {maxStep: 2})) {
-      var avatarView = getFirstView("id:" + ID_AVATAR, {maxStep: 2});
-      if (avatarView != null) {
-        logi("尝试通过avatar进入...");
-        clickObj(avatarView, "CLICK_AVATAR");
-        sleepMs(clickWaitMs);
-        clicked = true;
-      }
-    }
-  }
-  
-  if (!clicked) {
-    loge("bgView和avatar都未找到");
+    loge("bgView和avatar都未找到或不可点击");
     return false;
   }
 

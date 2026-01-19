@@ -30,7 +30,10 @@ var DEFAULT_STOP_AFTER_ROWS = 200;
 // 工具函数
 // ==============================
 function nowStr() { 
-  return "" + (new Date().getTime()); 
+  // 获取UTC时间戳,然后加上北京时间偏移(UTC+8小时)
+  var utcTime = new Date().getTime();
+  var beijingOffset = 8 * 60 * 60 * 1000; // 8小时转换为毫秒
+  return "" + (utcTime + beijingOffset);
 }
 
 function logi(msg) { 
@@ -143,6 +146,13 @@ function backAndWait(stepName, waitMs) {
   sleepMs(waitMs);
 }
 
+// 清理ID字符串，移除 "ID:" 前缀
+function cleanId(str) {
+  if (str == null) { return ""; }
+  str = "" + str;
+  return str.replace("ID：", "").replace("ID:", "").trim();
+}
+
 // ==============================
 // 页面判断
 // ==============================
@@ -212,18 +222,21 @@ function getNumNearLabel(labelText) {
 
 function readUserDetail() {
   logi("开始读取用户详情...");
-  var obj = { id: "", name: "", ip: "", fans: "", consumption: "" };
+  var obj = { ueseid: "", uesename: "", ueseip: "", SummaryConsumption: "" };
 
-  obj.id = getTextOfFirst("id:" + ID_USER_ID, {maxStep: 2});
-  logi("id=" + obj.id);
-  obj.name = getTextOfFirst("id:" + ID_USER_NAME, {maxStep: 2});
-  logi("name=" + obj.name);
-  obj.ip = getNumNearLabel("IP属地");
-  logi("ip=" + obj.ip);
-  obj.fans = getNumNearLabel("粉丝");
-  logi("fans=" + obj.fans);
-  obj.consumption = getNumNearLabel("消费音符");
-  logi("consumption=" + obj.consumption);
+  var rawId = getTextOfFirst("id:" + ID_USER_ID, {maxStep: 2});
+  obj.ueseid = cleanId(rawId);
+  logi("ueseid=" + obj.ueseid);
+  
+  obj.uesename = getTextOfFirst("id:" + ID_USER_NAME, {maxStep: 2});
+  logi("uesename=" + obj.uesename);
+  
+  obj.ueseip = getNumNearLabel("IP属地");
+  logi("ueseip=" + obj.ueseip);
+  
+  obj.SummaryConsumption = getNumNearLabel("消费音符");
+  logi("SummaryConsumption=" + obj.SummaryConsumption);
+  
   logi("读取用户详情完成");
 
   return obj;
@@ -232,6 +245,52 @@ function readUserDetail() {
 // ==============================
 // 月榜用户行处理
 // ==============================
+function findRankTextView(rankStr) {
+  var ret = findRet("txt:" + rankStr, {flag: "find_all", maxStep: 3});
+  if (ret == null) { return null; }
+  if (ret.length <= 0) { return null; }
+
+  var count = ret.length;
+  var i = 0;
+  for (i = 0; i < count; i = i + 1) {
+    try {
+      var v = ret.views[i];
+      if (v == null) { continue; }
+      var txt = "" + v.text;
+      if (txt != rankStr) { continue; }
+      var cls = "";
+      try { cls = "" + v.className; } catch (e) {}
+      if (cls == "android.widget.TextView") {
+        return v;
+      }
+    } catch (e) {}
+  }
+  return null;
+}
+
+function isViewGroupClassName(cls) {
+  if (cls == "android.view.ViewGroup") { return true; }
+  if (cls.indexOf("ViewGroup") >= 0) { return true; }
+  if (cls.indexOf("Layout") >= 0) { return true; }
+  return false;
+}
+
+function findClickableRowFromTextView(textView) {
+  if (textView == null) { return null; }
+  var p = getParent(textView);
+  var depth = 0;
+  while (p != null && depth < 10) {
+    var cls = "";
+    try { cls = "" + p.className; } catch (e) {}
+    if (isClickable(p) && isViewGroupClassName(cls)) {
+      return p;
+    }
+    p = getParent(p);
+    depth = depth + 1;
+  }
+  return null;
+}
+
 function getBottomRightText(rootObj) {
   var bestText = "";
   var bestBottom = -1;
@@ -281,8 +340,48 @@ function getBottomRightText(rootObj) {
   return bestText;
 }
 
-function findContributionFrame() {
-  var ret = findRet("className:android.widget.FrameLayout", {flag: "find_all", maxStep: 3});
+function getRightMostText(viewGroup) {
+  if (viewGroup == null) { return ""; }
+
+  // 增加 maxStep 到 5 以查找更深层级的控件
+  var ret = findRet("className:android.widget.TextView", {root: viewGroup, flag: "find_all", maxStep: 5});
+  if (ret == null) { return ""; }
+  if (ret.length <= 0) { return ""; }
+
+  var bestText = "";
+  var bestLeft = -1;
+  var count = ret.length;
+  var i = 0;
+  for (i = 0; i < count; i = i + 1) {
+    try {
+      var v = ret.views[i];
+      if (v == null) { continue; }
+
+      var left = -1;
+      if (v.left != null) {
+        left = v.left;
+      } else {
+        try { left = v.getLeft(); } catch (e) {}
+      }
+
+      if (left == null || left < 0) { continue; }
+
+      var txt = "";
+      try { txt = "" + v.text; } catch (e) {}
+      
+      // 忽略空文本
+      if (txt == null || txt == "" || txt == "null" || txt == "undefined") { continue; }
+
+      if (left > bestLeft) {
+        bestLeft = left;
+        bestText = txt;
+      }
+    } catch (e) {}
+  }
+  return bestText;
+}
+
+function pickContributionFrameFromRet(ret) {
   if (ret == null) { return null; }
   if (ret.length <= 0) { return null; }
   
@@ -302,42 +401,72 @@ function findContributionFrame() {
   return null;
 }
 
+function findContributionFrame() {
+  var tags = [
+    "className:androidx.recyclerview.widget.RecyclerView",
+    "className:android.support.v7.widget.RecyclerView",
+    "className:android.widget.ListView",
+    "className:android.widget.FrameLayout"
+  ];
+  var i = 0;
+  for (i = 0; i < tags.length; i = i + 1) {
+    var ret = findRet(tags[i], {flag: "find_all", maxStep: 3});
+    var frame = pickContributionFrameFromRet(ret);
+    if (frame != null) { return frame; }
+  }
+  return null;
+}
+
 function getClickableUserRows(frameObj) {
   var rows = [];
   
-  var ret = findRet("className:android.view.ViewGroup", {root: frameObj, flag: "find_all", maxStep: 4});
-  if (ret == null) { return rows; }
-  if (ret.length <= 0) { return rows; }
+  if (frameObj == null) {
+    var ret = findRet("className:android.view.ViewGroup", {flag: "find_all", maxStep: 2});
+    if (ret == null) { return rows; }
+    if (ret.length <= 0) { return rows; }
+
+    var countFallback = ret.length;
+    var iFallback = 0;
+    for (iFallback = 0; iFallback < countFallback; iFallback = iFallback + 1) {
+      try {
+        var vFallback = ret.views[iFallback];
+        if (vFallback == null) { continue; }
+        var clsFallback = "";
+        try { clsFallback = "" + vFallback.className; } catch (e) {}
+        if (clsFallback == "android.view.ViewGroup" && isClickable(vFallback)) {
+          rows.push(vFallback);
+        }
+      } catch (e) {}
+    }
+    return rows;
+  }
   
-  var count = ret.length;
+  var listGroup = getFirstView("className:android.view.ViewGroup", {root: frameObj, maxStep: 1});
+  if (listGroup == null) { return rows; }
+  
+  var count = 0;
+  try {
+    if (listGroup.size != null) { count = listGroup.size; }
+    else if (listGroup.length != null) { count = listGroup.length; }
+  } catch (e) {}
+  if (count <= 0) {
+    try { count = listGroup.size(); } catch (e) {}
+  }
+  
   var i = 0;
   for (i = 0; i < count; i = i + 1) {
     try {
-      var vg = ret.views[i];
-      if (vg == null) { continue; }
+      var row = null;
+      try { row = listGroup[i]; } catch (e) { row = null; }
+      if (row == null) {
+        try { row = listGroup.get(i); } catch (e) { row = null; }
+      }
+      if (row == null) { continue; }
       
-      if (isClickable(vg)) {
-        // 检查这个 ViewGroup 下的 TextView 是否包含数字（排名）
-        var tvRet = findRet("className:android.widget.TextView", {root: vg, flag: "find_all", maxStep: 2});
-        if (tvRet != null && tvRet.length > 0) {
-          var tvCount = tvRet.length;
-          var j = 0;
-          var found = false;
-          for (j = 0; j < tvCount; j = j + 1) {
-            try {
-              var tv = tvRet.views[j];
-              if (tv == null) { continue; }
-              var t = "" + tv.text;
-              if (t != "") {
-                if ((t >= "0") && (t <= "9999")) {
-                  found = true;
-                  break;
-                }
-              }
-            } catch (e) {}
-          }
-          if (found) { rows.push(vg); }
-        }
+      var cls = "";
+      try { cls = "" + row.className; } catch (e) {}
+      if (cls == "android.view.ViewGroup" && isClickable(row)) {
+        rows.push(row);
       }
     } catch (e) {}
   }
@@ -349,23 +478,8 @@ function getClickableUserRows(frameObj) {
 // ==============================
 function collectContributors(hostInfo, clickCount, clickWaitMs, stopAfterRows) {
   logi("开始采集贡献榜用户，采集数量=" + clickCount);
-  
-  var frame = findContributionFrame();
-  if (frame == null) { 
-    loge("frame not found"); 
-    return { success: false, wrote: 0, error: "frame not found" }; 
-  }
-
-  var rows = getClickableUserRows(frame);
-  if (rows.length <= 0) { 
-    loge("rows empty"); 
-    return { success: false, wrote: 0, error: "rows empty" }; 
-  }
-
-  logi("找到 " + rows.length + " 个用户行");
 
   var wrote = 0;
-  var i = 0;
   var totalInserted = 0;
 
   // 获取当前已插入数量
@@ -376,21 +490,34 @@ function collectContributors(hostInfo, clickCount, clickWaitMs, stopAfterRows) {
     loge("getCount error: " + e);
   }
 
-  for (i = 0; i < rows.length; i = i + 1) {
-    if (wrote >= clickCount) { 
-      logi("已采集满 " + clickCount + " 个用户");
-      break; 
-    }
-    
+  var rank = 1;
+  for (rank = 1; rank <= clickCount; rank = rank + 1) {
     if (totalInserted >= stopAfterRows) { 
       logw("达到数据库写入上限 " + stopAfterRows); 
       return;
     }
 
-    var uesenumber = getBottomRightText(rows[i]);
-    logi("点击用户行 " + (i + 1) + ", uesenumber=" + uesenumber);
+    var rankStr = "" + rank;
+    var rankView = findRankTextView(rankStr);
+    if (rankView == null) {
+      logw("rank=" + rankStr + " TextView not found");
+      continue;
+    }
 
-    clickObj(rows[i], "CLICK_USER_ROW");
+    var row = findClickableRowFromTextView(rankView);
+    if (row == null) {
+      logw("rank=" + rankStr + " row not found");
+      continue;
+    }
+
+    var uesenumber = rankStr;
+    var Consumption = getRightMostText(row);
+    if (Consumption == "null" || Consumption == "undefined" || Consumption == "") {
+      Consumption = "0";
+    }
+    logi("点击用户行 rank=" + rankStr + ", uesenumber=" + uesenumber + ", Consumption=" + Consumption);
+
+    clickObj(row, "CLICK_USER_ROW_RANK_" + rankStr);
     sleepMs(clickWaitMs);
 
     if (!isDetailPage()) {
@@ -398,14 +525,16 @@ function collectContributors(hostInfo, clickCount, clickWaitMs, stopAfterRows) {
       backAndWait("USER_DETAIL_BACK_FAILSAFE", clickWaitMs);
     } else {
       var userInfo = readUserDetail();
+      
+      var cleanHostId = cleanId(hostInfo.id);
 
       // 调用数据处理脚本保存数据
-      // callScript("DataHandler", "insert", app_name, homeid, homename, fansnumber, homeip, uesenumber, ueseid, uesename, consumption, ueseip)
       try {
         totalInserted = callScript("DataHandler", "insert", 
           APP_NAME,
-          hostInfo.id, hostInfo.name, hostInfo.fans, hostInfo.ip,
-          uesenumber, userInfo.id, userInfo.name, userInfo.consumption, userInfo.ip);
+          cleanHostId, hostInfo.name, hostInfo.fans, hostInfo.ip,
+          uesenumber, userInfo.ueseid, userInfo.uesename, Consumption, userInfo.ueseip,
+          userInfo.SummaryConsumption);
         wrote = wrote + 1;
         logi("数据保存成功，已采集 " + wrote + "/" + clickCount + ", 总计=" + totalInserted);
       } catch (e) {

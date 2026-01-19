@@ -20,7 +20,10 @@
 // 工具函数
 // ==============================
 function nowStr() { 
-  return "" + (new Date().getTime()); 
+  // 获取UTC时间戳,然后加上北京时间偏移(UTC+8小时)
+  var utcTime = new Date().getTime();
+  var beijingOffset = 8 * 60 * 60 * 1000; // 8小时转换为毫秒
+  return "" + (utcTime + beijingOffset);
 }
 
 function logi(msg) { 

@@ -18,6 +18,7 @@
 // ==============================
 var ID_HEADER = "com.netease.play:id/headerUiContainer";
 var ID_VFLIPPER = "com.netease.play:id/vflipper";
+var ID_TAB = "com.netease.play:id/tv_dragon_tab";
 
 // 注意：rankText 是其他界面的组件，不应该点击
 // var ID_RANKTEXT = "com.netease.play:id/rankText";
@@ -44,7 +45,10 @@ var DEFAULT_RETRY_COUNT = 3;
 // 工具函数
 // ==============================
 function nowStr() { 
-  return "" + (new Date().getTime()); 
+  // 获取UTC时间戳,然后加上北京时间偏移(UTC+8小时)
+  var utcTime = new Date().getTime();
+  var beijingOffset = 8 * 60 * 60 * 1000; // 8小时转换为毫秒
+  return "" + (utcTime + beijingOffset);
 }
 
 function logi(msg) { 
@@ -153,6 +157,42 @@ function backAndWait(stepName, waitMs) {
     loge("[" + stepName + "] back exception=" + e); 
   }
   sleepMs(waitMs);
+}
+
+// ==============================
+// 页面判断
+// ==============================
+function isHomePage() {
+  var ret = findRet("id:" + ID_TAB, {flag: "find_all", maxStep: 2});
+  if (ret == null) { return false; }
+  // 宽松检测：只要有2个以上的TAB就认为是首页，防止加载延迟导致误判
+  if (ret.length < 2) { return false; }
+
+  var validCount = 0;
+  var seen = {};
+
+  var count = ret.length;
+  var i = 0;
+  for (i = 0; i < count; i = i + 1) {
+    try {
+      var v = ret.views[i];
+      if (v == null) { continue; }
+      var t = "" + v.text;
+      // 检查是否是已知的TAB名称
+      if (t == "推荐" || t == "听听" || t == "一起聊" || t == "看看") {
+        if (!seen[t]) {
+          seen[t] = true;
+          validCount = validCount + 1;
+        }
+      }
+    } catch (e) {}
+  }
+
+  // 只要找到2个及以上有效TAB，就认为是首页
+  if (validCount >= 2) {
+    return true;
+  }
+  return false;
 }
 
 // 获取集合大小
@@ -324,7 +364,20 @@ function enterContributionRank(clickWaitMs) {
   logi("尝试进入贡献榜...");
   
   // 首先检查是否已经在贡献榜页面（日榜奖励和日榜都存在）
-  var alreadyOnPage = hasView("txt:日榜奖励", {maxStep: 2}) && hasView("txt:日榜", {maxStep: 2});
+  var hasReward1 = hasView("txt:日榜奖励?", {maxStep: 5});
+  var hasReward2 = hasView("txt:日榜奖励", {maxStep: 5});
+  var hasDay = hasView("txt:日榜", {maxStep: 2});
+  var alreadyOnPage = false;
+  if (hasReward1) {
+    if (hasDay) {
+      alreadyOnPage = true;
+    }
+  }
+  if (hasReward2) {
+    if (hasDay) {
+      alreadyOnPage = true;
+    }
+  }
   if (alreadyOnPage) {
     logi("已经在贡献榜页面，无需点击");
     return true;
@@ -379,12 +432,25 @@ function enterContributionRank(clickWaitMs) {
     }
   }
 
-  // 验证是否成功进入贡献榜
-  var hasA = hasView("txt:日榜奖励", {maxStep: 2});
-  var hasB = hasView("txt:日榜", {maxStep: 2});
-  logi("贡献榜验证: 日榜奖励=" + hasA + ", 日榜=" + hasB);
+  // 验证是否成功进入贡献榜（支持两种格式）
+  var hasRewardQ = hasView("txt:日榜奖励?", {maxStep: 5});
+  var hasReward = hasView("txt:日榜奖励", {maxStep: 5});
+  var hasDay = hasView("txt:日榜", {maxStep: 2});
+  logi("贡献榜验证: 日榜奖励?=" + hasRewardQ + ", 日榜奖励=" + hasReward + ", 日榜=" + hasDay);
   
-  if (hasA && hasB) {
+  var isValid = false;
+  if (hasRewardQ) {
+    if (hasDay) {
+      isValid = true;
+    }
+  }
+  if (hasReward) {
+    if (hasDay) {
+      isValid = true;
+    }
+  }
+  
+  if (isValid) {
     logi("成功进入贡献榜界面");
     return true;
   }
@@ -508,8 +574,11 @@ function processContributionRank(hostInfo, clickCount, clickWaitMs, stopAfterRow
   
   // 返回：月榜 -> 贡献榜 -> 魅力榜/直播 -> 直播
   logi("返回直播间...");
+  if (isHomePage()) { return; }
   backAndWait("BACK_MONTH_TO_CONTRIB", clickWaitMs);
+  if (isHomePage()) { return; }
   backAndWait("BACK_CONTRIB_TO_CHARM", clickWaitMs);
+  if (isHomePage()) { return; }
   backAndWait("BACK_CHARM_TO_LIVE", clickWaitMs);
 }
 

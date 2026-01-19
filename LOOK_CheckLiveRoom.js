@@ -27,13 +27,16 @@ var GIFT_NOTICE_IDS = [
 ];
 
 // 礼物弹幕等待时间（毫秒）
-var GIFT_OVERLAY_WAIT_MS = 3000;
+var GIFT_OVERLAY_WAIT_MS = 1000;
 
 // ==============================
 // 工具函数
 // ==============================
 function nowStr() { 
-  return "" + (new Date().getTime()); 
+  // 获取UTC时间戳,然后加上北京时间偏移(UTC+8小时)
+  var utcTime = new Date().getTime();
+  var beijingOffset = 8 * 60 * 60 * 1000; // 8小时转换为毫秒
+  return "" + (utcTime + beijingOffset);
 }
 
 function logi(msg) { 
@@ -124,8 +127,13 @@ function hasVflipperComponent() {
 function checkLiveRoomValid(retryCount, checkInterval) {
   logi("开始检查直播间有效性，重试次数=" + retryCount + "，间隔=" + checkInterval + "ms");
   
-  // 首先等待礼物弹幕消失
-  waitForGiftOverlayToDisappear();
+  // 如果检测到礼物弹幕，才等待
+  if (hasGiftOverlay()) {
+    logi("检测到礼物弹幕，等待 " + GIFT_OVERLAY_WAIT_MS + "ms...");
+    waitForGiftOverlayToDisappear();
+  } else {
+    logi("未检测到礼物弹幕，直接检查...");
+  }
   
   var i = 0;
   for (i = 0; i < retryCount; i = i + 1) {
@@ -133,7 +141,7 @@ function checkLiveRoomValid(retryCount, checkInterval) {
     
     // 每次检查前都检测礼物弹幕
     if (hasGiftOverlay()) {
-      logi("检测到礼物弹幕，等待...");
+      logi("检查中途检测到礼物弹幕，等待...");
       sleepMs(GIFT_OVERLAY_WAIT_MS);
     }
     
