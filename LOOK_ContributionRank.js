@@ -80,37 +80,38 @@ function findRet(tag, options) {
   return ret;
 }
 
-// 安全获取数组长度（兼容引擎特殊数组）
-function safeLength(arr) {
-  if (arr == null) { return 0; }
-  try {
-    var len = arr.getLength();
-    if (len != null) { return len; }
-  } catch (e1) {}
-  try {
-    var len2 = arr.length;
-    if (len2 != null) { return len2; }
-  } catch (e2) {}
-  return 0;
-}
-
-function getViews(tag, options) {
+// 检查是否能找到指定控件
+// 官方文档: 检查 ret.length > 0，然后用 ret.views[0] 访问元素
+function hasView(tag, options) {
   var ret = findRet(tag, options);
   if (ret != null) {
-    if (ret.views != null) {
-      return ret.views;
+    if (ret.length > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// 获取第一个找到的view
+function getFirstView(tag, options) {
+  var ret = findRet(tag, options);
+  if (ret != null) {
+    if (ret.length > 0) {
+      return ret.views[0];
     }
   }
   return null;
 }
 
-// 检查views是否有元素
-function hasViews(views) {
-  if (views == null) { return false; }
-  try {
-    if (views[0] != null) { return true; }
-  } catch (e) {}
-  return false;
+// 获取所有找到的views（注意：返回的是Java List对象，可能不支持length属性）
+function getAllViews(tag, options) {
+  var ret = findRet(tag, options);
+  if (ret != null) {
+    if (ret.length > 0) {
+      return ret.views;
+    }
+  }
+  return null;
 }
 
 function getParent(v) {
@@ -154,17 +155,51 @@ function backAndWait(stepName, waitMs) {
   sleepMs(waitMs);
 }
 
+// 获取集合大小
+function getCollectionSize(col) {
+  if (col == null) { return 0; }
+  // 1. 尝试 .length
+  try {
+    if (col.length != null) { return col.length; }
+  } catch (e) {}
+  // 2. 尝试 .size() (Java List)
+  try {
+    return col.size();
+  } catch (e) {}
+  // 3. 尝试 .size 属性
+  try {
+    if (col.size != null) { return col.size; }
+  } catch (e) {}
+  
+  return 0;
+}
+
+// 获取集合元素
+function getCollectionItem(col, index) {
+  if (col == null) { return null; }
+  // 1. 尝试 [index]
+  try {
+    var item = col[index];
+    if (item != null) { return item; }
+  } catch (e) {}
+  // 2. 尝试 .get(index) (Java List)
+  try {
+    return col.get(index);
+  } catch (e) {}
+  
+  return null;
+}
+
 // ==============================
 // 礼物弹幕检测
 // ==============================
 function hasGiftOverlay() {
-  // 直接检查每个ID，使用 hasViews 辅助函数
-  if (hasViews(getViews("id:com.netease.play:id/liveNoticeRootContainer", {maxStep: 3}))) { return true; }
-  if (hasViews(getViews("id:com.netease.play:id/imageBg", {maxStep: 3}))) { return true; }
-  if (hasViews(getViews("id:com.netease.play:id/noticeContent", {maxStep: 3}))) { return true; }
-  if (hasViews(getViews("id:com.netease.play:id/liveNoticeContainer", {maxStep: 3}))) { return true; }
-  if (hasViews(getViews("id:com.netease.play:id/liveNotice", {maxStep: 3}))) { return true; }
-  if (hasViews(getViews("id:com.netease.play:id/liveIcon", {maxStep: 3}))) { return true; }
+  if (hasView("id:com.netease.play:id/liveNoticeRootContainer", {maxStep: 3})) { return true; }
+  if (hasView("id:com.netease.play:id/imageBg", {maxStep: 3})) { return true; }
+  if (hasView("id:com.netease.play:id/noticeContent", {maxStep: 3})) { return true; }
+  if (hasView("id:com.netease.play:id/liveNoticeContainer", {maxStep: 3})) { return true; }
+  if (hasView("id:com.netease.play:id/liveNotice", {maxStep: 3})) { return true; }
+  if (hasView("id:com.netease.play:id/liveIcon", {maxStep: 3})) { return true; }
   return false;
 }
 
@@ -190,49 +225,75 @@ function enterCharmRankFromLive(clickWaitMs) {
   // 首先等待礼物弹幕消失
   waitForGiftOverlayToDisappear();
   
-  var header = getViews("id:" + ID_HEADER, {maxStep: 2});
-  if (header.length <= 0) { 
-    loge("未找到header容器"); 
-    return false; 
-  }
-  logi("找到header容器");
-
-  // 只通过 vflipper 下的 TextView 进入（不使用 rankText）
-  var vf = getViews("id:" + ID_VFLIPPER, {root: header[0], maxStep: 2});
-  logi("vflipper查找结果: 数量=" + vf.length);
-
-  if (vf.length <= 0) {
+  // 直接查找 vflipper（不使用 root 选项）
+  if (!hasView("id:" + ID_VFLIPPER, {maxStep: 3})) {
     loge("未找到 vflipper 组件");
     return false;
   }
-
-  // 查找 vflipper 下的所有 TextView
-  var tvs = getViews("className:android.widget.TextView", {root: vf[0], flag: "find_all", maxStep: 3});
-  logi("vflipper下找到 " + tvs.length + " 个TextView");
-
+  var vfView = getFirstView("id:" + ID_VFLIPPER, {maxStep: 3});
+  logi("找到 vflipper 组件");
+  
+  if (vfView == null) {
+    loge("vflipper 组件对象为空");
+    return false;
+  }
+  
+  // 根据官方文档，使用 view[i] 遍历子控件，view.size 或 view.length 获取子控件数量
+  var childCount = 0;
+  try {
+    // 尝试获取子控件数量
+    if (vfView.size != null) {
+      childCount = vfView.size;
+    } else if (vfView.length != null) {
+      childCount = vfView.length;
+    }
+  } catch (e) {
+    loge("获取子控件数量失败: " + e);
+  }
+  logi("vflipper 子控件数量=" + childCount);
+  
   var clicked = false;
   var i = 0;
   
-  // 遍历所有 TextView，找到可点击的并点击
-  for (i = 0; i < tvs.length; i = i + 1) {
-    if (isClickable(tvs[i])) {
-      logi("找到可点击的TextView，尝试点击...");
-      clicked = clickObj(tvs[i], "CHARM_ENTRY_VFLIPPER_TV");
-      if (clicked) {
-        sleepMs(clickWaitMs);
-        break;
+  // 遍历 vflipper 的所有子控件
+  for (i = 0; i < childCount; i = i + 1) {
+    try {
+      var child = vfView[i];
+      if (child != null) {
+        // 检查是否是 TextView 且可点击
+        var cn = "";
+        try { cn = child.className; } catch (e) {}
+        logi("子控件[" + i + "] className=" + cn + ", clickable=" + child.clickable);
+        
+        if (cn == "android.widget.TextView") {
+          if (child.clickable == true) {
+            logi("找到可点击的TextView子控件，尝试点击...");
+            clicked = clickObj(child, "CHARM_ENTRY_TV");
+            if (clicked) {
+              sleepMs(clickWaitMs);
+              break;
+            }
+          }
+        }
       }
+    } catch (e) {
+      loge("遍历子控件[" + i + "]失败: " + e);
     }
   }
-
-  // 如果没有可点击的TextView，尝试点击第一个TextView
-  if (!clicked) {
-    if (tvs.length > 0) {
-      logi("没有可点击的TextView，尝试点击第一个...");
-      clicked = clickObj(tvs[0], "CHARM_ENTRY_FIRST_TV");
-      if (clicked) {
-        sleepMs(clickWaitMs);
+  
+  // 如果没找到可点击的 TextView，尝试点击第一个子控件
+  if (!clicked && childCount > 0) {
+    try {
+      var firstChild = vfView[0];
+      if (firstChild != null) {
+        logi("没有可点击的TextView，尝试点击第一个子控件...");
+        clicked = clickObj(firstChild, "CHARM_ENTRY_FIRST_CHILD");
+        if (clicked) {
+          sleepMs(clickWaitMs);
+        }
       }
+    } catch (e) {
+      loge("点击第一个子控件失败: " + e);
     }
   }
 
@@ -242,8 +303,8 @@ function enterCharmRankFromLive(clickWaitMs) {
   }
 
   // 验证是否进入魅力榜
-  var has1 = (getViews("txt:魅力榜", {maxStep: 2}).length > 0);
-  var has2 = (getViews("txt:当前房间", {maxStep: 2}).length > 0);
+  var has1 = hasView("txt:魅力榜", {maxStep: 2});
+  var has2 = hasView("txt:当前房间", {maxStep: 2});
   logi("页面验证: 魅力榜=" + has1 + ", 当前房间=" + has2);
   if (has1) {
     if (has2) {
@@ -429,5 +490,5 @@ function main(hostId, hostName, hostFans, hostIp, clickCount, clickWaitMs, stopA
   return processContributionRank(hostInfo, clickCount, clickWaitMs, stopAfterRows, retryCount);
 }
 
-// 执行
-main();
+// 注意：不要在文件末尾调用 main()
+// 通过 callScript("LOOK_ContributionRank", ...) 调用时，引擎会自动执行 main()

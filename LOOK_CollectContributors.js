@@ -394,5 +394,5 @@ function main(hostId, hostName, hostFans, hostIp, clickCount, clickWaitMs, stopA
   return collectContributors(hostInfo, clickCount, clickWaitMs, stopAfterRows);
 }
 
-// 执行
-main();
+// 注意：不要在文件末尾调用 main()
+// 通过 callScript("LOOK_CollectContributors", ...) 调用时，引擎会自动执行 main()

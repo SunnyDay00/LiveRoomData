@@ -65,26 +65,38 @@ function findRet(tag, options) {
   return ret;
 }
 
-function getViews(tag, options) {
+// 检查是否能找到指定控件
+// 官方文档: 检查 ret.length > 0
+function hasView(tag, options) {
   var ret = findRet(tag, options);
   if (ret != null) {
-    if (ret.views != null) {
-      return ret.views;
+    if (ret.length > 0) {
+      return true;
     }
   }
-  return [];
+  return false;
 }
 
-function getTextOfFirst(tag, options) {
-  var views = getViews(tag, options);
-  if (views.length > 0) {
-    try {
-      if (views[0].text != null) {
-        return "" + views[0].text;
-      }
-    } catch (e) {
-      return "";
+// 获取第一个找到的view
+function getFirstView(tag, options) {
+  var ret = findRet(tag, options);
+  if (ret != null) {
+    if (ret.length > 0) {
+      return ret.views[0];
     }
+  }
+  return null;
+}
+
+// 获取第一个控件的文本
+function getTextOfFirst(tag, options) {
+  var view = getFirstView(tag, options);
+  if (view != null) {
+    try {
+      if (view.text != null) {
+        return "" + view.text;
+      }
+    } catch (e) {}
   }
   return "";
 }
@@ -124,28 +136,10 @@ function backAndWait(stepName, waitMs) {
 // ==============================
 function isDetailPage() {
   try {
-    var a = getViews("id:" + ID_USER_ID, {maxStep: 2});
-    var b = getViews("id:" + ID_USER_NAME, {maxStep: 2});
-    var aLen = 0;
-    var bLen = 0;
-    if (a != null) {
-      if (a.views != null) {
-        aLen = a.views.length;
-      } else {
-        aLen = a.length;
-      }
-    }
-    if (b != null) {
-      if (b.views != null) {
-        bLen = b.views.length;
-      } else {
-        bLen = b.length;
-      }
-    }
-    if (aLen > 0) {
-      if (bLen > 0) {
-        return true;
-      }
+    var hasId = hasView("id:" + ID_USER_ID, {maxStep: 2});
+    var hasName = hasView("id:" + ID_USER_NAME, {maxStep: 2});
+    if (hasId && hasName) {
+      return true;
     }
   } catch (e) {
     loge("isDetailPage exception=" + e);
@@ -295,5 +289,5 @@ function main(retryCount, clickWaitMs) {
   return collectHostInfo(retryCount, clickWaitMs);
 }
 
-// 执行
-main();
+// 注意：不要在文件末尾调用 main()
+// 通过 callScript("LOOK_HostInfo", retryCount, clickWaitMs) 调用时，引擎会自动执行 main()

@@ -170,5 +170,5 @@ function main(action, param1, param2, param3, param4, param5, param6, param7, pa
   }
 }
 
-// 执行
-main();
+// 注意：不要在文件末尾调用 main()
+// 通过 callScript("DataHandler", ...) 调用时，引擎会自动执行 main()
