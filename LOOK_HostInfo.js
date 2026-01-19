@@ -150,24 +150,84 @@ function isDetailPage() {
 // ==============================
 // 详情页字段提取
 // ==============================
+// UI 结构：
+// ViewGroup
+//   ├─ com.netease.play:id/desc (text: "粉丝"/"IP属地")
+//   └─ com.netease.play:id/num (text: 实际数值)
+//
 function getNumNearLabel(labelText) {
-  var labels = getViews("className:android.widget.TextView", {flag: "find_all", maxStep: 2});
+  logi("getNumNearLabel(" + labelText + "): 开始搜索...");
+  
+  // 方法：直接搜索 txt:labelText，然后找父控件，再找 num 子控件
+  if (!hasView("txt:" + labelText, {maxStep: 3})) {
+    logi("getNumNearLabel(" + labelText + "): 未找到标签文本");
+    return "";
+  }
+  
+  var labelView = getFirstView("txt:" + labelText, {maxStep: 3});
+  if (labelView == null) {
+    logi("getNumNearLabel(" + labelText + "): 标签视图为空");
+    return "";
+  }
+  logi("getNumNearLabel(" + labelText + "): 找到标签");
+  
+  // 获取父控件 (ViewGroup)
+  var parent = getParent(labelView);
+  if (parent == null) {
+    logi("getNumNearLabel(" + labelText + "): 父控件为空");
+    return "";
+  }
+  
+  // 在父控件中找 num 控件
+  // 方法1: 尝试直接搜索 id:num with root
+  var numText = getTextOfFirst("id:com.netease.play:id/num", {root: parent, maxStep: 2});
+  if (numText != "" && numText != "null" && numText != "undefined") {
+    logi("getNumNearLabel(" + labelText + "): 通过ID找到 num=" + numText);
+    return numText;
+  }
+  
+  // 方法2: 遍历父控件的子控件
+  var childCount = 0;
+  try {
+    if (parent.size != null) { childCount = parent.size; }
+    else if (parent.length != null) { childCount = parent.length; }
+  } catch (e) {}
+  
+  logi("getNumNearLabel(" + labelText + "): 遍历 " + childCount + " 个子控件");
+  
   var i = 0;
-  for (i = 0; i < labels.length; i = i + 1) {
+  for (i = 0; i < childCount; i = i + 1) {
     try {
-      if (("" + labels[i].text) == labelText) {
-        var p = getParent(labels[i]);
-        if (p != null) {
-          var v = getTextOfFirst("id:" + ID_NUM, {root: p, maxStep: 2});
-          if (v != null) {
-            if (v != "") {
-              return v;
-            }
+      var child = parent[i];
+      if (child != null) {
+        var childId = "";
+        try { childId = "" + child.id; } catch (e) {}
+        var childText = "";
+        try { childText = "" + child.text; } catch (e) {}
+        
+        // 跳过标签本身
+        if (childText == labelText) { continue; }
+        
+        // 检查是否是 num 控件
+        if (childId.indexOf("num") >= 0) {
+          if (childText != "" && childText != "null" && childText != "undefined") {
+            logi("getNumNearLabel(" + labelText + "): 找到 num=" + childText);
+            return childText;
           }
         }
+        
+        // 如果不是 num ID，但有非空文本且不是标签，也可能是我们要的值
+        if (childText != "" && childText != "null" && childText != "undefined" && childText != labelText) {
+          logi("getNumNearLabel(" + labelText + "): 找到兄弟文本=" + childText);
+          return childText;
+        }
       }
-    } catch (e) {}
+    } catch (e) {
+      logi("getNumNearLabel(" + labelText + "): 子控件遍历异常: " + e);
+    }
   }
+  
+  logi("getNumNearLabel(" + labelText + "): 未找到数值");
   return "";
 }
 
@@ -191,13 +251,11 @@ function readDetailBasic() {
 }
 
 // ==============================
-// 业务逻辑
-// ==============================
 function enterHostDetailFromLive(clickWaitMs) {
   logi("开始查找主播详情入口...");
   
-  var header = getViews("id:" + ID_HEADER, {maxStep: 2});
-  if (header.length <= 0) { 
+  // 检查 header
+  if (!hasView("id:" + ID_HEADER, {maxStep: 2})) { 
     loge("header未找到"); 
     return false; 
   }
@@ -205,30 +263,32 @@ function enterHostDetailFromLive(clickWaitMs) {
 
   var clicked = false;
   
-  // 方式1: 尝试点击 avatar
-  var avatar = getViews("id:" + ID_AVATAR, {root: header[0], maxStep: 2});
-  logi("avatar查找结果: 数量=" + avatar.length);
-  if (avatar.length > 0) {
-    logi("尝试通过avatar进入...");
-    clickObj(avatar[0], "CLICK_AVATAR");
-    sleepMs(clickWaitMs);
-    clicked = true;
-  }
-  
-  // 方式2: 如果 avatar 没找到，尝试 bgView
-  if (!clicked) {
-    var bg = getViews("id:" + ID_BGVIEW, {root: header[0], maxStep: 2});
-    logi("bgView查找结果: 数量=" + bg.length);
-    if (bg.length > 0) {
+  // 方式1: 优先点击 bgView（总是可点击）
+  if (hasView("id:" + ID_BGVIEW, {maxStep: 2})) {
+    var bgView = getFirstView("id:" + ID_BGVIEW, {maxStep: 2});
+    if (bgView != null) {
       logi("尝试通过bgView进入...");
-      clickObj(bg[0], "CLICK_BGVIEW");
+      clickObj(bgView, "CLICK_BGVIEW");
       sleepMs(clickWaitMs);
       clicked = true;
     }
   }
   
+  // 方式2: 如果 bgView 没找到，尝试 avatar
   if (!clicked) {
-    loge("avatar和bgView都未找到");
+    if (hasView("id:" + ID_AVATAR, {maxStep: 2})) {
+      var avatarView = getFirstView("id:" + ID_AVATAR, {maxStep: 2});
+      if (avatarView != null) {
+        logi("尝试通过avatar进入...");
+        clickObj(avatarView, "CLICK_AVATAR");
+        sleepMs(clickWaitMs);
+        clicked = true;
+      }
+    }
+  }
+  
+  if (!clicked) {
+    loge("bgView和avatar都未找到");
     return false;
   }
 

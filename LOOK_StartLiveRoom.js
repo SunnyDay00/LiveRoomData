@@ -104,26 +104,37 @@ function findRet(tag, options) {
   return ret;
 }
 
-function getViews(tag, options) {
+// 检查是否能找到指定控件
+function hasView(tag, options) {
   var ret = findRet(tag, options);
   if (ret != null) {
-    if (ret.views != null) {
-      return ret.views;
+    if (ret.length > 0) {
+      return true;
     }
   }
-  return [];
+  return false;
 }
 
-function getTextOfFirst(tag, options) {
-  var views = getViews(tag, options);
-  if (views.length > 0) {
-    try {
-      if (views[0].text != null) {
-        return "" + views[0].text;
-      }
-    } catch (e) {
-      return "";
+// 获取第一个找到的view
+function getFirstView(tag, options) {
+  var ret = findRet(tag, options);
+  if (ret != null) {
+    if (ret.length > 0) {
+      return ret.views[0];
     }
+  }
+  return null;
+}
+
+// 获取第一个控件的文本
+function getTextOfFirst(tag, options) {
+  var view = getFirstView(tag, options);
+  if (view != null) {
+    try {
+      if (view.text != null) {
+        return "" + view.text;
+      }
+    } catch (e) {}
   }
   return "";
 }
@@ -207,18 +218,22 @@ function restartApp(reason) {
 // 页面判断
 // ==============================
 function isHomePage() {
-  var views = getViews("id:" + CONFIG.ID_TAB, {flag: "find_all", maxStep: 2});
-  if (views.length < 4) { return false; }
+  var ret = findRet("id:" + CONFIG.ID_TAB, {flag: "find_all", maxStep: 2});
+  if (ret == null) { return false; }
+  if (ret.length < 4) { return false; }
 
   var hasRec = false;
   var hasTt = false;
   var hasChat = false;
   var hasLook = false;
 
+  var count = ret.length;
   var i = 0;
-  for (i = 0; i < views.length; i = i + 1) {
+  for (i = 0; i < count; i = i + 1) {
     try {
-      var t = "" + views[i].text;
+      var v = ret.views[i];
+      if (v == null) { continue; }
+      var t = "" + v.text;
       if (t == "推荐") { hasRec = true; }
       if (t == "听听") { hasTt = true; }
       if (t == "一起聊") { hasChat = true; }
@@ -226,23 +241,15 @@ function isHomePage() {
     } catch (e) {}
   }
 
-  if (hasRec) {
-    if (hasTt) {
-      if (hasChat) {
-        if (hasLook) {
-          return true;
-        }
-      }
-    }
+  if (hasRec && hasTt && hasChat && hasLook) {
+    return true;
   }
   return false;
 }
 
 function isLiveRoomPage() {
-  var header = getViews("id:" + CONFIG.ID_HEADER, {maxStep: 2});
-  if (header.length <= 0) { return false; }
-  var close = getViews("id:" + CONFIG.ID_CLOSEBTN, {root: header[0], maxStep: 2});
-  if (close.length > 0) { return true; }
+  if (!hasView("id:" + CONFIG.ID_HEADER, {maxStep: 2})) { return false; }
+  if (hasView("id:" + CONFIG.ID_CLOSEBTN, {maxStep: 2})) { return true; }
   return false;
 }
 
@@ -273,16 +280,22 @@ function ensureHome() {
 }
 
 function goRecommendTab() {
-  var views = getViews("id:" + CONFIG.ID_TAB, {flag: "find_all", maxStep: 2});
+  var ret = findRet("id:" + CONFIG.ID_TAB, {flag: "find_all", maxStep: 2});
+  if (ret == null) { return; }
+  if (ret.length <= 0) { return; }
+  
+  var count = ret.length;
   var i = 0;
-  for (i = 0; i < views.length; i = i + 1) {
+  for (i = 0; i < count; i = i + 1) {
     try {
-      if (("" + views[i].text) == "推荐") {
-        var p = getParent(views[i]);
+      var v = ret.views[i];
+      if (v == null) { continue; }
+      if (("" + v.text) == "推荐") {
+        var p = getParent(v);
         if (p != null) {
           clickObj(p, "HOME_TAB_RECOMMEND");
         } else {
-          clickObj(views[i], "HOME_TAB_RECOMMEND_TEXT");
+          clickObj(v, "HOME_TAB_RECOMMEND_TEXT");
         }
         sleepMs(CONFIG.CLICK_WAIT_MS);
         return;
@@ -308,22 +321,26 @@ function getRoomKeyFromIvCover(ivObj) {
 }
 
 function pickNextUnseenCardOnScreen() {
-  var ivs = getViews("id:" + CONFIG.ID_IVCOVER, {flag: "find_all", maxStep: 2});
-  if (ivs.length <= 0) { return null; }
+  var ret = findRet("id:" + CONFIG.ID_IVCOVER, {flag: "find_all", maxStep: 2});
+  if (ret == null) { return null; }
+  if (ret.length <= 0) { return null; }
 
+  var count = ret.length;
   var i = 0;
-  for (i = 0; i < ivs.length; i = i + 1) {
-    var key = getRoomKeyFromIvCover(ivs[i]);
-    if (key != null) {
-      if (key != "") {
+  for (i = 0; i < count; i = i + 1) {
+    try {
+      var iv = ret.views[i];
+      if (iv == null) { continue; }
+      var key = getRoomKeyFromIvCover(iv);
+      if (key != null && key != "") {
         if (g_seen[key] != true) {
-          var card = getParent(ivs[i]);
+          var card = getParent(iv);
           if (card != null) {
             return { card: card, key: key };
           }
         }
       }
-    }
+    } catch (e) {}
   }
   return null;
 }

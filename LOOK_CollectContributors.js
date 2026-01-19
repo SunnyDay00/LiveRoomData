@@ -66,26 +66,38 @@ function findRet(tag, options) {
   return ret;
 }
 
-function getViews(tag, options) {
+// 检查是否能找到指定控件
+// 官方文档: 检查 ret.length > 0
+function hasView(tag, options) {
   var ret = findRet(tag, options);
   if (ret != null) {
-    if (ret.views != null) {
-      return ret.views;
+    if (ret.length > 0) {
+      return true;
     }
   }
-  return [];
+  return false;
 }
 
-function getTextOfFirst(tag, options) {
-  var views = getViews(tag, options);
-  if (views.length > 0) {
-    try {
-      if (views[0].text != null) {
-        return "" + views[0].text;
-      }
-    } catch (e) {
-      return "";
+// 获取第一个找到的view
+function getFirstView(tag, options) {
+  var ret = findRet(tag, options);
+  if (ret != null) {
+    if (ret.length > 0) {
+      return ret.views[0];
     }
+  }
+  return null;
+}
+
+// 获取第一个控件的文本
+function getTextOfFirst(tag, options) {
+  var view = getFirstView(tag, options);
+  if (view != null) {
+    try {
+      if (view.text != null) {
+        return "" + view.text;
+      }
+    } catch (e) {}
   }
   return "";
 }
@@ -135,32 +147,10 @@ function backAndWait(stepName, waitMs) {
 // 页面判断
 // ==============================
 function isDetailPage() {
-  try {
-    var a = getViews("id:" + ID_USER_ID, {maxStep: 2});
-    var b = getViews("id:" + ID_USER_NAME, {maxStep: 2});
-    var aLen = 0;
-    var bLen = 0;
-    if (a != null) {
-      if (a.views != null) {
-        aLen = a.views.length;
-      } else {
-        aLen = a.length;
-      }
-    }
-    if (b != null) {
-      if (b.views != null) {
-        bLen = b.views.length;
-      } else {
-        bLen = b.length;
-      }
-    }
-    if (aLen > 0) {
-      if (bLen > 0) {
-        return true;
-      }
-    }
-  } catch (e) {
-    loge("isDetailPage exception=" + e);
+  var hasId = hasView("id:" + ID_USER_ID, {maxStep: 2});
+  var hasName = hasView("id:" + ID_USER_NAME, {maxStep: 2});
+  if (hasId && hasName) {
+    return true;
   }
   return false;
 }
@@ -169,19 +159,50 @@ function isDetailPage() {
 // 详情页字段提取
 // ==============================
 function getNumNearLabel(labelText) {
-  var labels = getViews("className:android.widget.TextView", {flag: "find_all", maxStep: 2});
+  // 直接搜索 txt:labelText，然后找父控件，再找 num 子控件
+  if (!hasView("txt:" + labelText, {maxStep: 3})) {
+    return "";
+  }
+  
+  var labelView = getFirstView("txt:" + labelText, {maxStep: 3});
+  if (labelView == null) { return ""; }
+  
+  var parent = getParent(labelView);
+  if (parent == null) { return ""; }
+  
+  // 尝试在父控件中找 num
+  var numText = getTextOfFirst("id:" + ID_NUM, {root: parent, maxStep: 2});
+  if (numText != "" && numText != "null" && numText != "undefined") {
+    return numText;
+  }
+  
+  // 遍历父控件的子控件
+  var childCount = 0;
+  try {
+    if (parent.size != null) { childCount = parent.size; }
+    else if (parent.length != null) { childCount = parent.length; }
+  } catch (e) {}
+  
   var i = 0;
-  for (i = 0; i < labels.length; i = i + 1) {
+  for (i = 0; i < childCount; i = i + 1) {
     try {
-      if (("" + labels[i].text) == labelText) {
-        var p = getParent(labels[i]);
-        if (p != null) {
-          var v = getTextOfFirst("id:" + ID_NUM, {root: p, maxStep: 2});
-          if (v != null) {
-            if (v != "") {
-              return v;
-            }
+      var child = parent[i];
+      if (child != null) {
+        var childId = "";
+        try { childId = "" + child.id; } catch (e) {}
+        var childText = "";
+        try { childText = "" + child.text; } catch (e) {}
+        
+        if (childText == labelText) { continue; }
+        
+        if (childId.indexOf("num") >= 0) {
+          if (childText != "" && childText != "null" && childText != "undefined") {
+            return childText;
           }
+        }
+        
+        if (childText != "" && childText != "null" && childText != "undefined" && childText != labelText) {
+          return childText;
         }
       }
     } catch (e) {}
@@ -216,11 +237,17 @@ function getBottomRightText(rootObj) {
   var bestBottom = -1;
   var bestLeft = -1;
 
-  var tArr = getViews("className:android.widget.TextView", {root: rootObj, flag: "find_all", maxStep: 3});
+  // 使用 findRet 并正确访问
+  var ret = findRet("className:android.widget.TextView", {root: rootObj, flag: "find_all", maxStep: 3});
+  if (ret == null) { return ""; }
+  if (ret.length <= 0) { return ""; }
+  
+  var count = ret.length;
   var i = 0;
-  for (i = 0; i < tArr.length; i = i + 1) {
+  for (i = 0; i < count; i = i + 1) {
     try {
-      var v = tArr[i];
+      var v = ret.views[i];
+      if (v == null) { continue; }
       var txt = "" + v.text;
 
       var left = -1;
@@ -255,39 +282,64 @@ function getBottomRightText(rootObj) {
 }
 
 function findContributionFrame() {
-  var frames = getViews("className:android.widget.FrameLayout", {flag: "find_all", maxStep: 3});
+  var ret = findRet("className:android.widget.FrameLayout", {flag: "find_all", maxStep: 3});
+  if (ret == null) { return null; }
+  if (ret.length <= 0) { return null; }
+  
+  var count = ret.length;
   var i = 0;
-  for (i = 0; i < frames.length; i = i + 1) {
-    var one = getViews("txt:1", {root: frames[i], maxStep: 2});
-    if (one.length > 0) { return frames[i]; }
+  for (i = 0; i < count; i = i + 1) {
+    try {
+      var frame = ret.views[i];
+      if (frame == null) { continue; }
+      
+      // 检查这个 frame 下是否有 txt:1（表示排行榜）
+      if (hasView("txt:1", {root: frame, maxStep: 2})) {
+        return frame;
+      }
+    } catch (e) {}
   }
   return null;
 }
 
 function getClickableUserRows(frameObj) {
   var rows = [];
-  var vgs = getViews("className:android.view.ViewGroup", {root: frameObj, flag: "find_all", maxStep: 4});
-
+  
+  var ret = findRet("className:android.view.ViewGroup", {root: frameObj, flag: "find_all", maxStep: 4});
+  if (ret == null) { return rows; }
+  if (ret.length <= 0) { return rows; }
+  
+  var count = ret.length;
   var i = 0;
-  for (i = 0; i < vgs.length; i = i + 1) {
-    if (isClickable(vgs[i])) {
-      var ts = getViews("className:android.widget.TextView", {root: vgs[i], flag: "find_all", maxStep: 2});
-      var j = 0;
-      var found = false;
-      for (j = 0; j < ts.length; j = j + 1) {
-        try {
-          var t = "" + ts[j].text;
-          if (t != "") {
-            if ((t >= "0")) {
-              if ((t <= "9999")) {
-                found = true;
+  for (i = 0; i < count; i = i + 1) {
+    try {
+      var vg = ret.views[i];
+      if (vg == null) { continue; }
+      
+      if (isClickable(vg)) {
+        // 检查这个 ViewGroup 下的 TextView 是否包含数字（排名）
+        var tvRet = findRet("className:android.widget.TextView", {root: vg, flag: "find_all", maxStep: 2});
+        if (tvRet != null && tvRet.length > 0) {
+          var tvCount = tvRet.length;
+          var j = 0;
+          var found = false;
+          for (j = 0; j < tvCount; j = j + 1) {
+            try {
+              var tv = tvRet.views[j];
+              if (tv == null) { continue; }
+              var t = "" + tv.text;
+              if (t != "") {
+                if ((t >= "0") && (t <= "9999")) {
+                  found = true;
+                  break;
+                }
               }
-            }
+            } catch (e) {}
           }
-        } catch (e) {}
+          if (found) { rows.push(vg); }
+        }
       }
-      if (found) { rows.push(vgs[i]); }
-    }
+    } catch (e) {}
   }
   return rows;
 }
