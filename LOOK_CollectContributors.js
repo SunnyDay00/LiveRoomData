@@ -582,6 +582,10 @@ function collectContributors(hostInfo, clickCount, clickWaitMs, stopAfterRows) {
     }
 
     var uesenumber = rankStr;
+    
+    // [新增] 每次处理新用户前，检查是否被弹窗阻挡
+    callScript("LOOK_PopupHandler");
+    
     var Consumption = getRightMostText(row);
     if (Consumption == "null" || Consumption == "undefined" || Consumption == "") {
       Consumption = "0";
@@ -592,7 +596,8 @@ function collectContributors(hostInfo, clickCount, clickWaitMs, stopAfterRows) {
     sleepMs(clickWaitMs);
 
     if (!isDetailPage()) {
-      logw("未进入用户详情，返回");
+      logw("未进入用户详情，可能是被弹窗遮挡");
+      callScript("LOOK_PopupHandler"); // 尝试消除弹窗
       backAndWait("USER_DETAIL_BACK_FAILSAFE", clickWaitMs);
     } else {
       var userInfo = readUserDetail();

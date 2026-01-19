@@ -205,6 +205,10 @@ function main() {
   }
 
   sleepMs(CONFIG.APP_RESTART_WAIT_MS);
+  
+  // Step 2.1: 处理开屏广告/弹窗
+  logi("检查开屏弹窗...");
+  callScript("LOOK_PopupHandler");
 
   // Step 3: 崩溃监控（已禁用）
   // 由于 currentPackage() 函数在此引擎中不可用，监控功能无法正常工作
@@ -213,6 +217,7 @@ function main() {
   logi("崩溃监控已禁用（currentPackage不可用）");
 
   logi("调用 LOOK_StartLiveRoom...");
+  callScript("LOOK_PopupHandler"); // 进入业务前再次清理
   try {
     var result = callScript("LOOK_StartLiveRoom", CONFIG);
     logi("LOOK_StartLiveRoom 执行完成: " + result);
