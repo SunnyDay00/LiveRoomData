@@ -340,46 +340,115 @@ function getBottomRightText(rootObj) {
   return bestText;
 }
 
+// 辅助函数：获取子控件数量
+function getChildCount(v) {
+  var cnt = 0;
+  try {
+    if (v.childCount != null) { cnt = v.childCount; }
+    else if (v.getChildCount != null) { cnt = v.getChildCount(); }
+    else if (v.size != null) { 
+      if (typeof v.size === 'function') { cnt = v.size(); } else { cnt = v.size; }
+    }
+    else if (v.length != null) { cnt = v.length; }
+  } catch (e) {}
+  return cnt;
+}
+
+// 辅助函数：获取指定索引的子控件
+function getChildAt(v, i) {
+  var child = null;
+  try { child = v[i]; } catch (e) {}
+  if (child == null) {
+    try { child = v.get(i); } catch (e) {}
+  }
+  if (child == null) {
+    try { child = v.getChildAt(i); } catch (e) {}
+  }
+  return child;
+}
+
+// 辅助函数：获取组件的文本和左坐标，如果无效返回 null
+function getViewTextInfo(v) {
+  try {
+    var txt = "";
+    try { txt = "" + v.text; } catch (e) {}
+    
+    // 忽略空文本
+    if (txt == null || txt == "" || txt == "null" || txt == "undefined") { return null; }
+    
+    var left = -1;
+    if (v.left != null) { left = v.left; }
+    else {
+        try {
+           var b = v.bounds();
+           if (b != null) { left = b.left; }
+        } catch(e) {}
+    }
+    
+    if (left == -1) { return null; }
+    
+    return { text: txt, left: left };
+  } catch (e) {
+    return null;
+  }
+}
+
 function getRightMostText(viewGroup) {
   if (viewGroup == null) { loge("getRightMostText: viewGroup is NULL"); return ""; }
 
-  // 增加 maxStep 到 10 以查找更深层级的控件
-  var ret = findRet("className:android.widget.TextView", {root: viewGroup, flag: "find_all", maxStep: 10});
-  if (ret == null) { loge("getRightMostText: findRet returned NULL"); return ""; }
-  if (ret.length <= 0) { loge("getRightMostText: ret.length is 0 (No TextViews found)"); return ""; }
-
   var bestText = "";
   var bestLeft = -1;
-  var count = ret.length;
+
+  // 1. 遍历一级子控件
+  var level1Count = getChildCount(viewGroup);
+  
   var i = 0;
-  for (i = 0; i < count; i = i + 1) {
-    try {
-      var v = ret.views[i];
-      if (v == null) { continue; }
-
-      var left = -1;
-      if (v.left != null) {
-        left = v.left;
-      } else {
-        try { left = v.getLeft(); } catch (e) {}
+  for (i = 0; i < level1Count; i = i + 1) {
+    var child1 = getChildAt(viewGroup, i);
+    if (child1 == null) { continue; }
+    
+    // 2. 遍历二级子控件 (假设结构是 Row -> Group -> TextViews)
+    var level2Count = getChildCount(child1);
+    
+    // 如果一级子控件没有子控件，它自己可能是个TextView
+    if (level2Count <= 0) {
+      var info1 = getViewTextInfo(child1);
+      if (info1 != null && info1.left > bestLeft) {
+        bestLeft = info1.left;
+        bestText = info1.text;
       }
-
-      if (left == null || left < 0) { continue; }
-
-      var txt = "";
-      try { txt = "" + v.text; } catch (e) {}
+      continue;
+    }
+    
+    var j = 0;
+    for (j = 0; j < level2Count; j = j + 1) {
+      var child2 = getChildAt(child1, j);
+      if (child2 == null) { continue; }
       
-      // 忽略空文本
-      if (txt == null || txt == "" || txt == "null" || txt == "undefined") { continue; }
-
-      logi("getRightMostText: found text='" + txt + "', left=" + left); // DEBUG LOG
-
-      if (left > bestLeft) {
-        bestLeft = left;
-        bestText = txt;
+      var info2 = getViewTextInfo(child2);
+      if (info2 != null && info2.left > bestLeft) {
+        bestLeft = info2.left;
+        bestText = info2.text;
       }
-    } catch (e) {}
+      
+      // 3. 遍历三级子控件 (以防万一还有一层)
+      var level3Count = getChildCount(child2);
+      if (level3Count > 0) {
+          var k = 0;
+          for (k = 0; k < level3Count; k = k + 1) {
+              var child3 = getChildAt(child2, k);
+              if (child3 != null) {
+                  var info3 = getViewTextInfo(child3);
+                  if (info3 != null && info3.left > bestLeft) {
+                      bestLeft = info3.left;
+                      bestText = info3.text;
+                  }
+              }
+          }
+      }
+    }
   }
+
   return bestText;
 }
 
