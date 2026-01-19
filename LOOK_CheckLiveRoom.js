@@ -18,12 +18,7 @@ var ID_VFLIPPER = "com.netease.play:id/vflipper";
 
 // 礼物弹幕相关ID
 var GIFT_NOTICE_IDS = [
-  "com.netease.play:id/liveNoticeRootContainer",
-  "com.netease.play:id/imageBg",
-  "com.netease.play:id/noticeContent",
-  "com.netease.play:id/liveNoticeContainer",
-  "com.netease.play:id/liveNotice",
-  "com.netease.play:id/liveIcon"
+  "com.netease.play:id/liveNoticeRootContainer"
 ];
 
 // 礼物弹幕等待时间（毫秒）

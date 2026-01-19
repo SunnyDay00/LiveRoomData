@@ -148,6 +148,8 @@ function dbInsertRow(appName, homeid, homename, fansnumber, homeip,
     + "'" + sqlEsc(summaryConsumption) + "'"
     + ");";
 
+  logi("Insert: homeid=" + homeid + ", ueseid=" + ueseid + ", consumption=" + consumption + ", summary=" + summaryConsumption);
+
   try {
     g_db.exeSql(sql);
   } catch (e) {

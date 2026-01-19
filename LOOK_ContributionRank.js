@@ -25,12 +25,7 @@ var ID_TAB = "com.netease.play:id/tv_dragon_tab";
 
 // 礼物弹幕相关ID
 var GIFT_NOTICE_IDS = [
-  "com.netease.play:id/liveNoticeRootContainer",
-  "com.netease.play:id/imageBg",
-  "com.netease.play:id/noticeContent",
-  "com.netease.play:id/liveNoticeContainer",
-  "com.netease.play:id/liveNotice",
-  "com.netease.play:id/liveIcon"
+  "com.netease.play:id/liveNoticeRootContainer"
 ];
 
 // 礼物弹幕等待时间（毫秒）
@@ -364,8 +359,7 @@ function enterContributionRank(clickWaitMs) {
   logi("尝试进入贡献榜...");
   
   // 首先检查是否已经在贡献榜页面（日榜奖励和日榜都存在）
-  var hasReward1 = hasView("txt:日榜奖励?", {maxStep: 5});
-  var hasReward2 = hasView("txt:日榜奖励", {maxStep: 5});
+  var hasReward1 = hasView("txt:日榜奖励？", {maxStep: 10});
   var hasDay = hasView("txt:日榜", {maxStep: 2});
   var alreadyOnPage = false;
   if (hasReward1) {
@@ -433,8 +427,8 @@ function enterContributionRank(clickWaitMs) {
   }
 
   // 验证是否成功进入贡献榜（支持两种格式）
-  var hasRewardQ = hasView("txt:日榜奖励?", {maxStep: 5});
-  var hasReward = hasView("txt:日榜奖励", {maxStep: 5});
+  var hasRewardQ = hasView("txt:日榜奖励?", {maxStep: 10});
+  var hasReward = hasView("txt:日榜奖励", {maxStep: 10});
   var hasDay = hasView("txt:日榜", {maxStep: 2});
   logi("贡献榜验证: 日榜奖励?=" + hasRewardQ + ", 日榜奖励=" + hasReward + ", 日榜=" + hasDay);
   

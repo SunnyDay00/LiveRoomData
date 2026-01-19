@@ -341,12 +341,12 @@ function getBottomRightText(rootObj) {
 }
 
 function getRightMostText(viewGroup) {
-  if (viewGroup == null) { return ""; }
+  if (viewGroup == null) { loge("getRightMostText: viewGroup is NULL"); return ""; }
 
-  // 增加 maxStep 到 5 以查找更深层级的控件
-  var ret = findRet("className:android.widget.TextView", {root: viewGroup, flag: "find_all", maxStep: 5});
-  if (ret == null) { return ""; }
-  if (ret.length <= 0) { return ""; }
+  // 增加 maxStep 到 10 以查找更深层级的控件
+  var ret = findRet("className:android.widget.TextView", {root: viewGroup, flag: "find_all", maxStep: 10});
+  if (ret == null) { loge("getRightMostText: findRet returned NULL"); return ""; }
+  if (ret.length <= 0) { loge("getRightMostText: ret.length is 0 (No TextViews found)"); return ""; }
 
   var bestText = "";
   var bestLeft = -1;
@@ -371,6 +371,8 @@ function getRightMostText(viewGroup) {
       
       // 忽略空文本
       if (txt == null || txt == "" || txt == "null" || txt == "undefined") { continue; }
+
+      logi("getRightMostText: found text='" + txt + "', left=" + left); // DEBUG LOG
 
       if (left > bestLeft) {
         bestLeft = left;
