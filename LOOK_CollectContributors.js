@@ -165,6 +165,41 @@ function isDetailPage() {
   return false;
 }
 
+// 自动检测当前是日榜还是月榜
+function detectRankType() {
+  logi("[detectRankType] 开始检测榜单类型...");
+  
+  // 方法1：检测"日榜奖励？"或"月榜奖励？"
+  var hasDayReward = hasView("txt:日榜奖励？", {maxStep: 5});
+  var hasMonthReward = hasView("txt:月榜奖励？", {maxStep: 5});
+  
+  if (hasDayReward) {
+    logi("[detectRankType] 检测到'日榜奖励？' → 判断为日榜");
+    return "day";
+  }
+  if (hasMonthReward) {
+    logi("[detectRankType] 检测到'月榜奖励？' → 判断为月榜");
+    return "month";
+  }
+  
+  // 方法2：检测"日榜"和"月榜"文本
+  var hasDayText = hasView("txt:日榜", {maxStep: 2});
+  var hasMonthText = hasView("txt:月榜", {maxStep: 2});
+  
+  if (hasDayText && !hasMonthText) {
+    logi("[detectRankType] 只检测到'日榜' → 判断为日榜");
+    return "day";
+  }
+  if (hasMonthText && !hasDayText) {
+    logi("[detectRankType] 只检测到'月榜' → 判断为月榜");
+    return "month";
+  }
+  
+  // 默认返回日榜（第一次进入默认显示日榜）
+  logw("[detectRankType] 无法明确判断，默认为日榜");
+  return "day";
+}
+
 // ==============================
 // 详情页字段提取
 // ==============================
@@ -580,8 +615,19 @@ function getClickableUserRows(frameObj) {
 // ==============================
 // 业务逻辑
 // ==============================
-function collectContributors(hostInfo, clickCount, clickWaitMs, stopAfterRows) {
-  logi("开始采集贡献榜用户，采集数量=" + clickCount);
+function collectContributors(hostInfo, rankType, clickCount, clickWaitMs, stopAfterRows) {
+  logi("========== 开始采集贡献榜用户（传入 rankType=" + rankType + "）==========");
+  
+  // 自动检测当前榜单类型（覆盖传入的 rankType）
+  var detectedRankType = detectRankType();
+  if (detectedRankType != rankType) {
+    logw("检测到榜单类型不匹配！传入=" + rankType + ", 实际=" + detectedRankType);
+    logw("将使用检测到的榜单类型: " + detectedRankType);
+    rankType = detectedRankType;
+  } else {
+    logi("榜单类型匹配: " + rankType);
+  }
+  logi("最终使用榜单类型: " + rankType);
 
   var wrote = 0;
   var totalInserted = 0;
@@ -614,7 +660,15 @@ function collectContributors(hostInfo, clickCount, clickWaitMs, stopAfterRows) {
       continue;
     }
 
-    var uesenumber = rankStr;
+    var dayuesenumber = "";
+    var monthuesenumber = "";
+    
+    // 根据榜单类型设置排名
+    if (rankType == "day") {
+      dayuesenumber = rankStr;
+    } else {
+      monthuesenumber = rankStr;
+    }
     
     // [新增] 每次处理新用户前，检查是否被弹窗阻挡
     callScript("PopupHandler");
@@ -623,7 +677,7 @@ function collectContributors(hostInfo, clickCount, clickWaitMs, stopAfterRows) {
     if (Consumption == "null" || Consumption == "undefined" || Consumption == "") {
       Consumption = "0";
     }
-    logi("点击用户行 rank=" + rankStr + ", uesenumber=" + uesenumber + ", Consumption=" + Consumption);
+    logi("点击用户行 rank=" + rankStr + ", rankType=" + rankType + ", Consumption=" + Consumption);
 
     clickObj(row, "CLICK_USER_ROW_RANK_" + rankStr);
     sleepMs(clickWaitMs);
@@ -642,7 +696,7 @@ function collectContributors(hostInfo, clickCount, clickWaitMs, stopAfterRows) {
         totalInserted = callScript("DataHandler", "insert", 
           APP_NAME,
           cleanHostId, hostInfo.name, hostInfo.fans, hostInfo.ip,
-          uesenumber, userInfo.ueseid, userInfo.uesename, Consumption, userInfo.ueseip,
+          dayuesenumber, monthuesenumber, userInfo.ueseid, userInfo.uesename, Consumption, userInfo.ueseip,
           userInfo.SummaryConsumption);
         wrote = wrote + 1;
         logi("数据保存成功，已采集 " + wrote + "/" + clickCount + ", 总计=" + totalInserted);
@@ -659,9 +713,10 @@ function collectContributors(hostInfo, clickCount, clickWaitMs, stopAfterRows) {
 
 // ==============================
 // 主入口 - 通过函数参数接收数据
-// callScript("LOOK_CollectContributors", hostId, hostName, hostFans, hostIp, clickCount, clickWaitMs, stopAfterRows)
+// callScript("LOOK_CollectContributors", hostId, hostName, hostFans, hostIp, rankType, clickCount, clickWaitMs, stopAfterRows)
+// rankType: 'day' = 日榜, 'month' = 月榜
 // ==============================
-function main(hostId, hostName, hostFans, hostIp, clickCount, clickWaitMs, stopAfterRows) {
+function main(hostId, hostName, hostFans, hostIp, rankType, clickCount, clickWaitMs, stopAfterRows) {
   // 组装hostInfo对象
   var hostInfo = {
     id: hostId,
@@ -681,7 +736,8 @@ function main(hostId, hostName, hostFans, hostIp, clickCount, clickWaitMs, stopA
     stopAfterRows = DEFAULT_STOP_AFTER_ROWS;
   }
   
-  return collectContributors(hostInfo, clickCount, clickWaitMs, stopAfterRows);
+  // 调用采集逻辑
+  return collectContributors(hostInfo, rankType, clickCount, clickWaitMs, stopAfterRows);
 }
 
 // 注意：不要在文件末尾调用 main()

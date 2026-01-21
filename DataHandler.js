@@ -16,7 +16,7 @@
 // 配置
 // ==============================
 var DB_NAME = "look_collect";
-var TABLE_NAME = "records_v4";
+var TABLE_NAME = "records_v5";
 var g_db = null;
 
 // ==============================
@@ -83,12 +83,13 @@ function dbOpen() {
         + "homename VARCHAR, "
         + "fansnumber VARCHAR, "
         + "homeip VARCHAR, "
-        + "uesenumber VARCHAR, "
+        + "dayuesenumber VARCHAR, "
+        + "monthuesenumber VARCHAR, "
         + "ueseid VARCHAR, "
         + "uesename VARCHAR, "
         + "consumption VARCHAR, "
         + "ueseip VARCHAR, "
-        + "summary_consumption VARCHAR, "
+        + "summaryconsumption VARCHAR, "
         + "record_time VARCHAR"
         + ");";
       g_db.exeSql(createSql);
@@ -146,7 +147,7 @@ function getInsertCount() {
 }
 
 function dbInsertRow(appName, homeid, homename, fansnumber, homeip,
-  uesenumber, ueseid, uesename, consumption, ueseip, summaryConsumption) {
+  dayuesenumber, monthuesenumber, ueseid, uesename, consumption, ueseip, summaryConsumption) {
   if (g_db == null) { return -1; }
   
   var recordTime = getNowDateStr();
@@ -154,14 +155,15 @@ function dbInsertRow(appName, homeid, homename, fansnumber, homeip,
   var sql = ""
     + "INSERT INTO " + TABLE_NAME + " ("
     + "app_name, homeid, homename, fansnumber, homeip, "
-    + "uesenumber, ueseid, uesename, consumption, ueseip, summary_consumption, record_time"
+    + "dayuesenumber, monthuesenumber, ueseid, uesename, consumption, ueseip, summaryconsumption, record_time"
     + ") VALUES ("
     + "'" + sqlEsc(appName) + "', "
     + "'" + sqlEsc(homeid) + "', "
     + "'" + sqlEsc(homename) + "', "
     + "'" + sqlEsc(fansnumber) + "', "
     + "'" + sqlEsc(homeip) + "', "
-    + "'" + sqlEsc(uesenumber) + "', "
+    + "'" + sqlEsc(dayuesenumber) + "', "
+    + "'" + sqlEsc(monthuesenumber) + "', "
     + "'" + sqlEsc(ueseid) + "', "
     + "'" + sqlEsc(uesename) + "', "
     + "'" + sqlEsc(consumption) + "', "
@@ -206,12 +208,14 @@ function dbDump() {
       if (row.homename != null) { if (!first) { output = output + ", "; } output = output + "homename=" + row.homename; first = false; }
       if (row.fansnumber != null) { if (!first) { output = output + ", "; } output = output + "fansnumber=" + row.fansnumber; first = false; }
       if (row.homeip != null) { if (!first) { output = output + ", "; } output = output + "homeip=" + row.homeip; first = false; }
-      if (row.uesenumber != null) { if (!first) { output = output + ", "; } output = output + "uesenumber=" + row.uesenumber; first = false; }
+      if (row.dayuesenumber != null) { if (!first) { output = output + ", "; } output = output + "dayuesenumber=" + row.dayuesenumber; first = false; }
+      if (row.monthuesenumber != null) { if (!first) { output = output + ", "; } output = output + "monthuesenumber=" + row.monthuesenumber; first = false; }
       if (row.ueseid != null) { if (!first) { output = output + ", "; } output = output + "ueseid=" + row.ueseid; first = false; }
       if (row.uesename != null) { if (!first) { output = output + ", "; } output = output + "uesename=" + row.uesename; first = false; }
       if (row.consumption != null) { if (!first) { output = output + ", "; } output = output + "consumption=" + row.consumption; first = false; }
       if (row.ueseip != null) { if (!first) { output = output + ", "; } output = output + "ueseip=" + row.ueseip; first = false; }
-      if (row.summary_consumption != null) { if (!first) { output = output + ", "; } output = output + "summary_consumption=" + row.summary_consumption; first = false; }
+      if (row.summaryconsumption != null) { if (!first) { output = output + ", "; } output = output + "summaryconsumption=" + row.summaryconsumption; first = false; }
+      if (row.record_time != null) { if (!first) { output = output + ", "; } output = output + "record_time=" + row.record_time; first = false; }
       
       console.info(output);
       count = count + 1;
@@ -228,7 +232,7 @@ function dbDump() {
 // 主入口
 // ==============================
 function main(action, param1, param2, param3, param4, param5,
-  param6, param7, param8, param9, param10, param11) {
+  param6, param7, param8, param9, param10, param11, param12) {
   var row = null;
   var dbName = null;
 
@@ -266,12 +270,13 @@ function main(action, param1, param2, param3, param4, param5,
     if (row.homename != null) { param3 = row.homename; }
     if (row.fansnumber != null) { param4 = row.fansnumber; }
     if (row.homeip != null) { param5 = row.homeip; }
-    if (row.uesenumber != null) { param6 = row.uesenumber; }
-    if (row.ueseid != null) { param7 = row.ueseid; }
-    if (row.uesename != null) { param8 = row.uesename; }
-    if (row.consumption != null) { param9 = row.consumption; }
-    if (row.ueseip != null) { param10 = row.ueseip; }
-    if (row.summary_consumption != null) { param11 = row.summary_consumption; }
+    if (row.dayuesenumber != null) { param6 = row.dayuesenumber; }
+    if (row.monthuesenumber != null) { param7 = row.monthuesenumber; }
+    if (row.ueseid != null) { param8 = row.ueseid; }
+    if (row.uesename != null) { param9 = row.uesename; }
+    if (row.consumption != null) { param10 = row.consumption; }
+    if (row.ueseip != null) { param11 = row.ueseip; }
+    if (row.summaryconsumption != null) { param12 = row.summaryconsumption; }
   }
 
   if (action == "init") {
@@ -281,7 +286,7 @@ function main(action, param1, param2, param3, param4, param5,
   } else if (action == "insert") {
     if (dbOpen() != 0) { return -1; }
     var result = dbInsertRow(param1, param2, param3, param4, param5,
-      param6, param7, param8, param9, param10, param11);
+      param6, param7, param8, param9, param10, param11, param12);
     dbClose();
     return result;
   } else if (action == "getCount") {

@@ -544,14 +544,27 @@ function processContributionRank(hostInfo, clickCount, clickWaitMs, stopAfterRow
     return { success: false, error: "enter charm failed" };
   }
   
-  // 进入贡献榜
+  // 进入贡献榜（默认显示日榜）
   if (!enterContributionRank(clickWaitMs)) {
     loge("进入贡献榜失败");
     backAndWait("BACK_CHARM_FAIL", clickWaitMs);
     return { success: false, error: "enter contribution failed" };
   }
   
-  // 切换到月榜
+  // ========== 第一步：采集日榜数据 ==========
+  logi("========== [日榜] 开始采集日榜用户数据 ==========");
+  try {
+    // callScript("LOOK_CollectContributors", hostId, hostName, hostFans, hostIp, rankType, clickCount, clickWaitMs, stopAfterRows)
+    callScript("LOOK_CollectContributors", 
+      hostInfo.id, hostInfo.name, hostInfo.fans, hostInfo.ip,
+      "day",  // rankType = 'day'
+      clickCount, clickWaitMs, stopAfterRows);
+    logi("========== [日榜] 日榜数据采集完成 ==========");
+  } catch (e) {
+    loge("[日榜] callScript CollectContributors error: " + e);
+  }
+  
+  // ========== 第二步：切换到月榜 ==========
   if (!switchToMonthRank(clickWaitMs)) {
     loge("切换月榜失败");
     backAndWait("BACK_CONTRIB_FAIL", clickWaitMs);
@@ -559,15 +572,17 @@ function processContributionRank(hostInfo, clickCount, clickWaitMs, stopAfterRow
     return { success: false, error: "switch month failed" };
   }
   
-  // 调用用户采集脚本
-  logi("开始采集贡献榜用户...");
+  // ========== 第三步：采集月榜数据 ==========
+  logi("========== [月榜] 开始采集月榜用户数据 ==========");
   try {
-    // callScript("LOOK_CollectContributors", hostId, hostName, hostFans, hostIp, clickCount, clickWaitMs, stopAfterRows)
+    // callScript("LOOK_CollectContributors", hostId, hostName, hostFans, hostIp, rankType, clickCount, clickWaitMs, stopAfterRows)
     callScript("LOOK_CollectContributors", 
       hostInfo.id, hostInfo.name, hostInfo.fans, hostInfo.ip,
+      "month",  // rankType = 'month'
       clickCount, clickWaitMs, stopAfterRows);
+    logi("========== [月榜] 月榜数据采集完成 ==========");
   } catch (e) {
-    loge("callScript CollectContributors error: " + e);
+    loge("[月榜] callScript CollectContributors error: " + e);
   }
   
   // 返回：月榜 -> 贡献榜 -> 魅力榜/直播 -> 直播

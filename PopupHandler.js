@@ -98,18 +98,49 @@ function handleSkipButton() {
   return false;
 }
 
+// 3. 处理全屏广告
+function handleFullScreenAd() {
+  // 更精确的检测：必须同时存在广告容器和关闭按钮
+  var hasAdContainer = hasView("id:com.netease.play:id/rootContainer", {maxStep: 3});
+  var hasCloseBtn = hasView("id:com.netease.play:id/closeBtn", {maxStep: 3});
+  
+  // 只有两者都存在才认为是全屏广告
+  if (hasAdContainer && hasCloseBtn) {
+    logi("检测到 [全屏广告]（rootContainer + closeBtn），尝试点击关闭...");
+    
+    // 点击关闭按钮
+    var closeBtn = getFirstView("id:com.netease.play:id/closeBtn", {maxStep: 3});
+    if (closeBtn != null) {
+      if (clickObj(closeBtn, "CLICK_AD_CLOSE")) {
+        sleepMs(500);  // 等待关闭动画
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // ==============================
 // 主流程
 // ==============================
 function main() {
   var handled = false;
   
+  // 1. 处理青少年模式
   if (handleTeenagerMode()) {
     handled = true;
   }
   
+  // 2. 处理跳过按钮
   if (!handled) {
     if (handleSkipButton()) {
+      handled = true;
+    }
+  }
+  
+  // 3. 处理全屏广告
+  if (!handled) {
+    if (handleFullScreenAd()) {
       handled = true;
     }
   }

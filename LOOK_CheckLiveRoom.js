@@ -127,6 +127,13 @@ function hasVflipperComponent() {
 function checkLiveRoomValid(retryCount, checkInterval) {
   logi("开始检查直播间有效性，重试次数=" + retryCount + "，间隔=" + checkInterval + "ms");
   
+  // 首先尝试处理可能的弹窗（全屏广告等）
+  try {
+    callScript("PopupHandler");
+  } catch (e) {
+    logi("PopupHandler 调用失败: " + e);
+  }
+  
   // 如果检测到礼物弹幕，才等待
   if (hasGiftOverlay()) {
     logi("检测到礼物弹幕，等待 " + GIFT_OVERLAY_WAIT_MS + "ms...");
@@ -138,6 +145,11 @@ function checkLiveRoomValid(retryCount, checkInterval) {
   var i = 0;
   for (i = 0; i < retryCount; i = i + 1) {
     logi("第 " + (i + 1) + " 次检查...");
+    
+    // 每次检查前都处理可能的弹窗
+    try {
+      callScript("PopupHandler");
+    } catch (e) {}
     
     // 每次检查前都检测礼物弹幕
     if (hasGiftOverlay()) {
