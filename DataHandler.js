@@ -1,268 +1,143 @@
-/**
- * DataHandler.js - 通用数据处理脚本 (Atomic Persistence Version)
- *
- * 使用方式：
- *   callScript("DataHandler", "init", "look_collect");
- *   callScript("DataHandler", "insert", ...);
- *   callScript("DataHandler", "getCount");
- *   callScript("DataHandler", "dump");
- *   callScript("DataHandler", "close");
- *
- * 也支持对象参数：
- *   callScript("DataHandler", { action: "insert", dbName: "look_collect", row: { ... } });
- */
+var CLOUD_API_URL = "https://liveroomdata.sssr.edu.kg/upload"; 
 
-// ==============================
-// 配置
-// ==============================
-var DB_NAME = "look_collect";
-var TABLE_NAME = "records_v5";
-var g_db = null;
-
-// ==============================
-// 工具函数
-// ==============================
-function nowStr() {
-  // 获取UTC时间戳,然后加上北京时间偏移(UTC+8小时)
-  var utcTime = new Date().getTime();
-  var beijingOffset = 8 * 60 * 60 * 1000; // 8小时转换为毫秒
-  return "" + (utcTime + beijingOffset);
-}
-
-// 补零工具函数 (提取到全局)
-function pad2Zero(n) {
-  if (n < 10) { return "0" + n; }
-  return "" + n;
-}
-
-function getNowDateStr() {
-  try {
-    // Format disabled because EasyJS Date is broken; return Beijing timestamp string only.
-    var now = new Date().getTime();
-    var beijing = now + 8 * 60 * 60 * 1000;
-    return "" + beijing;
-  } catch (e) {
-    return "";
-  }
-}
-
-function logi(msg) {
-  console.info("[" + nowStr() + "][DataHandler][INFO] " + msg);
-  try { floatMessage("[DataHandler] " + msg); } catch (e) {}
-}
-
-function loge(msg) {
-  console.error("[" + nowStr() + "][DataHandler][ERROR] " + msg);
-  try { floatMessage("[DataHandler][ERROR] " + msg); } catch (e) {}
-}
-
-function sqlEsc(s) {
-  if (s == null) { return ""; }
-  s = "" + s;
-  return s.split("'").join("''");
-}
-
-// ==============================
-// 数据库操作 (Atomic: Open -> Action -> Close)
-// ==============================
-function dbOpen() {
-  try {
-    g_db = new Database(DB_NAME);
-  } catch (e) {
-    loge("open db error: " + e);
-    return -1;
+function uploadToCloud(data) {
+  if (CLOUD_API_URL == null) {
+     alert("URL Config Error");
+     return;
   }
 
-  try {
-    if (!g_db.isTableExist(TABLE_NAME)) {
-      var createSql = ""
-        + "CREATE TABLE IF NOT EXISTS " + TABLE_NAME + " ("
-        + "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        + "app_name VARCHAR, "
-        + "homeid VARCHAR, "
-        + "homename VARCHAR, "
-        + "fansnumber VARCHAR, "
-        + "homeip VARCHAR, "
-        + "dayuesenumber VARCHAR, "
-        + "monthuesenumber VARCHAR, "
-        + "ueseid VARCHAR, "
-        + "uesename VARCHAR, "
-        + "consumption VARCHAR, "
-        + "ueseip VARCHAR, "
-        + "summaryconsumption VARCHAR, "
-        + "record_time VARCHAR"
-        + ");";
-      g_db.exeSql(createSql);
-      logi("create table " + TABLE_NAME);
-    }
-  } catch (e) {
-    loge("dbOpen init error: " + e);
-    return -1;
+  if (typeof rsContext === "undefined") {
+      var msg = "No rsContext";
+      console.error(msg);
+      alert(msg);
+      return;
   }
+  
+  console.log("Starting cloud upload...");
 
-  return 0;
-}
-
-function dbClose() {
   try {
-    if (g_db != null) {
-      g_db.close();
-    }
-  } catch (e) {
-    loge("close db error: " + e);
-  }
-  g_db = null;
-  return 0;
-}
-
-function dbQuery(sql) {
-  try {
-    return g_db.query(sql);
-  } catch (e) {
-    loge("query error: " + e);
-    return null;
-  }
-}
-
-function getInsertCount() {
-  if (g_db == null) { return -1; }
-  var count = 0;
-  try {
-    var result = dbQuery("SELECT COUNT(*) FROM " + TABLE_NAME);
-    if (result != null) {
-      if (result.length > 0) {
-        var row = result[0];
+    var loader = rsContext.getClass().getClassLoader();
+    var OkHttpClientClass = loader.loadClass("okhttp3.OkHttpClient");
+    var RequestBuilderClass = loader.loadClass("okhttp3.Request$Builder");
+    var FormBodyBuilderClass = loader.loadClass("okhttp3.FormBody$Builder");
+    
+    var formBuilder = FormBodyBuilderClass.newInstance();
+    var val = "";
+    
+    val = data.app_name; if (val == null) { val = ""; } formBuilder.add("app_name", val + "");
+    val = data.homeid; if (val == null) { val = ""; } formBuilder.add("homeid", val + "");
+    val = data.homename; if (val == null) { val = ""; } formBuilder.add("homename", val + "");
+    val = data.fansnumber; if (val == null) { val = ""; } formBuilder.add("fansnumber", val + "");
+    val = data.homeip; if (val == null) { val = ""; } formBuilder.add("homeip", val + "");
+    val = data.dayuesenumber; if (val == null) { val = ""; } formBuilder.add("dayuesenumber", val + "");
+    val = data.monthuesenumber; if (val == null) { val = ""; } formBuilder.add("monthuesenumber", val + "");
+    val = data.ueseid; if (val == null) { val = ""; } formBuilder.add("ueseid", val + "");
+    val = data.uesename; if (val == null) { val = ""; } formBuilder.add("uesename", val + "");
+    val = data.consumption; if (val == null) { val = ""; } formBuilder.add("consumption", val + "");
+    val = data.ueseip; if (val == null) { val = ""; } formBuilder.add("ueseip", val + "");
+    val = data.summaryconsumption; if (val == null) { val = ""; } formBuilder.add("summaryconsumption", val + "");
+    val = data.record_time; if (val == null) { val = ""; } formBuilder.add("record_time", val + "");
+    
+    var requestBody = formBuilder.build();
+    var reqBuilder = RequestBuilderClass.newInstance();
+    reqBuilder.url(CLOUD_API_URL);
+    reqBuilder.post(requestBody);
+    var request = reqBuilder.build();
+    
+    // 4. Execute with Retry
+    var client = OkHttpClientClass.newInstance();
+    var success = false;
+    var lastError = "";
+    
+    // 重试循环 3 次
+    for (var r = 0; r < 3; r = r + 1) {
         try {
-          count = 0 + row["COUNT(*)"];
-          if (count != count) { count = 0; }
-        } catch (e) {
-          count = 0;
+            console.log("Upload attempt " + (r + 1) + "...");
+            var call = client.newCall(request);
+            var response = call.execute();
+            
+            if (response == null) {
+                lastError = "Response is null";
+                continue;
+            }
+            
+            var code = 0;
+            try { code = response.code(); } catch(e) { code = -1; }
+            
+            if (code == 200) {
+                console.log("Upload Success");
+                success = true;
+                break; // 成功退出循环
+            } else {
+                var errorBody = "";
+                try { errorBody = response.body().string(); } catch(e) {}
+                lastError = "HTTP " + code + ": " + errorBody;
+                console.error("Upload Fail: " + lastError);
+            }
+            
+        } catch (ex) {
+            var cause = ex;
+            try { if (ex.getCause() != null) { cause = ex.getCause(); } } catch(e2) {}
+            lastError = "Network Error: " + cause;
+            console.error("Retry " + (r+1) + " Exception: " + lastError);
         }
-      }
-    }
-  } catch (e) {
-    loge("getCount error: " + e);
-  }
-  return count;
-}
-
-function dbInsertRow(appName, homeid, homename, fansnumber, homeip,
-  dayuesenumber, monthuesenumber, ueseid, uesename, consumption, ueseip, summaryConsumption) {
-  if (g_db == null) { return -1; }
-  
-  var recordTime = getNowDateStr();
-  
-  var sql = ""
-    + "INSERT INTO " + TABLE_NAME + " ("
-    + "app_name, homeid, homename, fansnumber, homeip, "
-    + "dayuesenumber, monthuesenumber, ueseid, uesename, consumption, ueseip, summaryconsumption, record_time"
-    + ") VALUES ("
-    + "'" + sqlEsc(appName) + "', "
-    + "'" + sqlEsc(homeid) + "', "
-    + "'" + sqlEsc(homename) + "', "
-    + "'" + sqlEsc(fansnumber) + "', "
-    + "'" + sqlEsc(homeip) + "', "
-    + "'" + sqlEsc(dayuesenumber) + "', "
-    + "'" + sqlEsc(monthuesenumber) + "', "
-    + "'" + sqlEsc(ueseid) + "', "
-    + "'" + sqlEsc(uesename) + "', "
-    + "'" + sqlEsc(consumption) + "', "
-    + "'" + sqlEsc(ueseip) + "', "
-    + "'" + sqlEsc(summaryConsumption) + "', "
-    + "'" + sqlEsc(recordTime) + "'"
-    + ");";
-
-  logi("Insert: homeid=" + homeid + ", ueseid=" + ueseid + ", consumption=" + consumption + ", record_time=" + recordTime);
-
-  try {
-    g_db.exeSql(sql);
-  } catch (e) {
-    loge("insert error: " + e);
-    return -1;
-  }
-
-  return getInsertCount();
-}
-
-function dbDump() {
-  if (g_db == null) { return -1; }
-  var result = dbQuery("SELECT * FROM " + TABLE_NAME);
-  if (result == null) { return -1; }
-
-  var count = 0;
-  try {
-    if (result.length == 0) {
-      return 0;
+        
+        // 等待后重试 (2秒)
+        if (r < 2) {
+             try { sleep(2000); } catch(e) {}
+        }
     }
     
-    var i = 0;
-    for (i = 0; i < result.length; i = i + 1) {
-      var row = result[i];
-      var output = "记录" + (i + 1) + ": ";
-      var first = true;
-      
-      // 遍历行的所有字段
-      if (row.id != null) { output = output + "id=" + row.id; first = false; }
-      if (row.app_name != null) { if (!first) { output = output + ", "; } output = output + "app_name=" + row.app_name; first = false; }
-      if (row.homeid != null) { if (!first) { output = output + ", "; } output = output + "homeid=" + row.homeid; first = false; }
-      if (row.homename != null) { if (!first) { output = output + ", "; } output = output + "homename=" + row.homename; first = false; }
-      if (row.fansnumber != null) { if (!first) { output = output + ", "; } output = output + "fansnumber=" + row.fansnumber; first = false; }
-      if (row.homeip != null) { if (!first) { output = output + ", "; } output = output + "homeip=" + row.homeip; first = false; }
-      if (row.dayuesenumber != null) { if (!first) { output = output + ", "; } output = output + "dayuesenumber=" + row.dayuesenumber; first = false; }
-      if (row.monthuesenumber != null) { if (!first) { output = output + ", "; } output = output + "monthuesenumber=" + row.monthuesenumber; first = false; }
-      if (row.ueseid != null) { if (!first) { output = output + ", "; } output = output + "ueseid=" + row.ueseid; first = false; }
-      if (row.uesename != null) { if (!first) { output = output + ", "; } output = output + "uesename=" + row.uesename; first = false; }
-      if (row.consumption != null) { if (!first) { output = output + ", "; } output = output + "consumption=" + row.consumption; first = false; }
-      if (row.ueseip != null) { if (!first) { output = output + ", "; } output = output + "ueseip=" + row.ueseip; first = false; }
-      if (row.summaryconsumption != null) { if (!first) { output = output + ", "; } output = output + "summaryconsumption=" + row.summaryconsumption; first = false; }
-      if (row.record_time != null) { if (!first) { output = output + ", "; } output = output + "record_time=" + row.record_time; first = false; }
-      
-      console.info(output);
-      count = count + 1;
+    if (!success) {
+        alert("上传失败(重试3次):\n" + lastError);
+        return;
     }
+    
   } catch (e) {
-    loge("dump error: " + e);
+    var exMsg = "Upload Error: " + e;
+    try { if (e.getCause() != null) { exMsg = exMsg + " CAUSE: " + e.getCause(); } } catch(ex2) {}
+    console.error(exMsg);
+    alert("脚本运行错误: " + exMsg);
+    return;
   }
-
-  return count;
 }
 
+function dbInsertRow(appName, homeid, homename, fansnumber, homeip, dayuesenumber, monthuesenumber, ueseid, uesename, consumption, ueseip, summaryConsumption) {
+  
+  // Inline getNowDateStr logic
+  var utcTime = new Date().getTime();
+  var beijingOffset = 28800000;
+  var recordTime = "" + (utcTime + beijingOffset);
 
-// ==============================
-// 主入口
-// ==============================
-function main(action, param1, param2, param3, param4, param5,
-  param6, param7, param8, param9, param10, param11, param12) {
+  console.log("Preparing upload...");
+  
+  var rowData = {
+      app_name: appName,
+      homeid: homeid,
+      homename: homename,
+      fansnumber: fansnumber,
+      homeip: homeip,
+      dayuesenumber: dayuesenumber,
+      monthuesenumber: monthuesenumber,
+      ueseid: ueseid,
+      uesename: uesename,
+      consumption: consumption,
+      ueseip: ueseip,
+      summaryconsumption: summaryConsumption,
+      record_time: recordTime
+  };
+  
+  uploadToCloud(rowData);
+  return 1;
+}
+
+function main(action, param1, param2, param3, param4, param5, param6, param7, param8, param9, param10, param11, param12) {
   var row = null;
-  var dbName = null;
-
   if (action != null && typeof action === "object") {
     var opts = action;
     action = opts.action;
-    if (opts.dbName != null) { dbName = "" + opts.dbName; }
     if (opts.row != null) { row = opts.row; }
   }
-
-  if (dbName != null && dbName !== "") {
-    DB_NAME = dbName.replace(/\.db$/i, "");
-  }
-  if (action === "init") {
-    if (dbName == null) {
-      if (param1 != null) {
-        DB_NAME = ("" + param1).replace(/\.db$/i, "");
-      }
-    } else if (dbName === "") {
-      if (param1 != null) {
-        DB_NAME = ("" + param1).replace(/\.db$/i, "");
-      }
-    }
-  }
-
-  if (action == null) {
-    loge("missing action");
-    return -1;
-  }
-  action = "" + action;
 
   if (row != null) {
     if (row.app_name != null) { param1 = row.app_name; }
@@ -279,33 +154,8 @@ function main(action, param1, param2, param3, param4, param5,
     if (row.summaryconsumption != null) { param12 = row.summaryconsumption; }
   }
 
-  if (action == "init") {
-    if (dbOpen() != 0) { return -1; }
-    dbClose();
-    return 0;
-  } else if (action == "insert") {
-    if (dbOpen() != 0) { return -1; }
-    var result = dbInsertRow(param1, param2, param3, param4, param5,
-      param6, param7, param8, param9, param10, param11, param12);
-    dbClose();
-    return result;
-  } else if (action == "getCount") {
-    if (dbOpen() != 0) { return -1; }
-    var count = getInsertCount();
-    dbClose();
-    return count;
-  } else if (action == "dump") {
-    if (dbOpen() != 0) { return -1; }
-    var rows = dbDump();
-    dbClose();
-    return rows;
-  } else if (action == "close") {
-    return dbClose();
-  } else {
-    loge("unknown action: " + action);
-    return -1;
+  if (action == "insert") {
+    return dbInsertRow(param1, param2, param3, param4, param5, param6, param7, param8, param9, param10, param11, param12);
   }
+  return 0;
 }
-
-// 注意：不要在文件末尾调用 main()
-// 通过 callScript("DataHandler", ...) 调用时，引擎会自动执行 main()
