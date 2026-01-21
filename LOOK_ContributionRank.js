@@ -210,18 +210,13 @@ function getCollectionSize(col) {
 }
 
 // 获取集合元素
+// 注意：根据 aznfz-docs，只使用数组索引访问，避免触发 NoSuchMethodException 日志噪音
 function getCollectionItem(col, index) {
   if (col == null) { return null; }
-  // 1. 尝试 [index]
   try {
     var item = col[index];
     if (item != null) { return item; }
   } catch (e) {}
-  // 2. 尝试 .get(index) (Java List)
-  try {
-    return col.get(index);
-  } catch (e) {}
-  
   return null;
 }
 
@@ -229,12 +224,12 @@ function getCollectionItem(col, index) {
 // 礼物弹幕检测
 // ==============================
 function hasGiftOverlay() {
-  if (hasView("id:com.netease.play:id/liveNoticeRootContainer", {maxStep: 3})) { return true; }
-  if (hasView("id:com.netease.play:id/imageBg", {maxStep: 3})) { return true; }
-  if (hasView("id:com.netease.play:id/noticeContent", {maxStep: 3})) { return true; }
-  if (hasView("id:com.netease.play:id/liveNoticeContainer", {maxStep: 3})) { return true; }
-  if (hasView("id:com.netease.play:id/liveNotice", {maxStep: 3})) { return true; }
-  if (hasView("id:com.netease.play:id/liveIcon", {maxStep: 3})) { return true; }
+  var i = 0;
+  for (i = 0; i < GIFT_NOTICE_IDS.length; i = i + 1) {
+    if (hasView("id:" + GIFT_NOTICE_IDS[i], {maxStep: 3})) { 
+      return true; 
+    }
+  }
   return false;
 }
 
@@ -358,19 +353,16 @@ function enterCharmRankFromLive(clickWaitMs) {
 function enterContributionRank(clickWaitMs) {
   logi("尝试进入贡献榜...");
   
-  // 首先检查是否已经在贡献榜页面（日榜奖励和日榜都存在）
-  var hasReward1 = hasView("txt:日榜奖励？", {maxStep: 10});
+  // 等待页面稳定并检查礼物弹幕
+  sleepMs(500);
+  waitForGiftOverlayToDisappear();
+  
+  // 首先检查是否已经在贡献榜页面
+  var hasReward = hasView("txt:日榜奖励？", {maxStep: 10});
   var hasDay = hasView("txt:日榜", {maxStep: 2});
   var alreadyOnPage = false;
-  if (hasReward1) {
-    if (hasDay) {
-      alreadyOnPage = true;
-    }
-  }
-  if (hasReward2) {
-    if (hasDay) {
-      alreadyOnPage = true;
-    }
+  if (hasReward && hasDay) {
+    alreadyOnPage = true;
   }
   if (alreadyOnPage) {
     logi("已经在贡献榜页面，无需点击");
@@ -379,58 +371,70 @@ function enterContributionRank(clickWaitMs) {
   
   var clicked = false;
   
-  // 方法1: 搜索 android.view.View 并匹配 text="贡献榜" (这是可点击的容器)
-  logi("方法1: 搜索 android.view.View...");
-  var ret = findRet("className:android.view.View", {flag: "find_all", maxStep: 3});
+  // 新方法: 查找所有 txt:贡献榜，选择可点击的
+  logi("查找所有 txt:贡献榜 控件...");
+  var ret = findRet("txt:贡献榜", {flag: "find_all", maxStep: 5});
   if (ret != null && ret.length > 0) {
     var count = ret.length;
+    logi("找到 " + count + " 个 '贡献榜' 控件");
+    
     var i = 0;
     for (i = 0; i < count; i = i + 1) {
       try {
         var v = ret.views[i];
-        if (v != null) {
-          var vText = "" + v.text;
-          if (vText == "贡献榜") {
-            logi("找到 View 类型贡献榜按钮，clickable=" + v.clickable);
-            clickObj(v, "CLICK_CONTRIB_VIEW");
-            sleepMs(clickWaitMs);
-            clicked = true;
-            break;
-          }
-        }
-      } catch (e) {}
-    }
-  }
-  
-  // 方法2: 如果方法1失败，使用 txt:贡献榜 搜索，然后获取父控件点击
-  if (!clicked) {
-    logi("方法2: 使用 txt:贡献榜 并获取父控件...");
-    if (hasView("txt:贡献榜", {maxStep: 3})) {
-      var tvView = getFirstView("txt:贡献榜", {maxStep: 3});
-      if (tvView != null) {
-        // 尝试点击父控件（可能是可点击的 View）
-        var parentView = getParent(tvView);
-        if (parentView != null) {
-          logi("找到贡献榜文本，点击其父控件");
-          clickObj(parentView, "CLICK_CONTRIB_PARENT");
+        if (v == null) { continue; }
+        
+        var vClass = "";
+        try { vClass = "" + v.className; } catch (e) {}
+        var vText = "";
+        try { vText = "" + v.text; } catch (e) {}
+        var isClickable = false;
+        try { isClickable = (v.clickable == true); } catch (e) {}
+        
+        logi("控件[" + i + "] class=" + vClass + ", text=" + vText + ", clickable=" + isClickable);
+        
+        // 检查是否是可点击的 View
+        if (isClickable && vClass == "android.view.View") {
+          logi("找到可点击的 View，直接点击");
+          clickObj(v, "CLICK_CONTRIB_VIEW");
           sleepMs(clickWaitMs);
           clicked = true;
-        } else {
-          // 如果没有父控件，直接点击文本
-          logi("找到贡献榜文本，直接点击");
-          clickObj(tvView, "CLICK_CONTRIB_TV");
-          sleepMs(clickWaitMs);
-          clicked = true;
+          break;
         }
+      } catch (e) {
+        loge("遍历控件[" + i + "] 失败: " + e);
       }
     }
+    
+    // 如果没找到可点击的 View，尝试点击第一个控件的父控件
+    if (!clicked && count > 0) {
+      logi("未找到可点击的 View，尝试点击第一个控件的父控件...");
+      try {
+        var firstView = ret.views[0];
+        if (firstView != null) {
+          var parent = getParent(firstView);
+          if (parent != null) {
+            var parentClickable = false;
+            try { parentClickable = (parent.clickable == true); } catch (e) {}
+            logi("父控件 clickable=" + parentClickable);
+            
+            clickObj(parent, "CLICK_CONTRIB_PARENT");
+            sleepMs(clickWaitMs);
+            clicked = true;
+          }
+        }
+      } catch (e) {
+        loge("点击父控件失败: " + e);
+      }
+    }
+  } else {
+    logi("未找到任何 '贡献榜' 控件");
   }
 
   // 验证是否成功进入贡献榜（支持两种格式）
-  var hasRewardQ = hasView("txt:日榜奖励?", {maxStep: 10});
-  var hasReward = hasView("txt:日榜奖励", {maxStep: 10});
+  var hasRewardQ = hasView("txt:日榜奖励？", {maxStep: 10});
   var hasDay = hasView("txt:日榜", {maxStep: 2});
-  logi("贡献榜验证: 日榜奖励?=" + hasRewardQ + ", 日榜奖励=" + hasReward + ", 日榜=" + hasDay);
+  logi("贡献榜验证: 日榜奖励?=" + hasRewardQ + ", 日榜=" + hasDay);
   
   var isValid = false;
   if (hasRewardQ) {

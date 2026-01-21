@@ -5,3 +5,5 @@ output
 convert_html_to_skill.py
 .agent
 .vscode/settings.json
+use-codex
+错误日志.txt

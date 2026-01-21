@@ -537,10 +537,10 @@ function mainLoop() {
 // ==============================
 // 主入口
 // ==============================
-function main() {
-  // 获取主脚本传入的配置
-  var params = getCallScriptParams();
-  if (params != null) {
+function main(config) {
+  // 如果传入了配置对象，则覆盖默认配置
+  if (config != null && typeof config === "object") {
+    var params = config;
     // 手动覆盖配置（不使用for-in循环）
     if (params.APP_PKG != null) { CONFIG.APP_PKG = params.APP_PKG; }
     if (params.APP_NAME != null) { CONFIG.APP_NAME = params.APP_NAME; }

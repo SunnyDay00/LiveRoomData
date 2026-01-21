@@ -1,4 +1,4 @@
-/**
+﻿/**
  * LOOK_CollectContributors.js - 循环采集贡献榜用户信息脚本
  * 
  * 在贡献榜月榜界面，循环点击用户行采集信息并保存。
@@ -169,56 +169,95 @@ function isDetailPage() {
 // 详情页字段提取
 // ==============================
 function getNumNearLabel(labelText) {
-  // 直接搜索 txt:labelText，然后找父控件，再找 num 子控件
+  logi("[getNumNearLabel] 开始查找标签: " + labelText);
+  
+  // 1. 搜索标签 TextView
   if (!hasView("txt:" + labelText, {maxStep: 3})) {
+    logw("[getNumNearLabel] 未找到标签: " + labelText);
     return "";
   }
   
   var labelView = getFirstView("txt:" + labelText, {maxStep: 3});
-  if (labelView == null) { return ""; }
-  
-  var parent = getParent(labelView);
-  if (parent == null) { return ""; }
-  
-  // 尝试在父控件中找 num
-  var numText = getTextOfFirst("id:" + ID_NUM, {root: parent, maxStep: 2});
-  if (numText != "" && numText != "null" && numText != "undefined") {
-    return numText;
+  if (labelView == null) { 
+    logw("[getNumNearLabel] labelView 为 null");
+    return ""; 
   }
+  logi("[getNumNearLabel] 找到标签 TextView");
   
-  // 遍历父控件的子控件，逐个索引检查直到为空
+  // 2. 获取父 ViewGroup
+  var parent = getParent(labelView);
+  if (parent == null) { 
+    logw("[getNumNearLabel] 父控件为 null");
+    return ""; 
+  }
+  logi("[getNumNearLabel] 成功获取父 ViewGroup");
+  
+  // 3. 遍历父 ViewGroup 中的所有子控件，查找另一个 TextView
+  // 根据UI树：父ViewGroup中只有两个TextView，一个是标签，另一个是数值
   var maxTry = 100;
   var i = 0;
+  var foundTextViews = [];
+  
   for (i = 0; i < maxTry; i = i + 1) {
     var child = null;
-    try { child = parent[i]; } catch (e1) {}
-    if (child == null) {
-      try { child = parent.get(i); } catch (e2) {}
+    try { child = parent[i]; } catch (e) {}
+    if (child == null || child === undefined) { 
+      break; 
     }
-    if (child == null) {
-      try { child = parent.getChildAt(i); } catch (e3) {}
-    }
-    if (child == null || child === undefined) { break; }
+    
+    // 检查是否是 TextView
+    var childClass = "";
+    try { childClass = "" + child.className; } catch (e) {}
+    
+    var childText = "";
+    try { childText = "" + child.text; } catch (e) {}
     
     var childId = "";
-    try { childId = "" + child.id; } catch (e4) {}
-    var childText = "";
-    try { childText = "" + child.text; } catch (e5) {}
+    try { childId = "" + child.id; } catch (e) {}
     
-    if (child === labelView) { continue; }
-    if (childText == labelText) { continue; }
+    logi("[getNumNearLabel] 子控件[" + i + "] class=" + childClass + ", text=" + childText + ", id=" + childId);
     
-    if (childId.indexOf("num") >= 0) {
-      if (childText != "" && childText != "null" && childText != "undefined") {
-        return childText;
+    // 如果是 TextView 且不是标签本身
+    if (childClass == "android.widget.TextView") {
+      if (child !== labelView && childText != labelText) {
+        // 忽略空值
+        if (childText != "" && childText != "null" && childText != "undefined") {
+          foundTextViews.push({index: i, text: childText, id: childId});
+          logi("[getNumNearLabel] 找到候选 TextView: " + childText);
+        }
       }
     }
-    
-    if (childText != "" && childText != "null" && childText != "undefined" && childText != labelText) {
-      return childText;
+  }
+  
+  logi("[getNumNearLabel] 遍历完成，共找到 " + foundTextViews.length + " 个候选 TextView");
+  
+  // 4. 返回找到的数值 TextView
+  if (foundTextViews.length == 0) {
+    logw("[getNumNearLabel] 未找到任何有效的数值 TextView");
+    return "";
+  }
+  
+  // 如果只有一个，直接返回
+  if (foundTextViews.length == 1) {
+    var result = foundTextViews[0].text;
+    logi("[getNumNearLabel] 返回唯一的候选值: " + result);
+    return result;
+  }
+  
+  // 如果有多个，优先选择 id 包含 "num" 的
+  var j = 0;
+  for (j = 0; j < foundTextViews.length; j = j + 1) {
+    var tv = foundTextViews[j];
+    if (tv.id.indexOf("num") >= 0) {
+      logi("[getNumNearLabel] 返回 id 包含 'num' 的值: " + tv.text);
+      return tv.text;
     }
   }
-  return "";
+  
+  // 否则返回第一个
+  var firstResult = foundTextViews[0].text;
+  logi("[getNumNearLabel] 返回第一个候选值: " + firstResult);
+  return firstResult;
 }
 
 function readUserDetail() {
@@ -350,13 +389,7 @@ function getChildCount(v) {
   var i = 0;
   for (i = 0; i < maxTry; i = i + 1) {
     var child = null;
-    try { child = v[i]; } catch (e1) {}
-    if (child == null) {
-      try { child = v.get(i); } catch (e2) {}
-    }
-    if (child == null) {
-      try { child = v.getChildAt(i); } catch (e3) {}
-    }
+    try { child = v[i]; } catch (e) {}
     if (child == null || child === undefined) { return i; }
   }
   return maxTry;
@@ -366,12 +399,6 @@ function getChildCount(v) {
 function getChildAt(v, i) {
   var child = null;
   try { child = v[i]; } catch (e) {}
-  if (child == null) {
-    try { child = v.get(i); } catch (e) {}
-  }
-  if (child == null) {
-    try { child = v.getChildAt(i); } catch (e) {}
-  }
   return child;
 }
 
@@ -538,9 +565,6 @@ function getClickableUserRows(frameObj) {
     try {
       var row = null;
       try { row = listGroup[i]; } catch (e) { row = null; }
-      if (row == null) {
-        try { row = listGroup.get(i); } catch (e) { row = null; }
-      }
       if (row == null) { continue; }
       
       var cls = "";
