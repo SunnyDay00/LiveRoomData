@@ -1,4 +1,6 @@
-var CLOUD_API_URL = "https://liveroomdata.sssr.edu.kg/upload"; 
+// Worker URL (deployed successfully)
+var CLOUD_API_URL = "https://neon.sssr.edu.kg/upload"; 
+var API_KEY = "lrm_7Kx9mP2vN5qR8wT4yU3zB6aC1dE"; // API key for authentication
 
 function uploadToCloud(data) {
   if (CLOUD_API_URL == null) {
@@ -21,30 +23,37 @@ function uploadToCloud(data) {
     var RequestBuilderClass = loader.loadClass("okhttp3.Request$Builder");
     var FormBodyBuilderClass = loader.loadClass("okhttp3.FormBody$Builder");
     
+    // Build Form Body (Classic approach, fully supported)
     var formBuilder = FormBodyBuilderClass.newInstance();
+    
+    // Add fields safely
     var val = "";
     
-    val = data.app_name; if (val == null) { val = ""; } formBuilder.add("app_name", val + "");
-    val = data.homeid; if (val == null) { val = ""; } formBuilder.add("homeid", val + "");
-    val = data.homename; if (val == null) { val = ""; } formBuilder.add("homename", val + "");
-    val = data.fansnumber; if (val == null) { val = ""; } formBuilder.add("fansnumber", val + "");
-    val = data.homeip; if (val == null) { val = ""; } formBuilder.add("homeip", val + "");
-    val = data.dayuesenumber; if (val == null) { val = ""; } formBuilder.add("dayuesenumber", val + "");
-    val = data.monthuesenumber; if (val == null) { val = ""; } formBuilder.add("monthuesenumber", val + "");
-    val = data.ueseid; if (val == null) { val = ""; } formBuilder.add("ueseid", val + "");
-    val = data.uesename; if (val == null) { val = ""; } formBuilder.add("uesename", val + "");
-    val = data.consumption; if (val == null) { val = ""; } formBuilder.add("consumption", val + "");
-    val = data.ueseip; if (val == null) { val = ""; } formBuilder.add("ueseip", val + "");
-    val = data.summaryconsumption; if (val == null) { val = ""; } formBuilder.add("summaryconsumption", val + "");
-    val = data.record_time; if (val == null) { val = ""; } formBuilder.add("record_time", val + "");
+    val = data.app_name; formBuilder.add("app_name", val + "");
+    val = data.homeid; formBuilder.add("homeid", val + "");
+    val = data.homename; formBuilder.add("homename", val + "");
+    val = data.fansnumber; formBuilder.add("fansnumber", val + "");
+    val = data.homeip; formBuilder.add("homeip", val + "");
+    val = data.dayuesenumber; formBuilder.add("dayuesenumber", val + "");
+    val = data.weekuesenumber; formBuilder.add("weekuesenumber", val + "");
+    val = data.monthuesenumber; formBuilder.add("monthuesenumber", val + "");
+    val = data.ueseid; formBuilder.add("ueseid", val + "");
+    val = data.uesename; formBuilder.add("uesename", val + "");
+    val = data.consumption; formBuilder.add("consumption", val + "");
+    val = data.ueseip; formBuilder.add("ueseip", val + "");
+    val = data.summaryconsumption; formBuilder.add("summaryconsumption", val + "");
     
     var requestBody = formBuilder.build();
     var reqBuilder = RequestBuilderClass.newInstance();
     reqBuilder.url(CLOUD_API_URL);
     reqBuilder.post(requestBody);
+    
+    // Add API Key Header
+    reqBuilder.addHeader("X-API-Key", API_KEY);
+    
     var request = reqBuilder.build();
     
-    // 4. Execute with Retry
+    // Execute with Retry
     var client = OkHttpClientClass.newInstance();
     var success = false;
     var lastError = "";
@@ -62,7 +71,11 @@ function uploadToCloud(data) {
             }
             
             var code = 0;
-            try { code = response.code(); } catch(e) { code = -1; }
+            try {
+                code = response.code();
+            } catch(e) {
+                code = -1;
+            }
             
             if (code == 200) {
                 console.log("Upload Success");
@@ -70,45 +83,56 @@ function uploadToCloud(data) {
                 break; // 成功退出循环
             } else {
                 var errorBody = "";
-                try { errorBody = response.body().string(); } catch(e) {}
+                try {
+                    errorBody = response.body().string();
+                } catch(e) {
+                }
                 lastError = "HTTP " + code + ": " + errorBody;
                 console.error("Upload Fail: " + lastError);
             }
             
         } catch (ex) {
             var cause = ex;
-            try { if (ex.getCause() != null) { cause = ex.getCause(); } } catch(e2) {}
+            try {
+                if (ex.getCause() != null) {
+                    cause = ex.getCause();
+                }
+            } catch(e2) {
+            }
             lastError = "Network Error: " + cause;
             console.error("Retry " + (r+1) + " Exception: " + lastError);
         }
         
         // 等待后重试 (2秒)
         if (r < 2) {
-             try { sleep(2000); } catch(e) {}
+             try {
+                 sleep(2000);
+             } catch(e) {
+             }
         }
     }
     
     if (!success) {
-        alert("上传失败(重试3次):\n" + lastError);
+        alert("上传失败(重试3次):\\n" + lastError);
         return;
     }
     
   } catch (e) {
     var exMsg = "Upload Error: " + e;
-    try { if (e.getCause() != null) { exMsg = exMsg + " CAUSE: " + e.getCause(); } } catch(ex2) {}
+    try {
+        if (e.getCause() != null) {
+            exMsg = exMsg + " CAUSE: " + e.getCause();
+        }
+    } catch(ex2) {
+    }
     console.error(exMsg);
     alert("脚本运行错误: " + exMsg);
     return;
   }
 }
 
-function dbInsertRow(appName, homeid, homename, fansnumber, homeip, dayuesenumber, monthuesenumber, ueseid, uesename, consumption, ueseip, summaryConsumption) {
+function dbInsertRow(appName, homeid, homename, fansnumber, homeip, dayuesenumber, weekuesenumber, monthuesenumber, ueseid, uesename, consumption, ueseip, summaryConsumption) {
   
-  // Inline getNowDateStr logic
-  var utcTime = new Date().getTime();
-  var beijingOffset = 28800000;
-  var recordTime = "" + (utcTime + beijingOffset);
-
   console.log("Preparing upload...");
   
   var rowData = {
@@ -118,44 +142,96 @@ function dbInsertRow(appName, homeid, homename, fansnumber, homeip, dayuesenumbe
       fansnumber: fansnumber,
       homeip: homeip,
       dayuesenumber: dayuesenumber,
+      weekuesenumber: weekuesenumber,
       monthuesenumber: monthuesenumber,
       ueseid: ueseid,
       uesename: uesename,
       consumption: consumption,
       ueseip: ueseip,
-      summaryconsumption: summaryConsumption,
-      record_time: recordTime
+      summaryconsumption: summaryConsumption
   };
   
   uploadToCloud(rowData);
   return 1;
 }
 
-function main(action, param1, param2, param3, param4, param5, param6, param7, param8, param9, param10, param11, param12) {
+function main(action, param1, param2, param3, param4, param5, param6, param7, param8, param9, param10, param11, param12, param13) {
+  
+  // 1. Try to get row object from action
   var row = null;
   if (action != null && typeof action === "object") {
     var opts = action;
     action = opts.action;
-    if (opts.row != null) { row = opts.row; }
+    if (opts.row != null) {
+        row = opts.row;
+    }
   }
+
+  // 2. Build rowData based on available input
+  var rowData = {};
 
   if (row != null) {
-    if (row.app_name != null) { param1 = row.app_name; }
-    if (row.homeid != null) { param2 = row.homeid; }
-    if (row.homename != null) { param3 = row.homename; }
-    if (row.fansnumber != null) { param4 = row.fansnumber; }
-    if (row.homeip != null) { param5 = row.homeip; }
-    if (row.dayuesenumber != null) { param6 = row.dayuesenumber; }
-    if (row.monthuesenumber != null) { param7 = row.monthuesenumber; }
-    if (row.ueseid != null) { param8 = row.ueseid; }
-    if (row.uesename != null) { param9 = row.uesename; }
-    if (row.consumption != null) { param10 = row.consumption; }
-    if (row.ueseip != null) { param11 = row.ueseip; }
-    if (row.summaryconsumption != null) { param12 = row.summaryconsumption; }
+      // MODE A: Object-based Call (Preferred)
+      // Map correctly using property names
+      rowData.app_name = row.app_name;
+      rowData.homeid = row.homeid;
+      rowData.homename = row.homename;
+      rowData.fansnumber = row.fansnumber;
+      rowData.homeip = row.homeip;
+      rowData.dayuesenumber = row.dayuesenumber;
+      rowData.weekuesenumber = row.weekuesenumber;
+      rowData.monthuesenumber = row.monthuesenumber;
+      rowData.ueseid = row.ueseid;
+      rowData.uesename = row.uesename;
+      rowData.consumption = row.consumption;
+      rowData.ueseip = row.ueseip;
+      rowData.summaryconsumption = row.summaryconsumption;
+      
+  } else {
+      // MODE B: Legacy Positional Call (row is null)
+      // The caller passes arguments positionally, but the order is SCRAMBLED compared to our new schema.
+      // Based on user feedback and debugging:
+      // p1..p6 = Standard
+      // p7 = Month (Week skipped)
+      // p8 = Name (Swapped with ID)
+      // p9 = ID   (Swapped with Name)
+      // p10 = IP/Location (Swapped with Consumption)
+      // p11 = Consumption (Swapped with IP)
+      // p12 = Summary
+      
+      rowData.app_name = param1;
+      rowData.homeid = param2;
+      rowData.homename = param3;
+      rowData.fansnumber = param4;
+      rowData.homeip = param5;
+      rowData.dayuesenumber = param6;
+      rowData.weekuesenumber = ""; // Legacy caller does not send week
+      rowData.monthuesenumber = param7; // p7 is Month
+      rowData.ueseid = param9;          // p9 is ID (Correcting swap)
+      rowData.uesename = param8;        // p8 is Name (Correcting swap)
+      rowData.consumption = param11;    // p11 is Consumption (Correcting swap)
+      rowData.ueseip = param10;         // p10 is IP (Correcting swap)
+      rowData.summaryconsumption = param12;
   }
 
+  // 3. Prevent nulls (Common cleanup)
+  if(rowData.app_name == null) { rowData.app_name = ""; }
+  if(rowData.homeid == null) { rowData.homeid = ""; }
+  if(rowData.homename == null) { rowData.homename = ""; }
+  if(rowData.fansnumber == null) { rowData.fansnumber = ""; }
+  if(rowData.homeip == null) { rowData.homeip = ""; }
+  if(rowData.dayuesenumber == null) { rowData.dayuesenumber = ""; }
+  if(rowData.weekuesenumber == null) { rowData.weekuesenumber = ""; }
+  if(rowData.monthuesenumber == null) { rowData.monthuesenumber = ""; }
+  if(rowData.ueseid == null) { rowData.ueseid = ""; }
+  if(rowData.uesename == null) { rowData.uesename = ""; }
+  if(rowData.consumption == null) { rowData.consumption = ""; }
+  if(rowData.ueseip == null) { rowData.ueseip = ""; }
+  if(rowData.summaryconsumption == null) { rowData.summaryconsumption = ""; }
+
   if (action == "insert") {
-    return dbInsertRow(param1, param2, param3, param4, param5, param6, param7, param8, param9, param10, param11, param12);
+    uploadToCloud(rowData);
+    return 1;
   }
   return 0;
 }

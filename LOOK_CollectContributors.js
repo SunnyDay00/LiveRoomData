@@ -691,18 +691,32 @@ function collectContributors(hostInfo, rankType, clickCount, clickWaitMs, stopAf
       
       var cleanHostId = cleanId(hostInfo.id);
 
-      // 调用数据处理脚本保存数据
-      try {
-        totalInserted = callScript("DataHandler", "insert", 
-          APP_NAME,
-          cleanHostId, hostInfo.name, hostInfo.fans, hostInfo.ip,
-          dayuesenumber, monthuesenumber, userInfo.ueseid, userInfo.uesename, Consumption, userInfo.ueseip,
-          userInfo.SummaryConsumption);
-        wrote = wrote + 1;
-        logi("数据保存成功，已采集 " + wrote + "/" + clickCount + ", 总计=" + totalInserted);
-      } catch (e) {
-        loge("callScript DataHandler error: " + e);
-      }
+        // 调用数据处理脚本保存数据 (使用 named object 方式，避免位置错乱)
+        var rowData = {
+            app_name: APP_NAME,
+            homeid: cleanHostId,
+            homename: hostInfo.name,
+            fansnumber: hostInfo.fans,
+            homeip: hostInfo.ip,
+            dayuesenumber: dayuesenumber,
+            monthuesenumber: monthuesenumber,
+            weekuesenumber: "",
+            ueseid: userInfo.ueseid,
+            uesename: userInfo.uesename,
+            consumption: Consumption,
+            ueseip: userInfo.ueseip,
+            summaryconsumption: userInfo.SummaryConsumption
+        };
+
+        try {
+            // 传递对象：action="insert", row=rowData
+            totalInserted = callScript("DataHandler", { action: "insert", row: rowData });
+            
+            wrote = wrote + 1;
+            logi("数据保存成功，已采集 " + wrote + "/" + clickCount + ", 总计=" + totalInserted);
+        } catch (e) {
+            loge("callScript DataHandler error: " + e);
+        }
 
       backAndWait("BACK_TO_MONTH", clickWaitMs);
     }

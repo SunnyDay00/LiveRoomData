@@ -7,3 +7,6 @@ convert_html_to_skill.py
 .vscode/settings.json
 use-codex
 错误日志.txt
+node_modules
+cloudflare-worker
+web-viewer
