@@ -129,7 +129,18 @@ function checkLiveRoomValid(retryCount, checkInterval) {
   
   // 首先尝试处理可能的弹窗（全屏广告等）
   try {
-    callScript("PopupHandler");
+    var handled = callScript("PopupHandler");
+    if (handled) {
+      logi("检测并处理了弹窗(广告)，额外等待 2000ms 让直播间恢复...");
+      sleepMs(2000);
+      
+      // 处理完弹窗后，再次尝试处理一次（防止多重弹窗）
+      var handledAgian = callScript("PopupHandler");
+      if (handledAgian) {
+          logi("再次检测并处理了弹窗，等待 1000ms...");
+          sleepMs(1000);
+      }
+    }
   } catch (e) {
     logi("PopupHandler 调用失败: " + e);
   }

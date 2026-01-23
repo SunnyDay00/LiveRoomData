@@ -40,8 +40,9 @@ function uploadToCloud(data) {
     val = data.ueseid; formBuilder.add("ueseid", val + "");
     val = data.uesename; formBuilder.add("uesename", val + "");
     val = data.consumption; formBuilder.add("consumption", val + "");
-    val = data.ueseip; formBuilder.add("ueseip", val + "");
     val = data.summaryconsumption; formBuilder.add("summaryconsumption", val + "");
+    val = data.ueseip; formBuilder.add("ueseip", val + "");
+
     
     var requestBody = formBuilder.build();
     var reqBuilder = RequestBuilderClass.newInstance();

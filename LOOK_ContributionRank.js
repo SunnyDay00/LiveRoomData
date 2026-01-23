@@ -464,11 +464,12 @@ function enterContributionRank(clickWaitMs) {
 }
 
 // ==============================
-// 切换到月榜
+// 切换到周榜
 // ==============================
-function switchToMonthRank(clickWaitMs) {
-  logi("尝试切换到月榜...");
+function switchToWeekRank(clickWaitMs) {
+  logi("尝试切换到周榜...");
   
+  // 查找当前榜单入口(日榜)
   if (!hasView("txt:日榜", {maxStep: 2})) { 
     loge("未找到日榜入口"); 
     return false; 
@@ -479,6 +480,7 @@ function switchToMonthRank(clickWaitMs) {
     return false;
   }
 
+  // 点击日榜打开选项
   var p = getParent(dayView);
   if (p != null) { 
     clickObj(p, "OPEN_RANK_OPTIONS"); 
@@ -487,6 +489,72 @@ function switchToMonthRank(clickWaitMs) {
   }
   sleepMs(clickWaitMs);
 
+  // 查找周榜选项
+  if (!hasView("txt:周榜", {maxStep: 2})) { 
+    loge("未找到周榜选项"); 
+    return false; 
+  }
+  var weekView = getFirstView("txt:周榜", {maxStep: 2});
+  if (weekView == null) {
+    loge("周榜视图为空");
+    return false;
+  }
+
+  // 点击周榜
+  var pw = getParent(weekView);
+  if (pw != null) { 
+    clickObj(pw, "SELECT_WEEK"); 
+  } else { 
+    clickObj(weekView, "SELECT_WEEK_TEXT"); 
+  }
+  sleepMs(clickWaitMs);
+
+  // 验证:页面有"周榜"和"周榜奖励？"就认为成功
+  var hasW = hasView("txt:周榜", {maxStep: 2});
+  var hasWR = hasView("txt:周榜奖励？", {maxStep: 5});
+  logi("周榜验证: 周榜=" + hasW + ", 周榜奖励？=" + hasWR);
+  
+  if (hasW && hasWR) {
+    logi("成功切换到周榜");
+    return true;
+  }
+  
+  // 即使验证没通过，如果点击都成功了也返回 true
+  logi("周榜验证未通过，但点击成功，继续执行");
+  return true;
+}
+
+// ==============================
+// 切换到月榜
+// ==============================
+function switchToMonthRank(clickWaitMs) {
+  logi("尝试切换到月榜...");
+  
+  // 查找当前榜单入口(周榜)
+  var currentRankView = null;
+  if (hasView("txt:周榜", {maxStep: 2})) {
+    currentRankView = getFirstView("txt:周榜", {maxStep: 2});
+    logi("当前在周榜界面");
+  } else if (hasView("txt:日榜", {maxStep: 2})) {
+    currentRankView = getFirstView("txt:日榜", {maxStep: 2});
+    logi("当前在日榜界面");
+  }
+  
+  if (currentRankView == null) {
+    loge("未找到当前榜单入口");
+    return false;
+  }
+
+  // 点击当前榜单打开选项
+  var p = getParent(currentRankView);
+  if (p != null) { 
+    clickObj(p, "OPEN_RANK_OPTIONS"); 
+  } else { 
+    clickObj(currentRankView, "OPEN_RANK_OPTIONS_TEXT"); 
+  }
+  sleepMs(clickWaitMs);
+
+  // 查找月榜选项
   if (!hasView("txt:月榜", {maxStep: 2})) { 
     loge("未找到月榜选项"); 
     return false; 
@@ -497,6 +565,7 @@ function switchToMonthRank(clickWaitMs) {
     return false;
   }
 
+  // 点击月榜
   var pm = getParent(monthView);
   if (pm != null) { 
     clickObj(pm, "SELECT_MONTH"); 
@@ -505,7 +574,7 @@ function switchToMonthRank(clickWaitMs) {
   }
   sleepMs(clickWaitMs);
 
-  // 验证：只要点击成功，或者页面有"月榜"和"榜单说明"就认为成功
+  // 验证:页面有"月榜"和"榜单说明"就认为成功
   var hasM = hasView("txt:月榜", {maxStep: 2});
   var hasR = hasView("txt:榜单说明", {maxStep: 2});
   logi("月榜验证: 月榜=" + hasM + ", 榜单说明=" + hasR);
@@ -564,15 +633,36 @@ function processContributionRank(hostInfo, clickCount, clickWaitMs, stopAfterRow
     loge("[日榜] callScript CollectContributors error: " + e);
   }
   
-  // ========== 第二步：切换到月榜 ==========
-  if (!switchToMonthRank(clickWaitMs)) {
-    loge("切换月榜失败");
+  // ========== 第二步：切换到周榜 ==========
+  if (!switchToWeekRank(clickWaitMs)) {
+    loge("切换周榜失败");
     backAndWait("BACK_CONTRIB_FAIL", clickWaitMs);
     backAndWait("BACK_CHARM_FAIL_2", clickWaitMs);
+    return { success: false, error: "switch week failed" };
+  }
+  
+  // ========== 第三步：采集周榜数据 ==========
+  logi("========== [周榜] 开始采集周榜用户数据 ==========");
+  try {
+    // callScript("LOOK_CollectContributors", hostId, hostName, hostFans, hostIp, rankType, clickCount, clickWaitMs, stopAfterRows)
+    callScript("LOOK_CollectContributors", 
+      hostInfo.id, hostInfo.name, hostInfo.fans, hostInfo.ip,
+      "week",  // rankType = 'week'
+      clickCount, clickWaitMs, stopAfterRows);
+    logi("========== [周榜] 周榜数据采集完成 ==========");
+  } catch (e) {
+    loge("[周榜] callScript CollectContributors error: " + e);
+  }
+  
+  // ========== 第四步：切换到月榜 ==========
+  if (!switchToMonthRank(clickWaitMs)) {
+    loge("切换月榜失败");
+    backAndWait("BACK_CONTRIB_FAIL_2", clickWaitMs);
+    backAndWait("BACK_CHARM_FAIL_3", clickWaitMs);
     return { success: false, error: "switch month failed" };
   }
   
-  // ========== 第三步：采集月榜数据 ==========
+  // ========== 第五步：采集月榜数据 ==========
   logi("========== [月榜] 开始采集月榜用户数据 ==========");
   try {
     // callScript("LOOK_CollectContributors", hostId, hostName, hostFans, hostIp, rankType, clickCount, clickWaitMs, stopAfterRows)

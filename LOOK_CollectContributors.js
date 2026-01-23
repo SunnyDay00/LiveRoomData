@@ -165,38 +165,54 @@ function isDetailPage() {
   return false;
 }
 
-// 自动检测当前是日榜还是月榜
+// 自动检测当前是日榜、周榜还是月榜
 function detectRankType() {
   logi("[detectRankType] 开始检测榜单类型...");
   
-  // 方法1：检测"日榜奖励？"或"月榜奖励？"
+  // 检测榜单名称文本
+  var hasDayText = hasView("txt:日榜", {maxStep: 5});
+  var hasWeekText = hasView("txt:周榜", {maxStep: 5});
+  var hasMonthText = hasView("txt:月榜", {maxStep: 5});
+  
+  // 检测特征文本
   var hasDayReward = hasView("txt:日榜奖励？", {maxStep: 5});
-  var hasMonthReward = hasView("txt:月榜奖励？", {maxStep: 5});
+  var hasWeekReward = hasView("txt:周榜奖励？", {maxStep: 5});
+  var hasRankDesc = hasView("txt:榜单说明", {maxStep: 5});
   
-  if (hasDayReward) {
-    logi("[detectRankType] 检测到'日榜奖励？' → 判断为日榜");
+  // 日榜判断: "日榜" + "日榜奖励？"
+  if (hasDayText && hasDayReward) {
+    logi("[detectRankType] 检测到'日榜'+'日榜奖励？' → 判断为日榜");
     return "day";
   }
-  if (hasMonthReward) {
-    logi("[detectRankType] 检测到'月榜奖励？' → 判断为月榜");
+  
+  // 周榜判断: "周榜" + "周榜奖励？"
+  if (hasWeekText && hasWeekReward) {
+    logi("[detectRankType] 检测到'周榜'+'周榜奖励？' → 判断为周榜");
+    return "week";
+  }
+  
+  // 月榜判断: "月榜" + "榜单说明"
+  if (hasMonthText && hasRankDesc) {
+    logi("[detectRankType] 检测到'月榜'+'榜单说明' → 判断为月榜");
     return "month";
   }
   
-  // 方法2：检测"日榜"和"月榜"文本
-  var hasDayText = hasView("txt:日榜", {maxStep: 2});
-  var hasMonthText = hasView("txt:月榜", {maxStep: 2});
-  
-  if (hasDayText && !hasMonthText) {
-    logi("[detectRankType] 只检测到'日榜' → 判断为日榜");
+  // 降级方案:仅根据榜单名称判断
+  if (hasDayText && !hasWeekText && !hasMonthText) {
+    logi("[detectRankType] 只检测到'日榜'(无配对特征) → 判断为日榜");
     return "day";
   }
-  if (hasMonthText && !hasDayText) {
-    logi("[detectRankType] 只检测到'月榜' → 判断为月榜");
+  if (hasWeekText && !hasDayText && !hasMonthText) {
+    logi("[detectRankType] 只检测到'周榜'(无配对特征) → 判断为周榜");
+    return "week";
+  }
+  if (hasMonthText && !hasDayText && !hasWeekText) {
+    logi("[detectRankType] 只检测到'月榜'(无配对特征) → 判断为月榜");
     return "month";
   }
   
-  // 默认返回日榜（第一次进入默认显示日榜）
-  logw("[detectRankType] 无法明确判断，默认为日榜");
+  // 默认返回日榜(第一次进入默认显示日榜)
+  logw("[detectRankType] 无法明确判断,默认为日榜");
   return "day";
 }
 
@@ -661,11 +677,14 @@ function collectContributors(hostInfo, rankType, clickCount, clickWaitMs, stopAf
     }
 
     var dayuesenumber = "";
+    var weekuesenumber = "";
     var monthuesenumber = "";
     
     // 根据榜单类型设置排名
     if (rankType == "day") {
       dayuesenumber = rankStr;
+    } else if (rankType == "week") {
+      weekuesenumber = rankStr;
     } else {
       monthuesenumber = rankStr;
     }
@@ -700,7 +719,7 @@ function collectContributors(hostInfo, rankType, clickCount, clickWaitMs, stopAf
             homeip: hostInfo.ip,
             dayuesenumber: dayuesenumber,
             monthuesenumber: monthuesenumber,
-            weekuesenumber: "",
+            weekuesenumber: weekuesenumber,
             ueseid: userInfo.ueseid,
             uesename: userInfo.uesename,
             consumption: Consumption,
