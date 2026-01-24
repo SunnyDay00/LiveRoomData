@@ -17,6 +17,9 @@
 // ==============================
 var ID_USER_ID = "com.netease.play:id/id";
 var ID_USER_NAME = "com.netease.play:id/artist_name";
+var ID_AVATAR = "com.netease.play:id/avatar";
+var ID_USER_MORE = "com.netease.play:id/tv_user_more";
+var ID_PROFILE_TVID = "com.netease.play:id/tvID";
 var ID_NUM = "com.netease.play:id/num";
 
 // 应用名称（用于数据库记录）
@@ -153,6 +156,12 @@ function cleanId(str) {
   return str.replace("ID：", "").replace("ID:", "").trim();
 }
 
+function isEmptyText(str) {
+  if (str == null) { return true; }
+  if (str == "" || str == "null" || str == "undefined") { return true; }
+  return false;
+}
+
 // ==============================
 // 页面判断
 // ==============================
@@ -160,6 +169,16 @@ function isDetailPage() {
   var hasId = hasView("id:" + ID_USER_ID, {maxStep: 2});
   var hasName = hasView("id:" + ID_USER_NAME, {maxStep: 2});
   if (hasId && hasName) {
+    return true;
+  }
+  return false;
+}
+
+function isUserProfilePage() {
+  if (hasView("id:" + ID_USER_MORE, {maxStep: 2})) {
+    return true;
+  }
+  if (hasView("id:" + ID_PROFILE_TVID, {maxStep: 2})) {
     return true;
   }
   return false;
@@ -311,12 +330,77 @@ function getNumNearLabel(labelText) {
   return firstResult;
 }
 
-function readUserDetail() {
+function doProfileSwipeUp() {
+  var ok = false;
+  try {
+    logi("[readUserIdFromProfile] 调用AdbSwipe上滑...");
+    var ret = callScript("AdbSwipe", "swipe", 540, 1700, 540, 400, 800);
+    if (ret != false) {
+      ok = true;
+    }
+    sleepMs(800);
+  } catch (e) {
+    loge("[readUserIdFromProfile] AdbSwipe exception=" + e);
+    ok = false;
+  }
+  return ok;
+}
+
+function readUserIdFromProfile(clickWaitMs) {
+  logi("[readUserIdFromProfile] 尝试进入用户主页获取ueseid...");
+  if (clickWaitMs == null) {
+    clickWaitMs = DEFAULT_CLICK_WAIT_MS;
+  }
+
+  var avatarView = getFirstView("id:" + ID_AVATAR, {maxStep: 2});
+  if (avatarView == null) {
+    logw("[readUserIdFromProfile] avatar未找到");
+    return "";
+  }
+
+  clickObj(avatarView, "CLICK_AVATAR_TO_PROFILE");
+  sleepMs(clickWaitMs);
+
+  if (!isUserProfilePage()) {
+    if (!isDetailPage()) {
+      logw("[readUserIdFromProfile] 未检测到用户主页，尝试返回");
+      backAndWait("BACK_AFTER_PROFILE_FAIL", clickWaitMs);
+    } else {
+      logw("[readUserIdFromProfile] 未检测到用户主页，仍在详情页");
+    }
+    return "";
+  }
+
+  var profileId = cleanId(getTextOfFirst("id:" + ID_PROFILE_TVID, {maxStep: 2}));
+  if (isEmptyText(profileId)) {
+    logw("[readUserIdFromProfile] tvID未找到，尝试上滑后再次查找");
+    doProfileSwipeUp();
+    profileId = cleanId(getTextOfFirst("id:" + ID_PROFILE_TVID, {maxStep: 2}));
+  }
+
+  if (isEmptyText(profileId)) {
+    logw("[readUserIdFromProfile] 仍未获取到ueseid");
+  } else {
+    logi("[readUserIdFromProfile] ueseid=" + profileId);
+  }
+
+  backAndWait("BACK_TO_USER_DETAIL_FROM_PROFILE", clickWaitMs);
+  return profileId;
+}
+
+function readUserDetail(clickWaitMs) {
   logi("开始读取用户详情...");
   var obj = { ueseid: "", uesename: "", ueseip: "", SummaryConsumption: "" };
 
   var rawId = getTextOfFirst("id:" + ID_USER_ID, {maxStep: 2});
   obj.ueseid = cleanId(rawId);
+  if (isEmptyText(obj.ueseid)) {
+    logw("ueseid为空，尝试从用户主页获取");
+    var profileId = readUserIdFromProfile(clickWaitMs);
+    if (!isEmptyText(profileId)) {
+      obj.ueseid = profileId;
+    }
+  }
   logi("ueseid=" + obj.ueseid);
   
   obj.uesename = getTextOfFirst("id:" + ID_USER_NAME, {maxStep: 2});
@@ -706,7 +790,7 @@ function collectContributors(hostInfo, rankType, clickCount, clickWaitMs, stopAf
       callScript("PopupHandler"); // 尝试消除弹窗
       backAndWait("USER_DETAIL_BACK_FAILSAFE", clickWaitMs);
     } else {
-      var userInfo = readUserDetail();
+      var userInfo = readUserDetail(clickWaitMs);
       
       var cleanHostId = cleanId(hostInfo.id);
 
