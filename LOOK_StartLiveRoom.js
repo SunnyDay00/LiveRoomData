@@ -170,13 +170,22 @@ function backAndWait(stepName) {
 function doScrollDown() {
   var ok = false;
   try {
-    ok = scroll(null, "down", {
-      type: 1,
-      distance: CONFIG.SCROLL_DISTANCE,
-      duration: CONFIG.SCROLL_DURATION,
-      afterWait: CONFIG.SCROLL_AFTER_WAIT
-    });
+    // 使用 AdbSwipe 进行滑动 (Shizuku)
+    // 坐标: 540, 1500 -> 540, 1000 (幅度稍小，上滑)
+    logi("调用 AdbSwipe 进行滑动...");
+    var ret = callScript("AdbSwipe", "swipe", 540, 1500, 540, 1000, 500);
+    
+    // 只要没有抛出异常且返回了(即使是undefined), 通常认为尝试过了
+    // 如果 AdbSwipe 返回明确的 true/false 更好
+    if (ret != false) { 
+        ok = true; 
+    }
+    
+    // 滑动后等待页面加载
+    sleepMs(CONFIG.SCROLL_AFTER_WAIT);
+    
   } catch (e) {
+    loge("AdbSwipe 调用异常: " + e);
     ok = false;
   }
   return ok;
@@ -321,9 +330,17 @@ function getRoomKeyFromIvCover(ivObj) {
   }
   if (name == null) { name = ""; }
 
-  if (name != "") { return "name_" + name; }
+  if (name != "") { 
+    var k = "name_" + name;
+    logi("GetRoomKey: " + k); 
+    return k;
+  }
 
-  try { return "pos_" + ivObj.left + "_" + ivObj.top; } catch (e) { return ""; }
+  try { 
+    var k2 = "pos_" + ivObj.left + "_" + ivObj.top; 
+    logw("GetRoomKey(Pos): " + k2); 
+    return k2;
+  } catch (e) { return ""; }
 }
 
 function pickNextUnseenCardOnScreen() {
@@ -511,6 +528,7 @@ function mainLoop() {
       }
     } else {
       // 当前屏幕没有新卡片，滚动
+      callScript("PopupHandler");
       var sc = doScrollDown();
       logi("滚动 ok=" + sc);
 

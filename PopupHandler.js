@@ -88,9 +88,9 @@ function handleSkipButton() {
   // 注意：有些跳过可能是 "跳过 5s" 这种动态文本，这里先只匹配精确的 "跳过"
   // 如果需要匹配包含 "跳过" 的，可以使用 Fuzzy 匹配或者遍历包含跳过的文本
   
-  if (hasView("txt:跳过", {maxStep: 3})) {
+  if (hasView("txt:跳过", {maxStep: 5})) {
     logi("检测到 [跳过] 按钮，尝试点击...");
-    var btn = getFirstView("txt:跳过", {maxStep: 3});
+    var btn = getFirstView("txt:跳过", {maxStep: 5});
     if (clickObj(btn, "CLICK_SKIP")) {
       return true;
     }
@@ -101,15 +101,15 @@ function handleSkipButton() {
 // 3. 处理全屏广告
 function handleFullScreenAd() {
   // 更精确的检测：必须同时存在广告容器和关闭按钮
-  var hasAdContainer = hasView("id:com.netease.play:id/rootContainer", {maxStep: 3});
-  var hasCloseBtn = hasView("id:com.netease.play:id/closeBtn", {maxStep: 3});
+  var hasAdContainer = hasView("id:com.netease.play:id/rootContainer", {maxStep: 5});
+  var hasCloseBtn = hasView("id:com.netease.play:id/closeBtn", {maxStep: 5});
   
   // 只有两者都存在才认为是全屏广告
   if (hasAdContainer && hasCloseBtn) {
     logi("检测到 [全屏广告]（rootContainer + closeBtn），尝试点击关闭...");
     
     // 点击关闭按钮
-    var closeBtn = getFirstView("id:com.netease.play:id/closeBtn", {maxStep: 3});
+    var closeBtn = getFirstView("id:com.netease.play:id/closeBtn", {maxStep: 5});
     if (closeBtn != null) {
       if (clickObj(closeBtn, "CLICK_AD_CLOSE")) {
         sleepMs(500);  // 等待关闭动画
