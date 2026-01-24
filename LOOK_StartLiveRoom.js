@@ -440,6 +440,16 @@ function processOneLive(cardObj, roomKey) {
   
   var hostInfo = hostResult.hostInfo;
   
+  if (hostInfo.id == null || ("" + hostInfo.id).trim() == "") {
+    var roomNoText = getTextOfFirst("com.netease.play:id/roomNo");
+    if (roomNoText != null && ("" + roomNoText).trim() != "") {
+      hostInfo.id = "" + roomNoText;
+      logi("[STEP_3] hostInfo.id为空，使用roomNo=" + hostInfo.id);
+    } else {
+      logw("[STEP_3] hostInfo.id为空且未找到roomNo");
+    }
+  }
+
   logi("[STEP_3] 主播信息: id=" + hostInfo.id + " name=" + hostInfo.name);
 
   // Step 4: 采集贡献榜信息
