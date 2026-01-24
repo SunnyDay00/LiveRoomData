@@ -52,6 +52,10 @@ function getFirstView(tag, options) {
   return null;
 }
 
+function hasRet(ret) {
+  return ret != null && ret.length > 0;
+}
+
 function clickObj(v, stepName) {
   try {
     click(v, {click: true});
@@ -68,18 +72,16 @@ function clickObj(v, stepName) {
 
 // 1. 处理青少年模式
 function handleTeenagerMode() {
-  // 必须同时存在标题和按钮，防止误点
-  var hasTitle = hasView("txt:青少年模式", {maxStep: 5});
-  var hasBtn = hasView("txt:我知道了", {maxStep: 5});
+  // 先找按钮以避免无弹窗时做两次等待型查找
+  var btnRet = findRet("txt:我知道了", {maxStep: 5});
+  if (!hasRet(btnRet)) { return false; }
 
-  if (hasTitle && hasBtn) {
-    logi("检测到 [青少年模式] 弹窗，尝试点击 '我知道了'...");
-    var btn = getFirstView("txt:我知道了", {maxStep: 5});
-    if (clickObj(btn, "CLICK_TEEN_CLOSE")) {
-      return true;
-    }
-  }
-  return false;
+  // 必须同时存在标题和按钮，防止误点
+  var titleRet = findRet("txt:青少年模式", {maxStep: 5});
+  if (!hasRet(titleRet)) { return false; }
+
+  logi("检测到 [青少年模式] 弹窗，尝试点击 '我知道了'...");
+  return clickObj(btnRet.views[0], "CLICK_TEEN_CLOSE");
 }
 
 // 2. 处理跳过按钮
@@ -88,34 +90,28 @@ function handleSkipButton() {
   // 注意：有些跳过可能是 "跳过 5s" 这种动态文本，这里先只匹配精确的 "跳过"
   // 如果需要匹配包含 "跳过" 的，可以使用 Fuzzy 匹配或者遍历包含跳过的文本
   
-  if (hasView("txt:跳过", {maxStep: 5})) {
-    logi("检测到 [跳过] 按钮，尝试点击...");
-    var btn = getFirstView("txt:跳过", {maxStep: 5});
-    if (clickObj(btn, "CLICK_SKIP")) {
-      return true;
-    }
-  }
-  return false;
+  var btnRet = findRet("txt:跳过", {maxStep: 5});
+  if (!hasRet(btnRet)) { return false; }
+
+  logi("检测到 [跳过] 按钮，尝试点击...");
+  return clickObj(btnRet.views[0], "CLICK_SKIP");
 }
 
 // 3. 处理全屏广告
 function handleFullScreenAd() {
   // 更精确的检测：必须同时存在广告容器和关闭按钮
-  var hasAdContainer = hasView("id:com.netease.play:id/rootContainer", {maxStep: 5});
-  var hasCloseBtn = hasView("id:com.netease.play:id/closeBtn", {maxStep: 5});
-  
-  // 只有两者都存在才认为是全屏广告
-  if (hasAdContainer && hasCloseBtn) {
-    logi("检测到 [全屏广告]（rootContainer + closeBtn），尝试点击关闭...");
-    
-    // 点击关闭按钮
-    var closeBtn = getFirstView("id:com.netease.play:id/closeBtn", {maxStep: 5});
-    if (closeBtn != null) {
-      if (clickObj(closeBtn, "CLICK_AD_CLOSE")) {
-        sleepMs(500);  // 等待关闭动画
-        return true;
-      }
-    }
+  // 先找关闭按钮，避免无广告时做两次等待型查找
+  var closeRet = findRet("id:com.netease.play:id/closeBtn", {maxStep: 5});
+  if (!hasRet(closeRet)) { return false; }
+
+  var containerRet = findRet("id:com.netease.play:id/rootContainer", {maxStep: 5});
+  if (!hasRet(containerRet)) { return false; }
+
+  logi("检测到 [全屏广告]（rootContainer + closeBtn），尝试点击关闭...");
+
+  if (clickObj(closeRet.views[0], "CLICK_AD_CLOSE")) {
+    sleepMs(500);  // 等待关闭动画
+    return true;
   }
   return false;
 }

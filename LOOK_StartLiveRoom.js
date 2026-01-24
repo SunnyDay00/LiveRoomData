@@ -441,12 +441,27 @@ function processOneLive(cardObj, roomKey) {
   var hostInfo = hostResult.hostInfo;
   
   if (hostInfo.id == null || ("" + hostInfo.id).trim() == "") {
-    var roomNoText = getTextOfFirst("com.netease.play:id/roomNo");
-    if (roomNoText != null && ("" + roomNoText).trim() != "") {
-      hostInfo.id = "" + roomNoText;
-      logi("[STEP_3] hostInfo.id为空，使用roomNo=" + hostInfo.id);
+    logi("[STEP_3] hostInfo.id为空，等待返回直播间后读取roomNo");
+    var liveReady = false;
+    var retry = 0;
+    for (retry = 0; retry < CONFIG.LIVE_ROOM_CHECK_RETRY; retry = retry + 1) {
+      if (isLiveRoomPage()) {
+        liveReady = true;
+        break;
+      }
+      sleepMs(CONFIG.CLICK_WAIT_MS);
+    }
+
+    if (liveReady) {
+      var roomNoText = getTextOfFirst("id:com.netease.play:id/roomNo", {maxStep: 5});
+      if (roomNoText != null && ("" + roomNoText).trim() != "") {
+        hostInfo.id = "" + roomNoText;
+        logi("[STEP_3] hostInfo.id为空，使用roomNo=" + hostInfo.id);
+      } else {
+        logw("[STEP_3] hostInfo.id为空且未找到roomNo");
+      }
     } else {
-      logw("[STEP_3] hostInfo.id为空且未找到roomNo");
+      logw("[STEP_3] 未确认回到直播间，跳过roomNo读取");
     }
   }
 
