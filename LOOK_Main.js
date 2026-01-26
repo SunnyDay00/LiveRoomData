@@ -11,55 +11,64 @@
 // 配置区（所有可自定义变量）
 // ==============================
 var CONFIG = {
-  // 应用配置
-  APP_PKG: "com.netease.play",
-  APP_NAME: "LOOK直播",
+  APP_PKG: "com.netease.play", // 应用包名
+  APP_NAME: "LOOK直播", // 应用名称
 
-  // 循环控制
-  LOOP_LIVE_TOTAL: 0,          // 0 => 无限；>0 => 点击直播间总次数
-  STOP_AFTER_ROWS: 200,        // 写入多少条停止（安全停止）
+  LOOP_LIVE_TOTAL: 0, // 0=无限；>0=点击直播间总次数
+  STOP_AFTER_ROWS: 200, // 写入多少条停止（安全停止）
 
-  // 等待时间（毫秒）
-  CLICK_LIVE_WAIT_MS: 2000,    // 点击直播间后等待
-  CLICK_WAIT_MS: 1500,         // 点击按钮后等待
-  APP_RESTART_WAIT_MS: 5000,   // App重启后等待
+  CLICK_LIVE_WAIT_MS: 2000, // 点击直播间后等待
+  CLICK_WAIT_MS: 1500, // 点击按钮后等待
+  APP_RESTART_WAIT_MS: 5000, // App重启后等待
 
-  // 重试次数
-  ENTER_LIVE_RETRY: 3,         // 进入直播间重试次数
-  HOME_ENSURE_RETRY: 4,        // 确保回到首页重试次数
-  LIVE_ROOM_CHECK_RETRY: 4,    // 检查直播间有效性重试次数
+  ENTER_LIVE_RETRY: 3, // 进入直播间重试次数
+  HOME_ENSURE_RETRY: 4, // 确保回到首页重试次数
+  LIVE_ROOM_CHECK_RETRY: 4, // 检查直播间有效性重试次数
 
-  // 贡献榜采集
-  CONTRIB_CLICK_COUNT: 5,      // 每个直播间采集多少个贡献榜用户
+  CONTRIB_CLICK_COUNT: 5, // 每个直播间采集贡献榜用户数量
 
-  // 滚动参数
-  SCROLL_DISTANCE: 0.80,
-  SCROLL_DURATION: 500,
-  SCROLL_AFTER_WAIT: 800,
-  NO_NEW_SCROLL_LIMIT: 6,      // 连续N次没有新卡片 => 认为到底/异常
+  SCROLL_DISTANCE: 0.80, // 旧版滑动距离比例（保留字段）
+  SCROLL_DURATION: 500, // 旧版滑动时长(ms)（保留字段）
+  SCROLL_AFTER_WAIT: 800, // 滑动后等待(ms)
+  NO_NEW_SCROLL_LIMIT: 6, // 连续无新卡片次数上限
 
-  // 悬浮日志开关（1=开启，0=关闭）
-  FLOAT_LOG_ENABLED: 1,
+  CHAT_TAB_CHECK_RETRY: 3, // 切换一起聊重试次数
+  CHAT_TAB_CHECK_WAIT_MS: 800, // 切换一起聊失败等待(ms)
+  CHAT_TAB_TEXT_MAX_STEP: 4, // 查找一起聊文本 maxStep
 
-  // 错误暂停开关（1=开启，0=关闭）
-  DEBUG_PAUSE_ON_ERROR: 1,
+  LIVE_CARD_TAP_X: 540, // 直播间卡片点击 X
+  LIVE_CARD_TAP_Y: 403, // 直播间卡片点击 Y
 
-  // 崩溃监控检查间隔（毫秒）
-  MONITOR_CHECK_INTERVAL: 10000,
+  NEXT_SWIPE_START_X: 540, // 下滑起点 X
+  NEXT_SWIPE_START_Y: 1700, // 下滑起点 Y
+  NEXT_SWIPE_END_X: 540, // 下滑终点 X
+  NEXT_SWIPE_END_Y: 300, // 下滑终点 Y
+  NEXT_SWIPE_DURATION: 800, // 下滑持续时长(ms)
 
-  // 关键控件ID
-  ID_TAB: "com.netease.play:id/tv_dragon_tab",
-  ID_IVCOVER: "com.netease.play:id/ivCover",
-  ID_TVNAME: "com.netease.play:id/tvName",
-  ID_HEADER: "com.netease.play:id/headerUiContainer",
-  ID_CLOSEBTN: "com.netease.play:id/closeBtn",
-  ID_BGVIEW: "com.netease.play:id/bgView",
-  ID_AVATAR: "com.netease.play:id/avatar",
-  ID_VFLIPPER: "com.netease.play:id/vflipper",
-  ID_RANKTEXT: "com.netease.play:id/rankText",
-  ID_USER_ID: "com.netease.play:id/id",
-  ID_USER_NAME: "com.netease.play:id/artist_name",
-  ID_NUM: "com.netease.play:id/num"
+  FLOAT_LOG_ENABLED: 1, // 悬浮日志开关（1=开，0=关）
+  DEBUG_PAUSE_ON_ERROR: 1, // 错误暂停开关（1=开，0=关）
+  MONITOR_CHECK_INTERVAL: 10000, // 崩溃监控检查间隔(ms)
+
+  SHIZUKU_PKG: "moe.shizuku.privileged.api", // Shizuku 包名
+  RETRY_COUNT: 5, // Shizuku 连接重试次数
+  RETRY_INTERVAL: 2000, // Shizuku 重试间隔(ms)
+  PERMISSION_TIMEOUT: 10000, // Shizuku 权限请求超时(ms)
+
+  ID_TAB: "com.netease.play:id/tv_dragon_tab", // 首页TAB文本
+  ID_RNVIEW: "com.netease.play:id/rnView", // 一起聊 rnView
+  ID_ROOMNO: "com.netease.play:id/roomNo", // 直播间 roomNo
+  ID_LAYOUT_HEADER: "com.netease.play:id/layout_header", // 首页 header 容器
+  ID_IVCOVER: "com.netease.play:id/ivCover", // 直播间封面
+  ID_TVNAME: "com.netease.play:id/tvName", // 直播间主播名
+  ID_HEADER: "com.netease.play:id/headerUiContainer", // 直播间头部容器
+  ID_CLOSEBTN: "com.netease.play:id/closeBtn", // 直播间关闭按钮
+  ID_BGVIEW: "com.netease.play:id/bgView", // 背景视图
+  ID_AVATAR: "com.netease.play:id/avatar", // 头像
+  ID_VFLIPPER: "com.netease.play:id/vflipper", // vflipper 组件
+  ID_RANKTEXT: "com.netease.play:id/rankText", // 排行文字
+  ID_USER_ID: "com.netease.play:id/id", // 用户ID
+  ID_USER_NAME: "com.netease.play:id/artist_name", // 用户名
+  ID_NUM: "com.netease.play:id/num" // 数值字段
 };
 
 // ==============================
@@ -185,7 +194,7 @@ function startMonitorThread() {
 // 主入口
 // ==============================
 function main() {
-  setLogLevel(4);
+  setLogLevel(5);
   enableVolumeRun(true);
 
   logi("========== LOOK直播数据采集脚本启动 ==========");
@@ -217,7 +226,6 @@ function main() {
   logi("崩溃监控已禁用（currentPackage不可用）");
 
   logi("调用 LOOK_StartLiveRoom...");
-  callScript("PopupHandler"); // 进入业务前再次清理
   try {
     var result = callScript("LOOK_StartLiveRoom", CONFIG);
     logi("LOOK_StartLiveRoom 执行完成: " + result);

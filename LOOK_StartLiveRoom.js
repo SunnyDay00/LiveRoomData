@@ -28,18 +28,31 @@ var CONFIG = {
   LIVE_ROOM_CHECK_RETRY: 3,
   
   CONTRIB_CLICK_COUNT: 5,
-  
-  SCROLL_DISTANCE: 0.80,
-  SCROLL_DURATION: 500,
+
   SCROLL_AFTER_WAIT: 800,
   NO_NEW_SCROLL_LIMIT: 6,
+  CHAT_TAB_CHECK_RETRY: 3,
+  CHAT_TAB_CHECK_WAIT_MS: 800,
+  CHAT_TAB_TEXT_MAX_STEP: 4,
+
+  // 直播间卡片点击区域: left=48 top=192 width=984 height=422 (取中心点)
+  LIVE_CARD_TAP_X: 540,
+  LIVE_CARD_TAP_Y: 403,
+
+  // 下滑进入下一个直播间（大幅度上滑）
+  NEXT_SWIPE_START_X: 540,
+  NEXT_SWIPE_START_Y: 1700,
+  NEXT_SWIPE_END_X: 540,
+  NEXT_SWIPE_END_Y: 300,
+  NEXT_SWIPE_DURATION: 800,
   
   FLOAT_LOG_ENABLED: 1,
   DEBUG_PAUSE_ON_ERROR: 0,
   
   ID_TAB: "com.netease.play:id/tv_dragon_tab",
-  ID_IVCOVER: "com.netease.play:id/ivCover",
-  ID_TVNAME: "com.netease.play:id/tvName",
+  ID_RNVIEW: "com.netease.play:id/rnView",
+  ID_ROOMNO: "com.netease.play:id/roomNo",
+  ID_LAYOUT_HEADER: "com.netease.play:id/layout_header",
   ID_HEADER: "com.netease.play:id/headerUiContainer",
   ID_CLOSEBTN: "com.netease.play:id/closeBtn"
 };
@@ -151,13 +164,85 @@ function getParent(v) {
   return p;
 }
 
+function isClickable(v) {
+  try {
+    if (v != null) {
+      if (v.clickable == true) {
+        return true;
+      }
+    }
+  } catch (e) {}
+  return false;
+}
+
+function findActionBarTabParent(textView, allowFallback) {
+  if (textView == null) { return null; }
+  var p = getParent(textView);
+  var depth = 0;
+  while (p != null && depth < 10) {
+    if (isClickable(p)) { return p; }
+    p = getParent(p);
+    depth = depth + 1;
+  }
+  return null;
+}
+
+function describeView(v) {
+  if (v == null) { return "null"; }
+  var cls = "";
+  var text = "";
+  var id = "";
+  var clickable = "";
+  var enabled = "";
+  var visible = "";
+  var left = "";
+  var top = "";
+  var right = "";
+  var bottom = "";
+  try { cls = "" + v.className; } catch (e1) {}
+  try { text = "" + v.text; } catch (e2) {}
+  try { id = "" + v.id; } catch (e3) {}
+  try { clickable = "" + v.clickable; } catch (e4) {}
+  try { enabled = "" + v.enabled; } catch (e5) {}
+  try { visible = "" + v.visible; } catch (e6) {}
+  try {
+    if (v.left != null) { left = v.left; }
+    if (v.top != null) { top = v.top; }
+    if (v.right != null) { right = v.right; }
+    if (v.bottom != null) { bottom = v.bottom; }
+  } catch (e7) {}
+  if (right === "" || bottom === "") {
+    try {
+      var b = v.bounds();
+      if (b != null) {
+        left = b.left;
+        top = b.top;
+        right = b.right;
+        bottom = b.bottom;
+      }
+    } catch (e8) {}
+  }
+  return "class=" + cls + ", text=" + text + ", id=" + id +
+    ", clickable=" + clickable + ", enabled=" + enabled + ", visible=" + visible +
+    ", bounds=" + left + "," + top + "," + right + "," + bottom;
+}
+
 function clickObj(v, stepName) {
   try {
-    click(v, {click: true});
-    logi("[" + stepName + "] click ok");
+    var ok = click(v, {click: true});
+    if (ok) {
+      logi("[" + stepName + "] click ok");
+      return true;
+    }
+  } catch (e1) {
+    logw("[" + stepName + "] 原生点击异常，尝试手势点击: " + e1);
+  }
+  try {
+    click(v, {click: false});
+    logi("[" + stepName + "] 手势点击 ok");
     return true;
-  } catch (e) {
-    loge("[" + stepName + "] click exception=" + e);
+  } catch (e2) {
+    loge("[" + stepName + "] click exception=" + e2);
     return false;
   }
 }
@@ -171,9 +256,15 @@ function doScrollDown() {
   var ok = false;
   try {
     // 使用 AdbSwipe 进行滑动 (Shizuku)
-    // 坐标: 540, 1500 -> 540, 1000 (幅度稍小，上滑)
+    // 大幅度上滑进入下一个直播间
     logi("调用 AdbSwipe 进行滑动...");
-    var ret = callScript("AdbSwipe", "swipe", 540, 1500, 540, 1000, 500);
+    var swipeArgs = CONFIG.NEXT_SWIPE_START_X + "," +
+      CONFIG.NEXT_SWIPE_START_Y + "," +
+      CONFIG.NEXT_SWIPE_END_X + "," +
+      CONFIG.NEXT_SWIPE_END_Y + "," +
+      CONFIG.NEXT_SWIPE_DURATION;
+    logi("[SWIPE] args=" + swipeArgs);
+    var ret = callScript("AdbSwipe", "swipe", swipeArgs);
     
     // 只要没有抛出异常且返回了(即使是undefined), 通常认为尝试过了
     // 如果 AdbSwipe 返回明确的 true/false 更好
@@ -294,87 +385,131 @@ function ensureHome() {
   return false;
 }
 
-function goRecommendTab() {
-  var ret = findRet("id:" + CONFIG.ID_TAB, {flag: "find_all", maxStep: 2});
-  if (ret == null) { return; }
-  if (ret.length <= 0) { return; }
-  
-  var count = ret.length;
-  var i = 0;
-  for (i = 0; i < count; i = i + 1) {
-    try {
-      var v = ret.views[i];
-      if (v == null) { continue; }
-      if (("" + v.text) == "推荐") {
-        var p = getParent(v);
-        if (p != null) {
-          clickObj(p, "HOME_TAB_RECOMMEND");
-        } else {
-          clickObj(v, "HOME_TAB_RECOMMEND_TEXT");
-        }
-        sleepMs(CONFIG.CLICK_WAIT_MS);
-        return;
-      }
-    } catch (e) {}
+function clickChatTabByText(clickWaitMs) {
+  var maxStep = CONFIG.CHAT_TAB_TEXT_MAX_STEP;
+  if (maxStep == null || maxStep <= 0) { maxStep = 4; }
+
+  var headerRet = findRet("id:" + CONFIG.ID_LAYOUT_HEADER, {flag: "find_all|traverse_invisible", maxStep: maxStep});
+  if (headerRet == null || headerRet.length <= 0) {
+    logw("[HOME_TAB_CHAT] 未找到 layout_header");
+    return false;
   }
+  logi("[HOME_TAB_CHAT] 找到 layout_header 数量=" + headerRet.length);
+
+  var h = 0;
+  for (h = 0; h < headerRet.length; h = h + 1) {
+    var header = null;
+    try { header = headerRet.views[h]; } catch (e0) { header = null; }
+    if (header == null) { continue; }
+
+    var ret = findRet("txt:一起聊", {
+      root: header,
+      flag: "find_all|traverse_invisible",
+      maxStep: maxStep
+    });
+    if (ret == null || ret.length <= 0) { continue; }
+    logi("[HOME_TAB_CHAT] header[" + h + "] 一起聊数量=" + ret.length);
+
+    var i = 0;
+    for (i = 0; i < ret.length; i = i + 1) {
+      var tv = null;
+      try { tv = ret.views[i]; } catch (e1) { tv = null; }
+      if (tv == null) { continue; }
+      var tvText = "" + tv.text;
+      if (tvText.indexOf("一起聊") < 0) { continue; }
+      logi("[HOME_TAB_CHAT] 候选一起聊[" + h + ":" + i + "] " + describeView(tv));
+
+      var tab = findActionBarTabParent(tv, false);
+      if (tab != null) {
+        logi("[HOME_TAB_CHAT] 可点击父控件 " + describeView(tab));
+        var ok1 = clickObj(tab, "HOME_TAB_CHAT");
+        logi("[HOME_TAB_CHAT] 点击父控件结果 ok=" + ok1);
+      } else {
+        logw("[HOME_TAB_CHAT] 未找到可点击父控件，尝试点击文本");
+        var ok2 = clickObj(tv, "HOME_TAB_CHAT_TEXT");
+        logi("[HOME_TAB_CHAT] 点击文本结果 ok=" + ok2);
+      }
+      sleepMs(clickWaitMs);
+      var rnOk = isChatTabPage();
+      logi("[HOME_TAB_CHAT] 点击后 rnView=" + rnOk);
+      if (rnOk) { return true; }
+    }
+  }
+
+  return false;
+}
+
+function isChatTabPage() {
+  return hasView("id:" + CONFIG.ID_RNVIEW, {maxStep: 2});
+}
+
+function ensureChatTab() {
+  if (isChatTabPage()) { return true; }
+  var retry = CONFIG.CHAT_TAB_CHECK_RETRY;
+  if (retry == null || retry <= 0) { retry = 3; }
+  var waitMs = CONFIG.CHAT_TAB_CHECK_WAIT_MS;
+  if (waitMs == null || waitMs <= 0) { waitMs = 800; }
+  var r = 0;
+  for (r = 0; r < retry; r = r + 1) {
+    if (clickChatTabByText(CONFIG.CLICK_WAIT_MS)) { return true; }
+    if (isChatTabPage()) { return true; }
+    logw("切换一起聊失败，重试 " + (r + 1) + "/" + retry);
+    sleepMs(waitMs);
+  }
+  logw("切换一起聊失败，跳过点击直播间");
+  return false;
 }
 
 // ==============================
-// 直播间卡片遍历
+// 直播间Key
 // ==============================
-function getRoomKeyFromIvCover(ivObj) {
-  var p = getParent(ivObj);
-  var name = "";
-  if (p != null) {
-    name = getTextOfFirst("id:" + CONFIG.ID_TVNAME, {root: p, maxStep: 2});
-  }
-  if (name == null) { name = ""; }
 
-  if (name != "") { 
-    var k = "name_" + name;
-    logi("GetRoomKey: " + k); 
-    return k;
-  }
-
-  try { 
-    var k2 = "pos_" + ivObj.left + "_" + ivObj.top; 
-    logw("GetRoomKey(Pos): " + k2); 
-    return k2;
-  } catch (e) { return ""; }
-}
-
-function pickNextUnseenCardOnScreen() {
-  var ret = findRet("id:" + CONFIG.ID_IVCOVER, {flag: "find_all", maxStep: 2});
-  if (ret == null) { return null; }
-  if (ret.length <= 0) { return null; }
-
-  var count = ret.length;
+function getRoomKeyFromLiveRoom() {
+  var text = "";
   var i = 0;
-  for (i = 0; i < count; i = i + 1) {
-    try {
-      var iv = ret.views[i];
-      if (iv == null) { continue; }
-      var key = getRoomKeyFromIvCover(iv);
-      if (key != null && key != "") {
-        if (g_seen[key] != true) {
-          var card = getParent(iv);
-          if (card != null) {
-            return { card: card, key: key };
-          }
-        }
+  for (i = 0; i < 2; i = i + 1) {
+    var ret = findRet("id:" + CONFIG.ID_ROOMNO, {
+      flag: "find_all|traverse_invisible",
+      maxStep: 6
+    });
+    if (ret != null && ret.length > 0) {
+      var v = null;
+      try { v = ret.views[0]; } catch (e1) { v = null; }
+      if (v != null) {
+        try { if (v.text != null) { text = "" + v.text; } } catch (e2) {}
       }
-    } catch (e) {}
+    }
+    text = ("" + text).trim();
+    if (text == "null" || text == "undefined") { text = ""; }
+    if (text != "") { break; }
+    if (i == 0) { sleepMs(200); }
   }
-  return null;
+  if (text == "") {
+    logw("[ROOMNO] 未读取到 roomNo");
+  } else {
+    logi("GetRoomKey(roomNo): " + text);
+  }
+  return text;
 }
 
 // ==============================
 // 进入直播间
 // ==============================
-function enterLiveByCard(cardObj) {
+function enterLiveByCard() {
   var r = 0;
   for (r = 0; r < CONFIG.ENTER_LIVE_RETRY; r = r + 1) {
-    clickObj(cardObj, "ENTER_LIVE_CARD");
+    var clicked = false;
+    try {
+      // 直接写死坐标，避免参数传递异常
+      var x = 540;
+      var y = 403;
+      logi("[LIVE_CARD_ADB] 使用固定坐标 x=" + x + " y=" + y);
+      clicked = callScript("AdbClick", "click", x, y);
+    } catch (e) {
+      clicked = false;
+      loge("[ADB_CLICK] 调用异常: " + e);
+    }
+    if (!clicked) { logw("点击直播间失败，retry=" + r); }
     sleepMs(CONFIG.CLICK_LIVE_WAIT_MS);
 
     if (isLiveRoomPage()) {
@@ -390,18 +525,22 @@ function enterLiveByCard(cardObj) {
 // ==============================
 // 处理单个直播间
 // ==============================
-function processOneLive(cardObj, roomKey) {
-  logi("========== 开始处理直播间 key=" + roomKey + " ==========");
+function processOneLive(alreadyInLive) {
+  logi("========== 开始处理直播间 ==========");
 
   // Step 1: 进入直播间
-  logi("[STEP_1] 尝试进入直播间...");
-  if (!enterLiveByCard(cardObj)) {
-    loge("[STEP_1] 进入直播间失败");
-    debugPause("STEP_1", "进入直播间失败");
-    restartApp("enter_live_failed");
-    return false;
+  if (alreadyInLive == true) {
+    logi("[STEP_1] 已在直播间，跳过点击进入");
+  } else {
+    logi("[STEP_1] 尝试进入直播间...");
+    if (!enterLiveByCard()) {
+      loge("[STEP_1] 进入直播间失败");
+      debugPause("STEP_1", "进入直播间失败");
+      restartApp("enter_live_failed");
+      return "FAIL";
+    }
+    logi("[STEP_1] 成功进入直播间");
   }
-  logi("[STEP_1] 成功进入直播间");
 
   // Step 2: 检查直播间有效性
   logi("[STEP_2] 检查直播间有效性...");
@@ -414,9 +553,8 @@ function processOneLive(cardObj, roomKey) {
   }
   
   if (!isValid) {
-    logi("[STEP_2] 直播间无效，退出");
-    backAndWait("BACK_INVALID_LIVE");
-    return true;  // 返回true继续下一个，不是错误
+    logi("[STEP_2] 直播间无效，跳过");
+    return "SKIP";
   }
   logi("[STEP_2] 直播间有效");
 
@@ -435,11 +573,11 @@ function processOneLive(cardObj, roomKey) {
     loge("[STEP_3] 采集主播信息失败");
     debugPause("STEP_3", "采集主播信息失败");
     backAndWait("BACK_HOST_FAIL");
-    return false;
+    return "SKIP";
   }
   
   var hostInfo = hostResult.hostInfo;
-  
+
   if (hostInfo.id == null || ("" + hostInfo.id).trim() == "") {
     logi("[STEP_3] hostInfo.id为空，等待返回直播间后读取roomNo");
     var liveReady = false;
@@ -467,6 +605,31 @@ function processOneLive(cardObj, roomKey) {
 
   logi("[STEP_3] 主播信息: id=" + hostInfo.id + " name=" + hostInfo.name);
 
+  // Step 3.1: 获取直播间Key并去重
+  var roomKey = getRoomKeyFromLiveRoom();
+  if (roomKey == null || roomKey == "") {
+    if (hostInfo.id != null && ("" + hostInfo.id).trim() != "") {
+      roomKey = ("" + hostInfo.id).trim();
+      logw("[STEP_3] roomNo为空，使用 hostInfo.id 作为Key=" + roomKey);
+    } else if (hostInfo.name != null && ("" + hostInfo.name).trim() != "") {
+      roomKey = ("" + hostInfo.name).trim();
+      logw("[STEP_3] roomNo为空，使用 hostInfo.name 作为Key=" + roomKey);
+    } else {
+      roomKey = "UNKNOWN_" + nowStr();
+      logw("[STEP_3] roomNo为空，使用兜底Key=" + roomKey);
+    }
+  }
+
+  logi("[STEP_3] 直播间Key=" + roomKey);
+
+  if (g_seen[roomKey] == true) {
+    logw("[STEP_3] 直播间已处理 key=" + roomKey);
+    return "SKIP";
+  }
+  g_seen[roomKey] = true;
+  g_liveClickCount = g_liveClickCount + 1;
+  logi("选择直播间 key=" + roomKey + " count=" + g_liveClickCount);
+
   // Step 4: 采集贡献榜信息
   logi("[STEP_4] 采集贡献榜信息...");
   try {
@@ -478,20 +641,8 @@ function processOneLive(cardObj, roomKey) {
     loge("[STEP_4] callScript error: " + e);
   }
 
-  // Step 5: 返回首页
-  logi("[STEP_5] 返回首页...");
-  
-  // 检查是否已经在首页（防止ContributionRank已退出）
-  if (isHomePage()) {
-    logi("已在首页，无需返回");
-  } else {
-    backAndWait("BACK_LIVE_TO_HOME");
-  }
-  ensureHome();
-  goRecommendTab();
-
   logi("========== 完成处理直播间 key=" + roomKey + " ==========");
-  return true;
+  return "OK";
 }
 
 // ==============================
@@ -523,56 +674,49 @@ function mainLoop() {
       }
     }
 
-    // 确保在首页
-    if (!isHomePage()) {
-      logw("不在首页，尝试回到首页");
-      if (!ensureHome()) {
-        restartApp("not_home");
+    // 已在直播间则直接处理，否则回首页+切换一起聊
+    var inLive = isLiveRoomPage();
+    if (!inLive) {
+      if (!isHomePage()) {
+        logw("不在首页，尝试回到首页");
+        if (!ensureHome()) {
+          restartApp("not_home");
+        }
       }
-      goRecommendTab();
+      ensureChatTab();
+      if (!isChatTabPage()) {
+        logw("未在一起聊界面，跳过点击直播间");
+        sleepMs(CONFIG.CHAT_TAB_CHECK_WAIT_MS);
+        continue;
+      }
     }
 
-    // 寻找下一个未处理的直播间卡片
-    var pick = pickNextUnseenCardOnScreen();
-    if (pick != null) {
-      g_seen[pick.key] = true;
+    // 通过固定坐标点击进入直播间
+    var r = processOneLive(inLive);
+    if (r == "STOP_DB_MAX") {
+      logw("达到数据库上限，停止");
+      break;
+    }
+
+    if (r == "OK") {
       noNewScroll = 0;
-
-      g_liveClickCount = g_liveClickCount + 1;
-      logi("选择直播间 key=" + pick.key + " count=" + g_liveClickCount);
-
-      var r = processOneLive(pick.card, pick.key);
-      if (r == "STOP_DB_MAX") {
-        logw("达到数据库上限，停止");
-        break;
-      }
-      if (r != true) {
-        logw("处理失败，回到首页继续");
-        ensureHome();
-        goRecommendTab();
-      }
+    } else if (r == "SKIP") {
+      noNewScroll = noNewScroll + 1;
     } else {
-      // 当前屏幕没有新卡片，滚动
-      callScript("PopupHandler");
-      var sc = doScrollDown();
-      logi("滚动 ok=" + sc);
+      noNewScroll = noNewScroll + 1;
+      logw("处理失败，继续尝试下一个直播间");
+    }
 
-      var pick2 = pickNextUnseenCardOnScreen();
-      if (pick2 == null) {
-        noNewScroll = noNewScroll + 1;
-      } else {
-        noNewScroll = 0;
-      }
+    // 滚动进入下一个直播间
+    var sc = doScrollDown();
+    logi("滚动 ok=" + sc);
 
-      logi("noNewScroll=" + noNewScroll + "/" + CONFIG.NO_NEW_SCROLL_LIMIT);
+    logi("noNewScroll=" + noNewScroll + "/" + CONFIG.NO_NEW_SCROLL_LIMIT);
 
-      if (noNewScroll >= CONFIG.NO_NEW_SCROLL_LIMIT) {
-        logw("连续多次无新内容，重启");
-        restartApp("no_new_items");
-        ensureHome();
-        goRecommendTab();
-        noNewScroll = 0;
-      }
+    if (noNewScroll >= CONFIG.NO_NEW_SCROLL_LIMIT) {
+      logw("连续多次无新内容，重启");
+      restartApp("no_new_items");
+      noNewScroll = 0;
     }
   }
 }
@@ -596,15 +740,24 @@ function main(config) {
     if (params.HOME_ENSURE_RETRY != null) { CONFIG.HOME_ENSURE_RETRY = params.HOME_ENSURE_RETRY; }
     if (params.LIVE_ROOM_CHECK_RETRY != null) { CONFIG.LIVE_ROOM_CHECK_RETRY = params.LIVE_ROOM_CHECK_RETRY; }
     if (params.CONTRIB_CLICK_COUNT != null) { CONFIG.CONTRIB_CLICK_COUNT = params.CONTRIB_CLICK_COUNT; }
-    if (params.SCROLL_DISTANCE != null) { CONFIG.SCROLL_DISTANCE = params.SCROLL_DISTANCE; }
-    if (params.SCROLL_DURATION != null) { CONFIG.SCROLL_DURATION = params.SCROLL_DURATION; }
     if (params.SCROLL_AFTER_WAIT != null) { CONFIG.SCROLL_AFTER_WAIT = params.SCROLL_AFTER_WAIT; }
     if (params.NO_NEW_SCROLL_LIMIT != null) { CONFIG.NO_NEW_SCROLL_LIMIT = params.NO_NEW_SCROLL_LIMIT; }
+    if (params.CHAT_TAB_CHECK_RETRY != null) { CONFIG.CHAT_TAB_CHECK_RETRY = params.CHAT_TAB_CHECK_RETRY; }
+    if (params.CHAT_TAB_CHECK_WAIT_MS != null) { CONFIG.CHAT_TAB_CHECK_WAIT_MS = params.CHAT_TAB_CHECK_WAIT_MS; }
+    if (params.CHAT_TAB_TEXT_MAX_STEP != null) { CONFIG.CHAT_TAB_TEXT_MAX_STEP = params.CHAT_TAB_TEXT_MAX_STEP; }
+    if (params.LIVE_CARD_TAP_X != null) { CONFIG.LIVE_CARD_TAP_X = params.LIVE_CARD_TAP_X; }
+    if (params.LIVE_CARD_TAP_Y != null) { CONFIG.LIVE_CARD_TAP_Y = params.LIVE_CARD_TAP_Y; }
+    if (params.NEXT_SWIPE_START_X != null) { CONFIG.NEXT_SWIPE_START_X = params.NEXT_SWIPE_START_X; }
+    if (params.NEXT_SWIPE_START_Y != null) { CONFIG.NEXT_SWIPE_START_Y = params.NEXT_SWIPE_START_Y; }
+    if (params.NEXT_SWIPE_END_X != null) { CONFIG.NEXT_SWIPE_END_X = params.NEXT_SWIPE_END_X; }
+    if (params.NEXT_SWIPE_END_Y != null) { CONFIG.NEXT_SWIPE_END_Y = params.NEXT_SWIPE_END_Y; }
+    if (params.NEXT_SWIPE_DURATION != null) { CONFIG.NEXT_SWIPE_DURATION = params.NEXT_SWIPE_DURATION; }
     if (params.FLOAT_LOG_ENABLED != null) { CONFIG.FLOAT_LOG_ENABLED = params.FLOAT_LOG_ENABLED; }
     if (params.DEBUG_PAUSE_ON_ERROR != null) { CONFIG.DEBUG_PAUSE_ON_ERROR = params.DEBUG_PAUSE_ON_ERROR; }
     if (params.ID_TAB != null) { CONFIG.ID_TAB = params.ID_TAB; }
-    if (params.ID_IVCOVER != null) { CONFIG.ID_IVCOVER = params.ID_IVCOVER; }
-    if (params.ID_TVNAME != null) { CONFIG.ID_TVNAME = params.ID_TVNAME; }
+    if (params.ID_RNVIEW != null) { CONFIG.ID_RNVIEW = params.ID_RNVIEW; }
+    if (params.ID_ROOMNO != null) { CONFIG.ID_ROOMNO = params.ID_ROOMNO; }
+    if (params.ID_LAYOUT_HEADER != null) { CONFIG.ID_LAYOUT_HEADER = params.ID_LAYOUT_HEADER; }
     if (params.ID_HEADER != null) { CONFIG.ID_HEADER = params.ID_HEADER; }
     if (params.ID_CLOSEBTN != null) { CONFIG.ID_CLOSEBTN = params.ID_CLOSEBTN; }
   }
@@ -635,8 +788,6 @@ function main(config) {
     stop();
     return;
   }
-  
-  goRecommendTab();
   
   // 开始主循环
   mainLoop();

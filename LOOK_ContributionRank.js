@@ -190,6 +190,12 @@ function isHomePage() {
   return false;
 }
 
+function isLiveRoomPage() {
+  if (hasView("id:" + ID_VFLIPPER, {maxStep: 2})) { return true; }
+  if (hasView("id:" + ID_HEADER, {maxStep: 2})) { return true; }
+  return false;
+}
+
 // 获取集合大小
 function getCollectionSize(col) {
   if (col == null) { return 0; }
@@ -677,10 +683,13 @@ function processContributionRank(hostInfo, clickCount, clickWaitMs, stopAfterRow
   
   // 返回：月榜 -> 贡献榜 -> 魅力榜/直播 -> 直播
   logi("返回直播间...");
+  if (isLiveRoomPage()) { return; }
   if (isHomePage()) { return; }
   backAndWait("BACK_MONTH_TO_CONTRIB", clickWaitMs);
+  if (isLiveRoomPage()) { return; }
   if (isHomePage()) { return; }
   backAndWait("BACK_CONTRIB_TO_CHARM", clickWaitMs);
+  if (isLiveRoomPage()) { return; }
   if (isHomePage()) { return; }
   backAndWait("BACK_CHARM_TO_LIVE", clickWaitMs);
 }

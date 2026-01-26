@@ -813,8 +813,13 @@ function collectContributors(hostInfo, rankType, clickCount, clickWaitMs, stopAf
 
         try {
             // 传递对象：action="insert", row=rowData
-            totalInserted = callScript("DataHandler", { action: "insert", row: rowData });
-            
+            var insertResult = callScript("DataHandler", { action: "insert", row: rowData });
+            if (typeof insertResult === "number" && insertResult > 0) {
+              totalInserted = totalInserted + insertResult;
+            } else {
+              totalInserted = totalInserted + 1;
+            }
+
             wrote = wrote + 1;
             logi("数据保存成功，已采集 " + wrote + "/" + clickCount + ", 总计=" + totalInserted);
         } catch (e) {

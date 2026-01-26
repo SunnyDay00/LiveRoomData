@@ -30,6 +30,55 @@ function sleepMs(ms) {
     sleep(ms);
 }
 
+function toInt(val) {
+    if (val == null) { return null; }
+    if (typeof val === "number") { return val; }
+    var s = "" + val;
+    if (s == "" || s == "null" || s == "undefined") { return null; }
+    var i = 0;
+    var sign = 1;
+    if (s.charAt(0) == "-") { sign = -1; i = 1; }
+    var n = 0;
+    var found = false;
+    for (; i < s.length; i = i + 1) {
+        var c = s.charAt(i);
+        if (c < "0" || c > "9") { break; }
+        n = n * 10 + (c.charCodeAt(0) - 48);
+        found = true;
+    }
+    if (!found) { return null; }
+    return n * sign;
+}
+
+function parseSwipeArgs(p1, p2, p3, p4, p5) {
+    var sx = toInt(p1);
+    var sy = toInt(p2);
+    var ex = toInt(p3);
+    var ey = toInt(p4);
+    var dur = toInt(p5);
+
+    if (sx != null && sy != null && ex != null && ey != null) {
+        return {sx: sx, sy: sy, ex: ex, ey: ey, dur: dur};
+    }
+
+    if (p1 != null) {
+        var s = "" + p1;
+        var parts = s.split(",");
+        if (parts.length >= 4) {
+            sx = toInt(parts[0]);
+            sy = toInt(parts[1]);
+            ex = toInt(parts[2]);
+            ey = toInt(parts[3]);
+            dur = (parts.length >= 5) ? toInt(parts[4]) : dur;
+            if (sx != null && sy != null && ex != null && ey != null) {
+                return {sx: sx, sy: sy, ex: ex, ey: ey, dur: dur};
+            }
+        }
+    }
+
+    return null;
+}
+
 // ==============================
 // Shizuku 检查逻辑
 // ==============================
@@ -108,6 +157,11 @@ function doSwipe(sx, sy, ex, ey, duration) {
     if (!ensureShizukuReady()) {
         return false;
     }
+
+    if (sx == null || sy == null || ex == null || ey == null) {
+      log("参数无效: sx=" + sx + " sy=" + sy + " ex=" + ex + " ey=" + ey);
+      return false;
+    }
     
     // 默认时长
     if (!duration) {
@@ -137,13 +191,12 @@ function main(action, p1, p2, p3, p4, p5) {
     // p1: startX, p2: startY, p3: endX, p4: endY, p5: duration
     
     if (action == "swipe") {
-        var sx = p1;
-        var sy = p2;
-        var ex = p3;
-        var ey = p4;
-        var dur = p5;
-        
-        return doSwipe(sx, sy, ex, ey, dur);
+        var args = parseSwipeArgs(p1, p2, p3, p4, p5);
+        if (args == null) {
+            log("参数解析失败: p1=" + p1 + " p2=" + p2 + " p3=" + p3 + " p4=" + p4 + " p5=" + p5);
+            return false;
+        }
+        return doSwipe(args.sx, args.sy, args.ex, args.ey, args.dur);
     }
     
     // 默认行为或测试
