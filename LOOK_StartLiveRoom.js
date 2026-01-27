@@ -24,6 +24,7 @@ var CONFIG = {
   APP_RESTART_WAIT_MS: 5000,
   
   ENTER_LIVE_RETRY: 3,
+  RESTART_TO_CHAT_RETRY: 2,
   HOME_ENSURE_RETRY: 4,
   LIVE_ROOM_CHECK_RETRY: 3,
   
@@ -48,6 +49,13 @@ var CONFIG = {
   
   FLOAT_LOG_ENABLED: 1,
   DEBUG_PAUSE_ON_ERROR: 0,
+
+  USE_SHIZUKU_RESTART: 1, // 1=使用Shizuku强制关闭/启动
+  SHIZUKU_PKG: "moe.shizuku.privileged.api",
+  RETRY_COUNT: 5,
+  RETRY_INTERVAL: 2000,
+  PERMISSION_TIMEOUT: 10000,
+  MAIN_LAUNCHED_APP: 0, // 运行时标记：是否由主脚本拉起App
   
   ID_TAB: "com.netease.play:id/tv_dragon_tab",
   ID_RNVIEW: "com.netease.play:id/rnView",
@@ -60,8 +68,13 @@ var CONFIG = {
 // ==============================
 // 全局变量
 // ==============================
-var g_seen = {};
+var g_seen = [];
 var g_liveClickCount = 0;
+var g_homeKeyDate = "";
+var g_homeKeyFile = null;
+var g_homeKeyData = null;
+var g_lastRoomKey = "";
+var g_skipRestartOnce = false;
 
 // ==============================
 // 工具函数
@@ -71,6 +84,216 @@ function nowStr() {
   var utcTime = new Date().getTime();
   var beijingOffset = 8 * 60 * 60 * 1000; // 8小时转换为毫秒
   return "" + (utcTime + beijingOffset);
+}
+
+function pad2(n) {
+  return (n < 10 ? "0" : "") + n;
+}
+
+function civilFromDays(z) {
+  // 算法: Howard Hinnant civil_from_days
+  var z2 = z + 719468;
+  var era = Math.floor(z2 / 146097);
+  var doe = z2 - era * 146097;
+  var yoe = Math.floor((doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365);
+  var y = yoe + era * 400;
+  var doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100));
+  var mp = Math.floor((5 * doy + 2) / 153);
+  var d = doy - Math.floor((153 * mp + 2) / 5) + 1;
+  var m = mp + (mp < 10 ? 3 : -9);
+  y = y + (m <= 2 ? 1 : 0);
+  return {y: y, m: m, d: d};
+}
+
+function dateStrYmd() {
+  // 避免使用 getUTC* 等方法（在部分环境不可用）
+  var utcTime = new Date().getTime();
+  var beijingOffset = 8 * 60 * 60 * 1000;
+  var ms = utcTime + beijingOffset;
+  var days = Math.floor(ms / 86400000);
+  var ymd = civilFromDays(days);
+  return "" + ymd.y + pad2(ymd.m) + pad2(ymd.d);
+}
+
+function escapeJsonString(s) {
+  var out = "";
+  var i = 0;
+  for (i = 0; i < s.length; i = i + 1) {
+    var c = s.charAt(i);
+    if (c == "\\") { out = out + "\\\\"; }
+    else if (c == "\"") { out = out + "\\\""; }
+    else if (c == "\n") { out = out + "\\n"; }
+    else if (c == "\r") { out = out + "\\r"; }
+    else if (c == "\t") { out = out + "\\t"; }
+    else { out = out + c; }
+  }
+  return out;
+}
+
+function containsKey(arr, key) {
+  if (arr == null) { return false; }
+  var i = 0;
+  for (i = 0; i < arr.length; i = i + 1) {
+    if (("" + arr[i]) == ("" + key)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function parseKeysFromJson(text) {
+  var keys = [];
+  if (text == null) { return keys; }
+  var t = ("" + text);
+  var idx = t.indexOf("\"keys\"");
+  if (idx < 0) { return keys; }
+  var start = t.indexOf("[", idx);
+  if (start < 0) { return keys; }
+  var end = t.indexOf("]", start);
+  if (end < 0) { return keys; }
+  var arrText = t.substring(start + 1, end);
+  var i = 0;
+  var inStr = false;
+  var esc = false;
+  var cur = "";
+  for (i = 0; i < arrText.length; i = i + 1) {
+    var c = arrText.charAt(i);
+    if (!inStr) {
+      if (c == "\"") {
+        inStr = true;
+        cur = "";
+      }
+      continue;
+    }
+    if (esc) {
+      cur = cur + c;
+      esc = false;
+      continue;
+    }
+    if (c == "\\") {
+      esc = true;
+      continue;
+    }
+    if (c == "\"") {
+      if (!containsKey(keys, cur)) {
+        keys.push(cur);
+      }
+      inStr = false;
+      continue;
+    }
+    cur = cur + c;
+  }
+  return keys;
+}
+
+function buildHomeKeyJson(data) {
+  var parts = [];
+  var i = 0;
+  for (i = 0; i < data.keys.length; i = i + 1) {
+    parts.push("\"" + escapeJsonString("" + data.keys[i]) + "\"");
+  }
+  var keysPart = parts.join(",");
+  return "{\"date\":\"" + data.date + "\",\"updatedAt\":\"" + data.updatedAt + "\",\"keys\":[" + keysPart + "]}";
+}
+
+function buildHomeKeyFileName(dateStr) {
+  var d = dateStr;
+  if (d == null || d == "") { d = dateStrYmd(); }
+  var dir = "/storage/emulated/0/homekey";
+  ensureDir(dir);
+  return dir + "/homekey_" + d + ".json";
+}
+
+function ensureDir(path) {
+  try {
+    var dir = new FileX(path);
+    if (!dir.exists()) {
+      dir.makeDirs();
+    }
+  } catch (e) {
+    logw("[HOMEKEY] 创建目录失败: " + e);
+  }
+}
+
+function loadHomeKeyData(file) {
+  if (!file.exists()) {
+    return {
+      date: dateStrYmd(),
+      updatedAt: nowStr(),
+      keys: []
+    };
+  }
+  var txt = "";
+  try {
+    txt = file.read();
+  } catch (e) {
+    logw("[HOMEKEY] 读取文件失败: " + e);
+    return {
+      date: dateStrYmd(),
+      updatedAt: nowStr(),
+      keys: []
+    };
+  }
+  return {
+    date: dateStrYmd(),
+    updatedAt: nowStr(),
+    keys: parseKeysFromJson(txt)
+  };
+}
+
+function writeHomeKeyData(file, data) {
+  var content = "";
+  try {
+    content = buildHomeKeyJson(data);
+  } catch (e) {
+    logw("[HOMEKEY] JSON 序列化失败: " + e);
+    return false;
+  }
+  try {
+    // 依据 文档 文件.md: FileX.write 写入字符串
+    file.write(content);
+    return true;
+  } catch (e2) {
+    logw("[HOMEKEY] 写入文件失败: " + e2);
+    return false;
+  }
+}
+
+function initHomeKeyStore() {
+  var dateStr = dateStrYmd();
+  g_homeKeyDate = dateStr;
+  g_homeKeyFile = new FileX(buildHomeKeyFileName(dateStr));
+  g_homeKeyData = loadHomeKeyData(g_homeKeyFile);
+  if (g_homeKeyData == null || g_homeKeyData.keys == null) {
+    g_homeKeyData = {date: dateStr, updatedAt: nowStr(), keys: []};
+  }
+  g_seen = g_homeKeyData.keys;
+  logi("[HOMEKEY] file=" + g_homeKeyFile.getPath() + " keys=" + g_seen.length);
+}
+
+function ensureHomeKeyStore() {
+  var curDate = dateStrYmd();
+  if (g_homeKeyDate == null || g_homeKeyDate == "" || g_homeKeyFile == null || g_homeKeyData == null) {
+    initHomeKeyStore();
+    return;
+  }
+  if (curDate != g_homeKeyDate) {
+    logi("[HOMEKEY] 日期切换 " + g_homeKeyDate + " -> " + curDate);
+    initHomeKeyStore();
+  }
+}
+
+function addHomeKey(key) {
+  if (key == null || ("" + key).trim() == "") { return false; }
+  ensureHomeKeyStore();
+  if (containsKey(g_seen, key)) { return false; }
+  g_seen.push("" + key);
+  g_homeKeyData.updatedAt = nowStr();
+  var ok = writeHomeKeyData(g_homeKeyFile, g_homeKeyData);
+  if (!ok) {
+    logw("[HOMEKEY] 写入失败 key=" + key);
+  }
+  return ok;
 }
 
 function logi(msg) { 
@@ -305,16 +528,134 @@ function safeKillBackgroundApp() {
   }
 }
 
+function checkShizukuInstalled() {
+  try {
+    if (getAppVersionName(CONFIG.SHIZUKU_PKG)) {
+      return true;
+    }
+  } catch (e) {}
+  return true;
+}
+
+function ensureShizukuReady() {
+  if (CONFIG.USE_SHIZUKU_RESTART != 1) {
+    return false;
+  }
+  if (!checkShizukuInstalled()) {
+    logw("[SHIZUKU] 未安装");
+    return false;
+  }
+  try {
+    shizuku.init();
+  } catch (e) {
+    logw("[SHIZUKU] init 异常: " + e);
+    return false;
+  }
+
+  var i = 0;
+  var connected = false;
+  for (i = 0; i < CONFIG.RETRY_COUNT; i = i + 1) {
+    if (shizuku.connect()) {
+      connected = true;
+      break;
+    }
+    sleepMs(CONFIG.RETRY_INTERVAL);
+  }
+
+  if (!connected) {
+    logw("[SHIZUKU] 服务未启动或连接失败");
+    return false;
+  }
+
+  if (!shizuku.checkPermission()) {
+    shizuku.requestPermission(CONFIG.PERMISSION_TIMEOUT);
+    if (!shizuku.checkPermission()) {
+      logw("[SHIZUKU] 未获得授权");
+      return false;
+    }
+  }
+  return true;
+}
+
+function execShizuku(cmd) {
+  try {
+    shizuku.execCmd(cmd);
+    return true;
+  } catch (e) {
+    logw("[SHIZUKU] execCmd 异常: " + e);
+    return false;
+  }
+}
+
+function forceStopApp() {
+  if (ensureShizukuReady()) {
+    var cmd = "am force-stop " + CONFIG.APP_PKG;
+    logi("[FORCE_STOP] cmd=" + cmd);
+    return execShizuku(cmd);
+  }
+  logw("[FORCE_STOP] Shizuku 不可用，回退 killBackgroundApp");
+  return safeKillBackgroundApp();
+}
+
+function startApp() {
+  if (ensureShizukuReady()) {
+    var cmd = "monkey -p " + CONFIG.APP_PKG + " -c android.intent.category.LAUNCHER 1";
+    logi("[START_APP] cmd=" + cmd);
+    return execShizuku(cmd);
+  }
+  logw("[START_APP] Shizuku 不可用，回退 launchApp");
+  var ret = safeLaunchApp();
+  return (ret == 1);
+}
+
 function restartApp(reason) {
   logw("[APP_RESTART] reason=" + reason);
-  safeKillBackgroundApp();
-  var ret = safeLaunchApp();
-  if (ret == 0) {
+  logi("[APP_RESTART] 关闭应用...");
+  var killed = forceStopApp();
+  logi("[APP_RESTART] 关闭结果 ok=" + killed);
+  logi("[APP_RESTART] 启动应用...");
+  var started = startApp();
+  logi("[APP_RESTART] 启动结果 ok=" + started);
+  if (!started) {
     alert(CONFIG.APP_NAME + " 未安装");
     stop();
     return;
   }
+  logi("[APP_RESTART] 等待应用重启 " + CONFIG.APP_RESTART_WAIT_MS + "ms");
   sleepMs(CONFIG.APP_RESTART_WAIT_MS);
+  if (started) {
+    logi("[APP_RESTART] 检查开屏/全屏广告...");
+    try {
+      callScript("PopupHandler");
+    } catch (e2) {
+      logw("[APP_RESTART] PopupHandler 调用异常: " + e2);
+    }
+  }
+}
+
+function restartToChatTab(reason) {
+  var retry = CONFIG.RESTART_TO_CHAT_RETRY;
+  if (retry == null || retry <= 0) {
+    retry = 1;
+  }
+
+  var i = 0;
+  for (i = 0; i < retry; i = i + 1) {
+    logw("[RESTART_FLOW] reason=" + reason + " retry=" + (i + 1) + "/" + retry + " 执行: 退出/重启→首页→一起聊");
+    restartApp(reason);
+    if (!ensureHome()) {
+      loge("[RESTART_FLOW] ensureHome 失败，继续重试");
+      continue;
+    }
+    ensureChatTab();
+    if (!isChatTabPage()) {
+      logw("[RESTART_FLOW] 未进入一起聊界面，继续重试");
+      continue;
+    }
+    logi("[RESTART_FLOW] 已进入一起聊界面");
+    return true;
+  }
+  return false;
 }
 
 // ==============================
@@ -492,6 +833,13 @@ function getRoomKeyFromLiveRoom() {
   return text;
 }
 
+function normalizeKeyText(text) {
+  var t = "" + text;
+  t = t.trim();
+  if (t == "null" || t == "undefined") { t = ""; }
+  return t;
+}
+
 // ==============================
 // 进入直播间
 // ==============================
@@ -523,6 +871,34 @@ function enterLiveByCard() {
 }
 
 // ==============================
+// 下滑进入下一个直播间
+// ==============================
+function enterNextLiveBySwipe(prevKey) {
+  var retry = CONFIG.ENTER_LIVE_RETRY;
+  if (retry == null || retry <= 0) { retry = 1; }
+  var r = 0;
+  for (r = 0; r < retry; r = r + 1) {
+    var sc = doScrollDown();
+    logi("[NEXT_LIVE] swipe ok=" + sc + " retry=" + (r + 1) + "/" + retry);
+    sleepMs(CONFIG.CLICK_LIVE_WAIT_MS);
+
+    if (!isLiveRoomPage()) {
+      logw("[NEXT_LIVE] 滑动后未在直播间，继续重试");
+      continue;
+    }
+
+    var curKey = normalizeKeyText(getRoomKeyFromLiveRoom());
+    var prev = normalizeKeyText(prevKey);
+    if (curKey != "" && prev != "" && curKey != prev) {
+      logi("[NEXT_LIVE] 已进入下一个直播间 key=" + curKey);
+      return true;
+    }
+    logw("[NEXT_LIVE] 未进入下一个直播间 prevKey=" + prev + " curKey=" + curKey);
+  }
+  return false;
+}
+
+// ==============================
 // 处理单个直播间
 // ==============================
 function processOneLive(alreadyInLive) {
@@ -536,10 +912,26 @@ function processOneLive(alreadyInLive) {
     if (!enterLiveByCard()) {
       loge("[STEP_1] 进入直播间失败");
       debugPause("STEP_1", "进入直播间失败");
-      restartApp("enter_live_failed");
-      return "FAIL";
+      return "FAIL_ENTER";
     }
     logi("[STEP_1] 成功进入直播间");
+  }
+
+  // Step 1.1: 进入直播间后优先去重（基于 roomNo）
+  if (CONFIG.CLICK_LIVE_WAIT_MS != null && CONFIG.CLICK_LIVE_WAIT_MS > 0) {
+    logi("[STEP_1.1] 等待 CLICK_LIVE_WAIT_MS=" + CONFIG.CLICK_LIVE_WAIT_MS + "ms 后读取 roomNo");
+    sleepMs(CONFIG.CLICK_LIVE_WAIT_MS);
+  }
+  var earlyKey = normalizeKeyText(getRoomKeyFromLiveRoom());
+  if (earlyKey != "") {
+    ensureHomeKeyStore();
+    if (containsKey(g_seen, earlyKey)) {
+      logw("[STEP_1.1] 去重命中：重复直播间 key=" + earlyKey + " seenCount=" + g_seen.length);
+      return "SKIP";
+    }
+    logi("[STEP_1.1] 去重通过：新直播间 key=" + earlyKey + " seenCount=" + g_seen.length);
+  } else {
+    logw("[STEP_1.1] roomNo 为空，无法提前去重");
   }
 
   // Step 2: 检查直播间有效性
@@ -606,7 +998,7 @@ function processOneLive(alreadyInLive) {
   logi("[STEP_3] 主播信息: id=" + hostInfo.id + " name=" + hostInfo.name);
 
   // Step 3.1: 获取直播间Key并去重
-  var roomKey = getRoomKeyFromLiveRoom();
+  var roomKey = earlyKey;
   if (roomKey == null || roomKey == "") {
     if (hostInfo.id != null && ("" + hostInfo.id).trim() != "") {
       roomKey = ("" + hostInfo.id).trim();
@@ -621,14 +1013,26 @@ function processOneLive(alreadyInLive) {
   }
 
   logi("[STEP_3] 直播间Key=" + roomKey);
+  g_lastRoomKey = "" + roomKey;
 
-  if (g_seen[roomKey] == true) {
-    logw("[STEP_3] 直播间已处理 key=" + roomKey);
-    return "SKIP";
+  ensureHomeKeyStore();
+  if (earlyKey == "" || earlyKey == null) {
+    var isDup = containsKey(g_seen, roomKey);
+    if (isDup) {
+      logw("[STEP_3] 去重命中：重复直播间 key=" + roomKey + " seenCount=" + g_seen.length);
+      return "SKIP";
+    }
+    logi("[STEP_3] 去重通过：新直播间 key=" + roomKey + " seenCount=" + g_seen.length);
   }
-  g_seen[roomKey] = true;
+  addHomeKey(roomKey);
   g_liveClickCount = g_liveClickCount + 1;
-  logi("选择直播间 key=" + roomKey + " count=" + g_liveClickCount);
+  if (CONFIG.LOOP_LIVE_TOTAL != null && CONFIG.LOOP_LIVE_TOTAL > 0) {
+    var remain = CONFIG.LOOP_LIVE_TOTAL - g_liveClickCount;
+    if (remain < 0) { remain = 0; }
+    logi("选择直播间 key=" + roomKey + " count=" + g_liveClickCount + "/" + CONFIG.LOOP_LIVE_TOTAL + " remain=" + remain);
+  } else {
+    logi("选择直播间 key=" + roomKey + " count=" + g_liveClickCount + "/无限");
+  }
 
   // Step 4: 采集贡献榜信息
   logi("[STEP_4] 采集贡献榜信息...");
@@ -674,20 +1078,35 @@ function mainLoop() {
       }
     }
 
-    // 已在直播间则直接处理，否则回首页+切换一起聊
+    // 已在直播间则直接处理，否则重启后切到一起聊
     var inLive = isLiveRoomPage();
     if (!inLive) {
-      if (!isHomePage()) {
-        logw("不在首页，尝试回到首页");
+      if (g_skipRestartOnce == true) {
+        g_skipRestartOnce = false;
+        logw("主脚本刚拉起App，优先回首页并切到一起聊（跳过重启流程）");
         if (!ensureHome()) {
-          restartApp("not_home");
+          logw("回首页失败，改为执行重启流程(RESTART_TO_CHAT_RETRY=" + CONFIG.RESTART_TO_CHAT_RETRY + ")");
+          var ok2 = restartToChatTab("not_in_live");
+          if (!ok2) {
+            logw("重启流程失败（未进入一起聊），等待 " + CONFIG.CHAT_TAB_CHECK_WAIT_MS + "ms 后重试");
+            sleepMs(CONFIG.CHAT_TAB_CHECK_WAIT_MS);
+            continue;
+          }
         }
-      }
-      ensureChatTab();
-      if (!isChatTabPage()) {
-        logw("未在一起聊界面，跳过点击直播间");
-        sleepMs(CONFIG.CHAT_TAB_CHECK_WAIT_MS);
-        continue;
+        ensureChatTab();
+        if (!isChatTabPage()) {
+          logw("未进入一起聊界面，等待 " + CONFIG.CHAT_TAB_CHECK_WAIT_MS + "ms 后重试");
+          sleepMs(CONFIG.CHAT_TAB_CHECK_WAIT_MS);
+          continue;
+        }
+      } else {
+        logw("不在直播间，执行重启流程(RESTART_TO_CHAT_RETRY=" + CONFIG.RESTART_TO_CHAT_RETRY + ")");
+        var ok = restartToChatTab("not_in_live");
+        if (!ok) {
+          logw("重启流程失败（未进入一起聊），等待 " + CONFIG.CHAT_TAB_CHECK_WAIT_MS + "ms 后重试");
+          sleepMs(CONFIG.CHAT_TAB_CHECK_WAIT_MS);
+          continue;
+        }
       }
     }
 
@@ -696,6 +1115,15 @@ function mainLoop() {
     if (r == "STOP_DB_MAX") {
       logw("达到数据库上限，停止");
       break;
+    }
+    if (r == "FAIL_ENTER") {
+      logw("进入直播间失败(ENTER_LIVE_RETRY=" + CONFIG.ENTER_LIVE_RETRY + ")，跳过滑动，执行重启流程(RESTART_TO_CHAT_RETRY=" + CONFIG.RESTART_TO_CHAT_RETRY + ")");
+      var okRestart = restartToChatTab("enter_live_failed");
+      if (!okRestart) {
+        logw("重启流程失败（未进入一起聊），等待 " + CONFIG.CHAT_TAB_CHECK_WAIT_MS + "ms 后重试");
+        sleepMs(CONFIG.CHAT_TAB_CHECK_WAIT_MS);
+      }
+      continue;
     }
 
     if (r == "OK") {
@@ -707,9 +1135,21 @@ function mainLoop() {
       logw("处理失败，继续尝试下一个直播间");
     }
 
-    // 滚动进入下一个直播间
-    var sc = doScrollDown();
-    logi("滚动 ok=" + sc);
+    // 滑动进入下一个直播间（失败触发重启流程）
+    var prevKey = normalizeKeyText(g_lastRoomKey);
+    if (prevKey == "") {
+      prevKey = normalizeKeyText(getRoomKeyFromLiveRoom());
+    }
+    var nextOk = enterNextLiveBySwipe(prevKey);
+    if (!nextOk) {
+      logw("多次滑动仍未进入下一个直播间，执行重启流程(RESTART_TO_CHAT_RETRY=" + CONFIG.RESTART_TO_CHAT_RETRY + ")");
+      var okNextRestart = restartToChatTab("next_live_failed");
+      if (!okNextRestart) {
+        logw("重启流程失败（未进入一起聊），等待 " + CONFIG.CHAT_TAB_CHECK_WAIT_MS + "ms 后重试");
+        sleepMs(CONFIG.CHAT_TAB_CHECK_WAIT_MS);
+      }
+      continue;
+    }
 
     logi("noNewScroll=" + noNewScroll + "/" + CONFIG.NO_NEW_SCROLL_LIMIT);
 
@@ -737,6 +1177,7 @@ function main(config) {
     if (params.CLICK_WAIT_MS != null) { CONFIG.CLICK_WAIT_MS = params.CLICK_WAIT_MS; }
     if (params.APP_RESTART_WAIT_MS != null) { CONFIG.APP_RESTART_WAIT_MS = params.APP_RESTART_WAIT_MS; }
     if (params.ENTER_LIVE_RETRY != null) { CONFIG.ENTER_LIVE_RETRY = params.ENTER_LIVE_RETRY; }
+    if (params.RESTART_TO_CHAT_RETRY != null) { CONFIG.RESTART_TO_CHAT_RETRY = params.RESTART_TO_CHAT_RETRY; }
     if (params.HOME_ENSURE_RETRY != null) { CONFIG.HOME_ENSURE_RETRY = params.HOME_ENSURE_RETRY; }
     if (params.LIVE_ROOM_CHECK_RETRY != null) { CONFIG.LIVE_ROOM_CHECK_RETRY = params.LIVE_ROOM_CHECK_RETRY; }
     if (params.CONTRIB_CLICK_COUNT != null) { CONFIG.CONTRIB_CLICK_COUNT = params.CONTRIB_CLICK_COUNT; }
@@ -754,6 +1195,12 @@ function main(config) {
     if (params.NEXT_SWIPE_DURATION != null) { CONFIG.NEXT_SWIPE_DURATION = params.NEXT_SWIPE_DURATION; }
     if (params.FLOAT_LOG_ENABLED != null) { CONFIG.FLOAT_LOG_ENABLED = params.FLOAT_LOG_ENABLED; }
     if (params.DEBUG_PAUSE_ON_ERROR != null) { CONFIG.DEBUG_PAUSE_ON_ERROR = params.DEBUG_PAUSE_ON_ERROR; }
+    if (params.USE_SHIZUKU_RESTART != null) { CONFIG.USE_SHIZUKU_RESTART = params.USE_SHIZUKU_RESTART; }
+    if (params.SHIZUKU_PKG != null) { CONFIG.SHIZUKU_PKG = params.SHIZUKU_PKG; }
+    if (params.RETRY_COUNT != null) { CONFIG.RETRY_COUNT = params.RETRY_COUNT; }
+    if (params.RETRY_INTERVAL != null) { CONFIG.RETRY_INTERVAL = params.RETRY_INTERVAL; }
+    if (params.PERMISSION_TIMEOUT != null) { CONFIG.PERMISSION_TIMEOUT = params.PERMISSION_TIMEOUT; }
+    if (params.MAIN_LAUNCHED_APP != null) { CONFIG.MAIN_LAUNCHED_APP = params.MAIN_LAUNCHED_APP; }
     if (params.ID_TAB != null) { CONFIG.ID_TAB = params.ID_TAB; }
     if (params.ID_RNVIEW != null) { CONFIG.ID_RNVIEW = params.ID_RNVIEW; }
     if (params.ID_ROOMNO != null) { CONFIG.ID_ROOMNO = params.ID_ROOMNO; }
@@ -762,7 +1209,15 @@ function main(config) {
     if (params.ID_CLOSEBTN != null) { CONFIG.ID_CLOSEBTN = params.ID_CLOSEBTN; }
   }
   
+  if (CONFIG.MAIN_LAUNCHED_APP == 1) {
+    g_skipRestartOnce = true;
+    logi("检测到主脚本拉起App，首次进入主循环将跳过重启流程");
+  }
+
   logi("脚本启动");
+
+  // 初始化本地homekey文件
+  initHomeKeyStore();
   
   // 初始化数据库
   try {

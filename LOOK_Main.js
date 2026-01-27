@@ -22,6 +22,7 @@ var CONFIG = {
   APP_RESTART_WAIT_MS: 5000, // App重启后等待
 
   ENTER_LIVE_RETRY: 3, // 进入直播间重试次数
+  RESTART_TO_CHAT_RETRY: 2, // 退出/重启→切到一起聊 重试次数
   HOME_ENSURE_RETRY: 4, // 确保回到首页重试次数
   LIVE_ROOM_CHECK_RETRY: 4, // 检查直播间有效性重试次数
 
@@ -53,6 +54,9 @@ var CONFIG = {
   RETRY_COUNT: 5, // Shizuku 连接重试次数
   RETRY_INTERVAL: 2000, // Shizuku 重试间隔(ms)
   PERMISSION_TIMEOUT: 10000, // Shizuku 权限请求超时(ms)
+  USE_SHIZUKU_RESTART: 1, // 1=使用Shizuku强制关闭/启动（重启流程）
+  MAIN_POPUP_HANDLER_ENABLED: 0, // 1=强制主脚本检查广告（即使App已在前台）
+  MAIN_LAUNCHED_APP: 0, // 运行时标记：是否由主脚本拉起App（自动覆盖）
 
   ID_TAB: "com.netease.play:id/tv_dragon_tab", // 首页TAB文本
   ID_RNVIEW: "com.netease.play:id/rnView", // 一起聊 rnView
@@ -70,6 +74,8 @@ var CONFIG = {
   ID_USER_NAME: "com.netease.play:id/artist_name", // 用户名
   ID_NUM: "com.netease.play:id/num" // 数值字段
 };
+
+var g_mainLaunchedApp = 0;
 
 // ==============================
 // 工具函数
@@ -106,6 +112,49 @@ function sleepMs(ms) {
   sleep(ms); 
 }
 
+function findRet(tag, options) {
+  var ret = null;
+  try {
+    if (options != null) {
+      ret = findView(tag, options);
+    } else {
+      ret = findView(tag);
+    }
+  } catch (e) {
+    ret = null;
+  }
+  return ret;
+}
+
+function hasView(tag, options) {
+  var ret = findRet(tag, options);
+  if (ret != null) {
+    if (ret.length > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isHomePageFast() {
+  var ret = findRet("id:" + CONFIG.ID_TAB, {flag: "find_all", maxStep: 2});
+  if (ret == null) { return false; }
+  if (ret.length < 2) { return false; }
+  return true;
+}
+
+function isLiveRoomPageFast() {
+  if (!hasView("id:" + CONFIG.ID_HEADER, {maxStep: 2})) { return false; }
+  if (hasView("id:" + CONFIG.ID_CLOSEBTN, {maxStep: 2})) { return true; }
+  return false;
+}
+
+function isAppForeground() {
+  if (isHomePageFast()) { return true; }
+  if (isLiveRoomPageFast()) { return true; }
+  return false;
+}
+
 // ==============================
 // 无障碍检查
 // ==============================
@@ -140,6 +189,12 @@ function checkAccessibility() {
 // ==============================
 function checkAppRunning() {
   logi("检查软件运行状态...");
+
+  if (isAppForeground()) {
+    logi("检测到App已在前台运行");
+    g_mainLaunchedApp = 0;
+    return true;
+  }
   
   try {
     var ret = launchApp(CONFIG.APP_PKG, "");
@@ -148,7 +203,8 @@ function checkAppRunning() {
       alert(CONFIG.APP_NAME + " 未安装，请先安装应用。");
       return false;
     }
-    logi(CONFIG.APP_NAME + " 已启动");
+    g_mainLaunchedApp = 1;
+    logi(CONFIG.APP_NAME + " 已启动（由主脚本拉起）");
     return true;
   } catch (e) {
     loge("启动应用异常: " + e);
@@ -216,8 +272,17 @@ function main() {
   sleepMs(CONFIG.APP_RESTART_WAIT_MS);
   
   // Step 2.1: 处理开屏广告/弹窗
-  logi("检查开屏弹窗...");
-  callScript("PopupHandler");
+  CONFIG.MAIN_LAUNCHED_APP = g_mainLaunchedApp;
+  if (CONFIG.MAIN_POPUP_HANDLER_ENABLED == 1 || g_mainLaunchedApp == 1) {
+    if (g_mainLaunchedApp == 1) {
+      logi("主脚本拉起App，检查开屏弹窗...");
+    } else {
+      logi("强制检查开屏弹窗...");
+    }
+    callScript("PopupHandler");
+  } else {
+    logi("App已在前台，主脚本跳过 PopupHandler");
+  }
 
   // Step 3: 崩溃监控（已禁用）
   // 由于 currentPackage() 函数在此引擎中不可用，监控功能无法正常工作
