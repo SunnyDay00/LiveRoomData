@@ -117,17 +117,8 @@ function waitForGiftOverlayToDisappear() {
   }
 }
 
-// ==============================
-// 检查逻辑
-// ==============================
-function hasVflipperComponent() {
-  return hasView("id:" + ID_VFLIPPER, {maxStep: 3});
-}
-
-function checkLiveRoomValid(retryCount, checkInterval) {
-  logi("开始检查直播间有效性，重试次数=" + retryCount + "，间隔=" + checkInterval + "ms");
-  
-  // 首先尝试处理可能的弹窗（全屏广告等）
+function handlePopupAndGiftOverlay() {
+  // 处理可能的弹窗（全屏广告等）
   try {
     var handled = callScript("PopupHandler");
     if (handled) {
@@ -150,24 +141,23 @@ function checkLiveRoomValid(retryCount, checkInterval) {
     logi("检测到礼物弹幕，等待 " + GIFT_OVERLAY_WAIT_MS + "ms...");
     waitForGiftOverlayToDisappear();
   } else {
-    logi("未检测到礼物弹幕，直接检查...");
+    logi("未检测到礼物弹幕，继续重试...");
   }
-  
+}
+
+// ==============================
+// 检查逻辑
+// ==============================
+function hasVflipperComponent() {
+  return hasView("id:" + ID_VFLIPPER, {maxStep: 3});
+}
+
+function checkLiveRoomValid(retryCount, checkInterval) {
+  logi("开始检查直播间有效性，重试次数=" + retryCount + "，间隔=" + checkInterval + "ms");
+
   var i = 0;
   for (i = 0; i < retryCount; i = i + 1) {
     logi("第 " + (i + 1) + " 次检查...");
-    
-    // 每次检查前都处理可能的弹窗
-    try {
-      callScript("PopupHandler");
-    } catch (e) {}
-    
-    // 每次检查前都检测礼物弹幕
-    if (hasGiftOverlay()) {
-      logi("检查中途检测到礼物弹幕，等待...");
-      sleepMs(GIFT_OVERLAY_WAIT_MS);
-    }
-    
     if (hasVflipperComponent()) {
       logi("检测到 vflipper 组件，直播间有效");
       return true;
@@ -175,8 +165,9 @@ function checkLiveRoomValid(retryCount, checkInterval) {
     
     logw("未检测到 vflipper 组件");
     
-    // 如果不是最后一次检查，等待后再试
+    // 若检查无效，再处理弹窗与礼物弹幕，然后等待后再试
     if (i < retryCount - 1) {
+      handlePopupAndGiftOverlay();
       sleepMs(checkInterval);
     }
   }

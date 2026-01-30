@@ -1,7 +1,7 @@
 /**
  * LOOK_ContributionRank.js - 贡献榜界面脚本
  * 
- * 进入魅力榜 -> 贡献榜 -> 月榜，然后调用用户采集脚本。
+ * 进入魅力榜 -> 贡献榜 -> 日榜、周榜、月榜，然后调用用户采集脚本。
  * 
  * 使用方式：
  *   var result = callScript("LOOK_ContributionRank.js", {

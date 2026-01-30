@@ -1,7 +1,7 @@
 ﻿/**
  * LOOK_CollectContributors.js - 循环采集贡献榜用户信息脚本
  * 
- * 在贡献榜月榜界面，循环点击用户行采集信息并保存。
+ * 在贡献榜界面，循环点击用户行采集信息并保存。
  * 
  * 使用方式：
  *   var result = callScript("LOOK_CollectContributors.js", {
