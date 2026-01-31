@@ -16,6 +16,7 @@
 // 配置
 // ==============================
 var CONFIG = {
+  VERSION: "2026-01-31-01",
   DUMP_PATH: "/sdcard/uidump.xml",
   TARGET_CLASS: "android.view.ViewGroup",
   TARGET_PACKAGE: "com.netease.play",
@@ -23,6 +24,8 @@ var CONFIG = {
   TARGET_CHECKABLE: "false",
   TARGET_CHECKED: "false",
   TARGET_CLICKABLE: "true",
+  ID_ROOM_NO: "com.netease.play:id/roomNo",
+  CLICK_WAIT_MS: 2000,
   DUMP_WAIT_MS: 300,
   DUMP_STABLE_WAIT_MS: 1200,
   PARSE_LOG_EVERY: 500,
@@ -102,6 +105,25 @@ function shizukuExec(cmd) {
     loge("shizuku.execCmd 异常: " + e + " cmd=" + cmd);
     return null;
   }
+}
+
+function shizukuTap(x, y) {
+  if (x == null || y == null) {
+    return false;
+  }
+  var cmd = "input tap " + x + " " + y;
+  logi("[Tap] 执行: " + cmd);
+  var ret = shizukuExec(cmd);
+  if (ret == null) {
+    logw("[Tap] 执行失败，返回 null");
+    return false;
+  }
+  logi("[Tap] 执行完成，返回=" + ret);
+  return true;
+}
+
+function shizukuBack() {
+  shizukuExec("input keyevent 4");
 }
 
 function isValidUiXml(xml) {
@@ -403,6 +425,87 @@ function getAttr(node, key) {
   return "" + v;
 }
 
+function parseBoundsCenter(bounds) {
+  if (bounds == null) {
+    return null;
+  }
+  var s = "" + bounds;
+  if (s.length == 0) {
+    return null;
+  }
+  var nums = [];
+  var cur = "";
+  var i = 0;
+  while (i < s.length) {
+    var c = s.charAt(i);
+    if (c >= "0" && c <= "9") {
+      cur = cur + c;
+    } else {
+      if (cur.length > 0) {
+        nums.push(toInt(cur));
+        cur = "";
+      }
+    }
+    i = i + 1;
+  }
+  if (cur.length > 0) {
+    nums.push(toInt(cur));
+  }
+  if (nums.length < 4) {
+    return null;
+  }
+  var x1 = nums[0];
+  var y1 = nums[1];
+  var x2 = nums[2];
+  var y2 = nums[3];
+  var cx = Math.floor((x1 + x2) / 2);
+  var cy = Math.floor((y1 + y2) / 2);
+  return {x: cx, y: cy};
+}
+
+function toInt(s) {
+  if (s == null) {
+    return 0;
+  }
+  var t = "" + s;
+  var n = 0;
+  var i = 0;
+  while (i < t.length) {
+    var c = t.charAt(i);
+    if (c >= "0" && c <= "9") {
+      n = n * 10 + (c.charCodeAt(0) - 48);
+    }
+    i = i + 1;
+  }
+  return n;
+}
+
+function getRoomNoTextByA11y() {
+  try {
+    var ret = findView("id:" + CONFIG.ID_ROOM_NO, {maxStep: 3});
+    if (ret == null) {
+      logw("[RoomNo] findView 返回 null");
+      return "";
+    }
+    logi("[RoomNo] findView length=" + ret.length);
+    if (ret != null && ret.length > 0) {
+      var view = ret.views[0];
+      if (view != null) {
+        var t = view.text;
+        if (t == null) {
+          logw("[RoomNo] text 为空");
+          return "";
+        }
+        logi("[RoomNo] text=" + t);
+        return "" + t;
+      }
+    }
+  } catch (e) {
+    logw("findView roomNo 异常: " + e);
+  }
+  return "";
+}
+
 // ==============================
 // 查找逻辑
 // ==============================
@@ -638,6 +741,7 @@ function getUserGroupKey(node) {
 // 主入口
 // ==============================
 function main() {
+  logi("脚本版本: " + CONFIG.VERSION);
   logi("开始获取 UI 树并分析...");
   var xml = dumpUiTreeXml();
   if (xml == null || xml.indexOf("<hierarchy") < 0) {
@@ -660,6 +764,7 @@ function main() {
   logi("找到用户可点击组数量: " + userGroups.length);
   var k = 0;
   for (k = 0; k < userGroups.length; k = k + 1) {
+    logi("开始处理用户组 #" + (k + 1));
     var map = initIndexTextMap();
     collectIndexTextsInSubtree(userGroups[k], map);
     var idx0 = map["0"];
@@ -686,6 +791,37 @@ function main() {
       key = getUserGroupKey(userGroups[k]);
     }
     logi("#" + (k + 1) + " 用户组KEY: " + key);
+
+    try {
+      logi("#" + (k + 1) + " 进入点击流程");
+      var bounds = getAttr(userGroups[k], "bounds");
+      logi("#" + (k + 1) + " bounds=" + bounds);
+      var pt = parseBoundsCenter(bounds);
+      if (pt == null) {
+        logw("#" + (k + 1) + " bounds 无效，跳过点击");
+        continue;
+      }
+      logi("#" + (k + 1) + " 点击进入用户组: x=" + pt.x + " y=" + pt.y);
+      var tapOk = shizukuTap(pt.x, pt.y);
+      logi("#" + (k + 1) + " 点击结果: " + tapOk);
+      logi("#" + (k + 1) + " 等待进入直播间 " + CONFIG.CLICK_WAIT_MS + "ms");
+      sleepMs(CONFIG.CLICK_WAIT_MS);
+
+      logi("#" + (k + 1) + " 检测 roomNo...");
+      var roomNo = getRoomNoTextByA11y();
+      if (roomNo != "") {
+        logi("#" + (k + 1) + " 进入直播间成功，roomNo=" + roomNo);
+      } else {
+        logw("#" + (k + 1) + " 未检测到 roomNo，可能未进入直播间");
+      }
+
+      // 返回列表，继续下一个
+      shizukuBack();
+      sleepMs(800);
+      logi("#" + (k + 1) + " 点击流程结束");
+    } catch (eClick) {
+      loge("#" + (k + 1) + " 点击流程异常: " + eClick);
+    }
   }
 
   return true;
