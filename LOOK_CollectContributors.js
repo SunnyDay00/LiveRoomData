@@ -773,8 +773,7 @@ function collectContributors(hostInfo, rankType, clickCount, clickWaitMs, stopAf
       monthuesenumber = rankStr;
     }
     
-    // [新增] 每次处理新用户前，检查是否被弹窗阻挡
-    callScript("PopupHandler");
+    // [新增] 每次处理新用户前，检查是否被弹窗阻挡（已移除 PopupHandler 调用）
     
     var Consumption = getRightMostText(row);
     if (Consumption == "null" || Consumption == "undefined" || Consumption == "") {
@@ -787,7 +786,6 @@ function collectContributors(hostInfo, rankType, clickCount, clickWaitMs, stopAf
 
     if (!isDetailPage()) {
       logw("未进入用户详情，可能是被弹窗遮挡");
-      callScript("PopupHandler"); // 尝试消除弹窗
       backAndWait("USER_DETAIL_BACK_FAILSAFE", clickWaitMs);
     } else {
       var userInfo = readUserDetail(clickWaitMs);

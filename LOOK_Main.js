@@ -13,6 +13,8 @@
 var CONFIG = {
   APP_PKG: "com.netease.play", // 应用包名
   APP_NAME: "LOOK直播", // 应用名称
+  GKD_PKG: "li.songe.gkd-1", // GKD 包名
+  AZNFZ_PKG: "com.libra.aznfz-1", // 冰狐智能辅助包名（客户端）
 
   LOOP_LIVE_TOTAL: 0, // 0=无限；>0=点击直播间总次数
   STOP_AFTER_ROWS: 200, // 写入多少条停止（安全停止）
@@ -185,6 +187,60 @@ function checkAccessibility() {
 }
 
 // ==============================
+// GKD 运行状态检查
+// ==============================
+function isPackageRunningByShizuku(packageName) {
+  try {
+    shizuku.init();
+    if (!shizuku.connect()) {
+      return null;
+    }
+    var ret = shizuku.execCmd("pidof " + packageName);
+    shizuku.close();
+    if (ret == null) { return false; }
+    var s = ("" + ret);
+    if (s.indexOf("not found") >= 0) { return null; }
+    var i = 0;
+    for (i = 0; i < s.length; i = i + 1) {
+      var c = s.charAt(i);
+      if (c >= "0" && c <= "9") { return true; }
+    }
+    return false;
+  } catch (e) {
+    return null;
+  }
+}
+
+function checkGkdRunning() {
+  logi("检查 GKD 运行状态...");
+
+  // 前台快速判定
+  try {
+    if (getCurPackageName() == CONFIG.GKD_PKG) {
+      logi("检测到 GKD 在前台运行");
+      return true;
+    }
+  } catch (e) {}
+
+  // Shizuku 进程检查
+  var running = isPackageRunningByShizuku(CONFIG.GKD_PKG);
+  if (running === true) {
+    logi("检测到 GKD 进程在运行");
+    return true;
+  }
+
+  if (running === null) {
+    logw("无法通过 Shizuku 判断 GKD 是否运行，按未运行处理");
+  } else {
+    logw("未检测到 GKD 进程运行");
+  }
+
+  try { refresh({packageName: CONFIG.AZNFZ_PKG}); } catch (e2) {}
+  alert("请先启动GKD软件");
+  return false;
+}
+
+// ==============================
 // 软件状态检查
 // ==============================
 function checkAppRunning() {
@@ -255,6 +311,12 @@ function main() {
 
   logi("========== LOOK直播数据采集脚本启动 ==========");
 
+  // Step 0: 检查 GKD 是否运行
+  if (!checkGkdRunning()) {
+    stop();
+    return;
+  }
+
   // Step 1: 检查无障碍功能
   if (!checkAccessibility()) {
     logi("脚本退出：无障碍功能未开启");
@@ -271,18 +333,8 @@ function main() {
 
   sleepMs(CONFIG.APP_RESTART_WAIT_MS);
   
-  // Step 2.1: 处理开屏广告/弹窗
+  // Step 2.1: 处理开屏广告/弹窗（已移除 PopupHandler 调用）
   CONFIG.MAIN_LAUNCHED_APP = g_mainLaunchedApp;
-  if (CONFIG.MAIN_POPUP_HANDLER_ENABLED == 1 || g_mainLaunchedApp == 1) {
-    if (g_mainLaunchedApp == 1) {
-      logi("主脚本拉起App，检查开屏弹窗...");
-    } else {
-      logi("强制检查开屏弹窗...");
-    }
-    callScript("PopupHandler");
-  } else {
-    logi("App已在前台，主脚本跳过 PopupHandler");
-  }
 
   // Step 3: 崩溃监控（已禁用）
   // 由于 currentPackage() 函数在此引擎中不可用，监控功能无法正常工作

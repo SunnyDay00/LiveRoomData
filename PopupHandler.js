@@ -2,8 +2,8 @@
  * PopupHandler.js - 全局弹窗处理脚本
  * 
  * 专门负责识别和处理各类阻断流程的弹窗，如：
- * 1. 青少年模式提醒 ("青少年模式" + "我知道了")
- * 2. 这里的 "跳过" 按钮
+ * 1. 无效直播间（加入合唱按钮）
+ * 2. 全屏广告（rootContainer + closeBtn）
  * 
  * 使用方式：
  *   var handled = callScript("PopupHandler");
@@ -70,34 +70,16 @@ function clickObj(v, stepName) {
 // 具体的弹窗处理逻辑
 // ==============================
 
-// 1. 处理青少年模式
-function handleTeenagerMode() {
-  // 先找按钮以避免无弹窗时做两次等待型查找
-  var btnRet = findRet("txt:我知道了", {maxStep: 5});
+// 1. 处理无效直播间（加入合唱）
+function handleInvalidLiveRoom() {
+  var btnRet = findRet("id:com.netease.play:id/btn_join_chorus", {maxStep: 3});
   if (!hasRet(btnRet)) { return false; }
 
-  // 必须同时存在标题和按钮，防止误点
-  var titleRet = findRet("txt:青少年模式", {maxStep: 5});
-  if (!hasRet(titleRet)) { return false; }
-
-  logi("检测到 [青少年模式] 弹窗，尝试点击 '我知道了'...");
-  return clickObj(btnRet.views[0], "CLICK_TEEN_CLOSE");
+  logi("检测到 [无效直播间]（加入合唱），仅标记交由主流程跳过");
+  return true;
 }
 
-// 2. 处理跳过按钮
-function handleSkipButton() {
-  // 简单粗暴地查找 "跳过" 文本
-  // 注意：有些跳过可能是 "跳过 5s" 这种动态文本，这里先只匹配精确的 "跳过"
-  // 如果需要匹配包含 "跳过" 的，可以使用 Fuzzy 匹配或者遍历包含跳过的文本
-  
-  var btnRet = findRet("txt:跳过", {maxStep: 5});
-  if (!hasRet(btnRet)) { return false; }
-
-  logi("检测到 [跳过] 按钮，尝试点击...");
-  return clickObj(btnRet.views[0], "CLICK_SKIP");
-}
-
-// 3. 处理全屏广告
+// 2. 处理全屏广告
 function handleFullScreenAd() {
   // 更精确的检测：必须同时存在广告容器和关闭按钮
   // 先找关闭按钮，避免无广告时做两次等待型查找
@@ -120,26 +102,22 @@ function handleFullScreenAd() {
 // 主流程
 // ==============================
 function main() {
-  var handled = false;
-  
-  // 1. 处理青少年模式
-  if (handleTeenagerMode()) {
-    handled = true;
+  var result = {
+    handled: false,
+    invalidRoom: false,
+    reason: ""
+  };
+
+  if (handleFullScreenAd()) {
+    result.handled = true;
+    if (result.reason == "") { result.reason = "fullscreen_ad"; }
   }
-  
-  // 2. 处理跳过按钮
-  if (!handled) {
-    if (handleSkipButton()) {
-      handled = true;
-    }
+
+  if (handleInvalidLiveRoom()) {
+    result.handled = true;
+    result.invalidRoom = true;
+    result.reason = "invalid_room";
   }
-  
-  // 3. 处理全屏广告
-  if (!handled) {
-    if (handleFullScreenAd()) {
-      handled = true;
-    }
-  }
-  
-  return handled;
+
+  return result;
 }

@@ -623,14 +623,7 @@ function restartApp(reason) {
   }
   logi("[APP_RESTART] 等待应用重启 " + CONFIG.APP_RESTART_WAIT_MS + "ms");
   sleepMs(CONFIG.APP_RESTART_WAIT_MS);
-  if (started) {
-    logi("[APP_RESTART] 检查开屏/全屏广告...");
-    try {
-      callScript("PopupHandler");
-    } catch (e2) {
-      logw("[APP_RESTART] PopupHandler 调用异常: " + e2);
-    }
-  }
+  // 已移除 PopupHandler 调用
 }
 
 function restartToChatTab(reason) {
@@ -937,13 +930,25 @@ function processOneLive(alreadyInLive) {
   // Step 2: 检查直播间有效性
   logi("[STEP_2] 检查直播间有效性...");
   var isValid = false;
+  var invalidRoom = false;
   try {
     // callScript("LOOK_CheckLiveRoom", retryCount, checkInterval)
-    isValid = callScript("LOOK_CheckLiveRoom", CONFIG.LIVE_ROOM_CHECK_RETRY, 1000);
+    var checkRet = callScript("LOOK_CheckLiveRoom", CONFIG.LIVE_ROOM_CHECK_RETRY, 1000);
+    if (checkRet != null && typeof checkRet === "object") {
+      if (checkRet.invalidRoom === true) { invalidRoom = true; }
+      if (checkRet.valid === true) { isValid = true; }
+    } else {
+      if (checkRet === "INVALID_ROOM") { invalidRoom = true; }
+      if (checkRet === true) { isValid = true; }
+    }
   } catch (e) {
     loge("[STEP_2] callScript error: " + e);
   }
-  
+
+  if (invalidRoom) {
+    logi("[STEP_2] 检测到无效直播间（加入合唱），跳过");
+    return "SKIP";
+  }
   if (!isValid) {
     logi("[STEP_2] 直播间无效，跳过");
     return "SKIP";

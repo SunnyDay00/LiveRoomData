@@ -117,23 +117,52 @@ function waitForGiftOverlayToDisappear() {
   }
 }
 
+function normalizePopupResult(ret) {
+  var r = {handled: false, invalidRoom: false};
+  if (ret == null) { return r; }
+  if (ret === "INVALID_ROOM") {
+    r.handled = true;
+    r.invalidRoom = true;
+    return r;
+  }
+  if (typeof ret === "object") {
+    if (ret.handled === true) { r.handled = true; }
+    if (ret.invalidRoom === true) { r.invalidRoom = true; }
+    return r;
+  }
+  if (ret === true) { r.handled = true; }
+  return r;
+}
+
 function handlePopupAndGiftOverlay() {
   // 处理可能的弹窗（全屏广告等）
+  var popup = null;
   try {
-    var handled = callScript("PopupHandler");
-    if (handled) {
-      logi("检测并处理了弹窗(广告)，额外等待 2000ms 让直播间恢复...");
-      sleepMs(2000);
-      
-      // 处理完弹窗后，再次尝试处理一次（防止多重弹窗）
-      var handledAgian = callScript("PopupHandler");
-      if (handledAgian) {
-          logi("再次检测并处理了弹窗，等待 1000ms...");
-          sleepMs(1000);
-      }
-    }
+    popup = normalizePopupResult(callScript("PopupHandler"));
   } catch (e) {
     logi("PopupHandler 调用失败: " + e);
+  }
+  if (popup != null && popup.invalidRoom == true) {
+    return "INVALID_ROOM";
+  }
+  if (popup != null && popup.handled == true) {
+    logi("检测并处理了弹窗(广告)，额外等待 2000ms 让直播间恢复...");
+    sleepMs(2000);
+
+    // 处理完弹窗后，再次尝试处理一次（防止多重弹窗）
+    var popupAgain = null;
+    try {
+      popupAgain = normalizePopupResult(callScript("PopupHandler"));
+    } catch (e2) {
+      logi("PopupHandler 调用失败: " + e2);
+    }
+    if (popupAgain != null && popupAgain.invalidRoom == true) {
+      return "INVALID_ROOM";
+    }
+    if (popupAgain != null && popupAgain.handled == true) {
+      logi("再次检测并处理了弹窗，等待 1000ms...");
+      sleepMs(1000);
+    }
   }
   
   // 如果检测到礼物弹幕，才等待
@@ -143,6 +172,8 @@ function handlePopupAndGiftOverlay() {
   } else {
     logi("未检测到礼物弹幕，继续重试...");
   }
+
+  return null;
 }
 
 // ==============================
@@ -167,7 +198,11 @@ function checkLiveRoomValid(retryCount, checkInterval) {
     
     // 若检查无效，再处理弹窗与礼物弹幕，然后等待后再试
     if (i < retryCount - 1) {
-      handlePopupAndGiftOverlay();
+      var overlayRet = handlePopupAndGiftOverlay();
+      if (overlayRet == "INVALID_ROOM") {
+        logi("检测到无效直播间（加入合唱），返回给主流程处理");
+        return "INVALID_ROOM";
+      }
       sleepMs(checkInterval);
     }
   }
@@ -189,10 +224,11 @@ function main(retryCount, checkInterval) {
     checkInterval = 1000;
   }
   
-  var isValid = checkLiveRoomValid(retryCount, checkInterval);
-  
-  // 直接返回结果
-  return isValid;
+  var ret = checkLiveRoomValid(retryCount, checkInterval);
+  if (ret == "INVALID_ROOM") {
+    return {valid: false, invalidRoom: true};
+  }
+  return {valid: (ret === true), invalidRoom: false};
 }
 
 // 注意：不要在文件末尾调用 main()
