@@ -25,7 +25,18 @@ var CONFIG = {
   TARGET_CHECKED: "false",
   TARGET_CLICKABLE: "true",
   ID_ROOM_NO: "com.netease.play:id/roomNo",
+  CLICKED_KEYS_DIR: "/sdcard/homekey",
+  CLICKED_KEYS_FILE_PREFIX: "LOOK_clicked_rooms_",
+  CLICKED_KEYS_FILE_SUFFIX: ".txt",
   CLICK_WAIT_MS: 2000,
+  SWIPE_START_X: 540,
+  SWIPE_START_Y: 1700,
+  SWIPE_END_X: 540,
+  SWIPE_END_Y: 400,
+  SWIPE_DURATION: 800,
+  SWIPE_AFTER_WAIT_MS: 1200,
+  MAX_SCROLL_ROUNDS: 20,
+  NO_NEW_SCROLL_LIMIT: 3,
   DUMP_WAIT_MS: 300,
   DUMP_STABLE_WAIT_MS: 1200,
   PARSE_LOG_EVERY: 500,
@@ -123,7 +134,38 @@ function shizukuTap(x, y) {
 }
 
 function shizukuBack() {
-  shizukuExec("input keyevent 4");
+  var ok = false;
+  try {
+    logi("[Back] 使用无障碍返回");
+    ok = back();
+  } catch (e) {
+    logw("[Back] 无障碍返回异常: " + e);
+  }
+  return ok;
+}
+
+function doSwipeUp() {
+  logi("[Swipe] 调用 AdbSwipe 上滑");
+  var ret = null;
+  try {
+    var sx = CONFIG.SWIPE_START_X;
+    var sy = CONFIG.SWIPE_START_Y;
+    var ex = CONFIG.SWIPE_END_X;
+    var ey = CONFIG.SWIPE_END_Y;
+    if (sy < ey) {
+      var t = sy;
+      sy = ey;
+      ey = t;
+      t = sx;
+      sx = ex;
+      ex = t;
+    }
+    logi("[Swipe] start=(" + sx + "," + sy + ") end=(" + ex + "," + ey + ") dur=" + CONFIG.SWIPE_DURATION);
+    ret = callScript("AdbSwipe", "swipe", sx, sy, ex, ey, CONFIG.SWIPE_DURATION);
+  } catch (e) {
+    logw("[Swipe] AdbSwipe 异常: " + e);
+  }
+  logi("[Swipe] 结果: " + ret);
 }
 
 function isValidUiXml(xml) {
@@ -623,6 +665,91 @@ function isNonEmptyText(s) {
   return strTrim(s).length > 0;
 }
 
+function pad2(n) {
+  return (n < 10 ? "0" : "") + n;
+}
+
+function civilFromDays(z) {
+  var z2 = z + 719468;
+  var era = Math.floor(z2 / 146097);
+  var doe = z2 - era * 146097;
+  var yoe = Math.floor((doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365);
+  var y = yoe + era * 400;
+  var doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100));
+  var mp = Math.floor((5 * doy + 2) / 153);
+  var d = doy - Math.floor((153 * mp + 2) / 5) + 1;
+  var m = mp + (mp < 10 ? 3 : -9);
+  y = y + (m <= 2 ? 1 : 0);
+  return {y: y, m: m, d: d};
+}
+
+function dateStrYmd() {
+  var utcTime = new Date().getTime();
+  var beijingOffset = 8 * 60 * 60 * 1000;
+  var ms = utcTime + beijingOffset;
+  var days = Math.floor(ms / 86400000);
+  var ymd = civilFromDays(days);
+  return "" + ymd.y + pad2(ymd.m) + pad2(ymd.d);
+}
+
+function buildClickedKeysFilePath() {
+  var d = dateStrYmd();
+  return CONFIG.CLICKED_KEYS_DIR + "/" + CONFIG.CLICKED_KEYS_FILE_PREFIX + d + CONFIG.CLICKED_KEYS_FILE_SUFFIX;
+}
+
+function ensureDir(path) {
+  try {
+    var f = new FileX(path);
+    f.makeDirs();
+  } catch (e) {
+    logw("创建目录失败: " + e);
+  }
+}
+
+function loadClickedKeys(path) {
+  var map = {};
+  var count = 0;
+  try {
+    var f = new FileX(path);
+    if (f != null && f.exists()) {
+      var text = f.read();
+      if (text != null) {
+        var s = "" + text;
+        var lines = s.split("\n");
+        var i = 0;
+        for (i = 0; i < lines.length; i = i + 1) {
+          var line = strTrim(lines[i]);
+          if (line != "") {
+            if (map[line] != true) {
+              map[line] = true;
+              count = count + 1;
+            }
+          }
+        }
+      }
+    }
+  } catch (e) {
+    logw("读取已点击记录失败: " + e);
+  }
+  return {data: map, count: count};
+}
+
+function appendClickedKey(path, key) {
+  if (key == null) {
+    return;
+  }
+  var k = strTrim(key);
+  if (k == "") {
+    return;
+  }
+  try {
+    var f = new FileX(path);
+    f.append(k + "\n");
+  } catch (e) {
+    logw("写入已点击记录失败: " + e);
+  }
+}
+
 function initIndexTextMap() {
   return {"0": "", "1": "", "2": ""};
 }
@@ -737,91 +864,144 @@ function getUserGroupKey(node) {
   return fallback.join("|");
 }
 
+function buildUserGroupKeyForClick(node) {
+  var map = initIndexTextMap();
+  collectIndexTextsInSubtree(node, map);
+  var idx0 = map["0"];
+  var idx1 = map["1"];
+  var idx2 = map["2"];
+  var allowByIdx0 = (idx0 != "" && idx0 != "一起聊");
+  var hasIdx3 = hasChildIndexInSubtree(node, "3");
+  if (!hasIdx3 && !allowByIdx0) {
+    return "";
+  }
+  var key = "";
+  if (allowByIdx0) {
+    var parts = [];
+    if (idx0 != "") { parts.push(idx0); }
+    if (idx1 != "") { parts.push(idx1); }
+    key = parts.join("|");
+  } else if (idx0 == "一起聊") {
+    var parts2 = [];
+    if (idx1 != "") { parts2.push(idx1); }
+    if (idx2 != "") { parts2.push(idx2); }
+    key = parts2.join("|");
+  } else {
+    key = getUserGroupKey(node);
+  }
+  return key;
+}
+
 // ==============================
 // 主入口
 // ==============================
 function main() {
   logi("脚本版本: " + CONFIG.VERSION);
-  logi("开始获取 UI 树并分析...");
-  var xml = dumpUiTreeXml();
-  if (xml == null || xml.indexOf("<hierarchy") < 0) {
-    loge("未获取到有效的 UI 树 XML");
-    return false;
-  }
-
-  logi("开始解析 XML 并构建树...");
-  var treeRoot = buildTreeFromXml(xml);
-  logi("完成构建树，开始匹配用户可点击组...");
-  var userGroups = [];
-  collectUserGroups(treeRoot, userGroups);
-  userGroups = dedupNodes(userGroups);
-
-  if (userGroups.length == 0) {
-    logw("未找到符合条件的用户可点击组");
-    return true;
-  }
-
-  logi("找到用户可点击组数量: " + userGroups.length);
-  var k = 0;
-  for (k = 0; k < userGroups.length; k = k + 1) {
-    logi("开始处理用户组 #" + (k + 1));
-    var map = initIndexTextMap();
-    collectIndexTextsInSubtree(userGroups[k], map);
-    var idx0 = map["0"];
-    var idx1 = map["1"];
-    var idx2 = map["2"];
-    var allowByIdx0 = (idx0 != "" && idx0 != "一起聊");
-    var hasIdx3 = hasChildIndexInSubtree(userGroups[k], "3");
-    if (!hasIdx3 && !allowByIdx0) {
-      continue;
+  ensureDir(CONFIG.CLICKED_KEYS_DIR);
+  var clickedPath = buildClickedKeysFilePath();
+  logi("点击记录文件: " + clickedPath);
+  var loaded = loadClickedKeys(clickedPath);
+  var store = loaded.data;
+  var clickedCount = loaded.count;
+  logi("已点击记录数: " + clickedCount);
+  var seen = {};
+  var round = 0;
+  var noNew = 0;
+  while (round < CONFIG.MAX_SCROLL_ROUNDS) {
+    logi("开始获取 UI 树并分析... round=" + (round + 1));
+    var xml = dumpUiTreeXml();
+    if (xml == null || xml.indexOf("<hierarchy") < 0) {
+      loge("未获取到有效的 UI 树 XML");
+      return false;
     }
-    logi("#" + (k + 1) + " " + formatNode(userGroups[k]));
-    var key = "";
-    if (allowByIdx0) {
-      var parts = [];
-      if (idx0 != "") { parts.push(idx0); }
-      if (idx1 != "") { parts.push(idx1); }
-      key = parts.join("|");
-    } else if (idx0 == "一起聊") {
-      var parts2 = [];
-      if (idx1 != "") { parts2.push(idx1); }
-      if (idx2 != "") { parts2.push(idx2); }
-      key = parts2.join("|");
-    } else {
-      key = getUserGroupKey(userGroups[k]);
-    }
-    logi("#" + (k + 1) + " 用户组KEY: " + key);
 
-    try {
-      logi("#" + (k + 1) + " 进入点击流程");
-      var bounds = getAttr(userGroups[k], "bounds");
-      logi("#" + (k + 1) + " bounds=" + bounds);
-      var pt = parseBoundsCenter(bounds);
-      if (pt == null) {
-        logw("#" + (k + 1) + " bounds 无效，跳过点击");
+    logi("开始解析 XML 并构建树...");
+    var treeRoot = buildTreeFromXml(xml);
+    logi("完成构建树，开始匹配用户可点击组...");
+    var userGroups = [];
+    collectUserGroups(treeRoot, userGroups);
+    userGroups = dedupNodes(userGroups);
+
+    if (userGroups.length == 0) {
+      logw("未找到符合条件的用户可点击组");
+      return true;
+    }
+
+    logi("找到用户可点击组数量: " + userGroups.length);
+    var newCount = 0;
+    var k = 0;
+    for (k = 0; k < userGroups.length; k = k + 1) {
+      var key = buildUserGroupKeyForClick(userGroups[k]);
+      if (key == "") {
         continue;
       }
-      logi("#" + (k + 1) + " 点击进入用户组: x=" + pt.x + " y=" + pt.y);
-      var tapOk = shizukuTap(pt.x, pt.y);
-      logi("#" + (k + 1) + " 点击结果: " + tapOk);
-      logi("#" + (k + 1) + " 等待进入直播间 " + CONFIG.CLICK_WAIT_MS + "ms");
-      sleepMs(CONFIG.CLICK_WAIT_MS);
+      var keyId = "KEY:" + key;
+      if (store[keyId] == true || seen[keyId] == true) {
+        continue;
+      }
+      seen[keyId] = true;
+      store[keyId] = true;
+      appendClickedKey(clickedPath, keyId);
+      newCount = newCount + 1;
 
-      logi("#" + (k + 1) + " 检测 roomNo...");
+      logi("开始处理用户组 #" + (k + 1));
+      logi("#" + (k + 1) + " " + formatNode(userGroups[k]));
+      logi("#" + (k + 1) + " 用户组KEY: " + key);
+
+      try {
+        logi("#" + (k + 1) + " 进入点击流程");
+        var bounds = getAttr(userGroups[k], "bounds");
+        logi("#" + (k + 1) + " bounds=" + bounds);
+        var pt = parseBoundsCenter(bounds);
+        if (pt == null) {
+          logw("#" + (k + 1) + " bounds 无效，跳过点击");
+          continue;
+        }
+        logi("#" + (k + 1) + " 点击进入用户组: x=" + pt.x + " y=" + pt.y);
+        var tapOk = shizukuTap(pt.x, pt.y);
+        logi("#" + (k + 1) + " 点击结果: " + tapOk);
+        logi("#" + (k + 1) + " 等待进入直播间 " + CONFIG.CLICK_WAIT_MS + "ms");
+        sleepMs(CONFIG.CLICK_WAIT_MS);
+
+        logi("#" + (k + 1) + " 检测 roomNo...");
       var roomNo = getRoomNoTextByA11y();
       if (roomNo != "") {
         logi("#" + (k + 1) + " 进入直播间成功，roomNo=" + roomNo);
+        var roomId = "ROOM:" + roomNo;
+        if (store[roomId] != true) {
+          store[roomId] = true;
+          appendClickedKey(clickedPath, roomId);
+        }
+        logi("#" + (k + 1) + " roomNo 获取完成，等待 2000ms 再返回");
+        sleepMs(2000);
+
+        // 仅在确认进入直播间后返回列表
+        shizukuBack();
+        sleepMs(CONFIG.SWIPE_AFTER_WAIT_MS);
+        logi("#" + (k + 1) + " 点击流程结束");
       } else {
         logw("#" + (k + 1) + " 未检测到 roomNo，可能未进入直播间");
       }
-
-      // 返回列表，继续下一个
-      shizukuBack();
-      sleepMs(800);
-      logi("#" + (k + 1) + " 点击流程结束");
     } catch (eClick) {
       loge("#" + (k + 1) + " 点击流程异常: " + eClick);
     }
+    }
+
+    if (newCount == 0) {
+      noNew = noNew + 1;
+    } else {
+      noNew = 0;
+    }
+    logi("本轮新点击用户组数: " + newCount + "，连续无新增轮数: " + noNew);
+    if (noNew >= CONFIG.NO_NEW_SCROLL_LIMIT) {
+      logw("连续无新增达到阈值，停止滚动");
+      break;
+    }
+
+    round = round + 1;
+    logi("执行上滑刷新用户组...");
+    doSwipeUp();
+    sleepMs(CONFIG.SWIPE_AFTER_WAIT_MS);
   }
 
   return true;
