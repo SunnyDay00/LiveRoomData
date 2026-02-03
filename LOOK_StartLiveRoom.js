@@ -31,7 +31,7 @@ var CONFIG = {
   CONTRIB_CLICK_COUNT: 5,
 
   SCROLL_AFTER_WAIT: 800,
-  NO_NEW_SCROLL_LIMIT: 6,
+  NO_NEW_SCROLL_LIMIT: 4,
   CHAT_TAB_CHECK_RETRY: 3,
   CHAT_TAB_CHECK_WAIT_MS: 800,
   CHAT_TAB_TEXT_MAX_STEP: 4,
@@ -46,6 +46,30 @@ var CONFIG = {
   NEXT_SWIPE_END_X: 540,
   NEXT_SWIPE_END_Y: 300,
   NEXT_SWIPE_DURATION: 800,
+
+  // 一起聊列表扫描配置（UI 树遍历点击）
+  LIST_DUMP_PATH: "/sdcard/uidump.xml",
+  LIST_TARGET_CLASS: "android.view.ViewGroup",
+  LIST_TARGET_PACKAGE: "com.netease.play",
+  LIST_TARGET_CONTENT_DESC: "",
+  LIST_TARGET_CHECKABLE: "false",
+  LIST_TARGET_CHECKED: "false",
+  LIST_TARGET_CLICKABLE: "true",
+  LIST_CLICKED_KEYS_DIR: "/sdcard/homekey",
+  LIST_CLICKED_KEYS_FILE_PREFIX: "LOOK_clicked_rooms_",
+  LIST_CLICKED_KEYS_FILE_SUFFIX: ".txt",
+  LIST_SWIPE_START_X: 540,
+  LIST_SWIPE_START_Y: 1700,
+  LIST_SWIPE_END_X: 540,
+  LIST_SWIPE_END_Y: 400,
+  LIST_SWIPE_DURATION: 800,
+  LIST_SWIPE_AFTER_WAIT_MS: 1200,
+  LIST_DUMP_WAIT_MS: 300,
+  LIST_DUMP_STABLE_WAIT_MS: 1200,
+  LIST_PARSE_LOG_EVERY: 500,
+  LIST_PARSE_MAX_MATCHES: 50000,
+  LIST_PARSE_TIMEOUT_MS: 8000,
+  USE_SHIZUKU_DUMP: 1,
   
   FLOAT_LOG_ENABLED: 1,
   DEBUG_PAUSE_ON_ERROR: 0,
@@ -75,6 +99,10 @@ var g_homeKeyFile = null;
 var g_homeKeyData = null;
 var g_lastRoomKey = "";
 var g_skipRestartOnce = false;
+var g_listClickedPath = "";
+var g_listClickedCount = 0;
+var g_listClickedKeyList = [];
+var g_listClickedAllList = [];
 
 // ==============================
 // 工具函数
@@ -296,6 +324,77 @@ function addHomeKey(key) {
   return ok;
 }
 
+// ==============================
+// 一起聊列表卡片去重
+// ==============================
+function buildListClickedKeysFilePath() {
+  var d = dateStrYmd();
+  return CONFIG.LIST_CLICKED_KEYS_DIR + "/" +
+    CONFIG.LIST_CLICKED_KEYS_FILE_PREFIX + d + CONFIG.LIST_CLICKED_KEYS_FILE_SUFFIX;
+}
+
+function loadListClickedKeys(path) {
+  var allList = [];
+  var keyList = [];
+  try {
+    var f = new FileX(path);
+    if (f != null && f.exists()) {
+      var text = f.read();
+      if (text != null) {
+        var s = "" + text;
+        var lines = s.split("\n");
+        var i = 0;
+        for (i = 0; i < lines.length; i = i + 1) {
+          var line = ("" + lines[i]).trim();
+          if (line != "") {
+            if (!containsKey(allList, line)) {
+              allList.push(line);
+              if (line.indexOf("KEY:") == 0) { keyList.push(line); }
+            }
+          }
+        }
+      }
+    }
+  } catch (e) {
+    logw("[LIST_CLICKED] 读取记录失败: " + e);
+  }
+  return {allList: allList, keyList: keyList, count: allList.length};
+}
+
+function appendListClickedKey(path, key) {
+  if (key == null) { return; }
+  var k = ("" + key).trim();
+  if (k == "") { return; }
+  try {
+    var f = new FileX(path);
+    f.append(k + "\n");
+  } catch (e) {
+    logw("[LIST_CLICKED] 写入失败: " + e);
+  }
+}
+
+function initListClickedStore() {
+  ensureDir(CONFIG.LIST_CLICKED_KEYS_DIR);
+  g_listClickedPath = buildListClickedKeysFilePath();
+  var loaded = loadListClickedKeys(g_listClickedPath);
+  g_listClickedAllList = (loaded.allList != null ? loaded.allList : []);
+  g_listClickedKeyList = (loaded.keyList != null ? loaded.keyList : []);
+  g_listClickedCount = loaded.count;
+  logi("[LIST_CLICKED] file=" + g_listClickedPath + " keys=" + g_listClickedCount);
+}
+
+function markListClicked(key) {
+  if (key == null) { return false; }
+  var k = ("" + key).trim();
+  if (k == "") { return false; }
+  if (containsKey(g_listClickedAllList, k)) { return false; }
+  g_listClickedAllList.push(k);
+  appendListClickedKey(g_listClickedPath, k);
+  g_listClickedCount = g_listClickedCount + 1;
+  if (k.indexOf("KEY:") == 0) { g_listClickedKeyList.push(k); }
+  return true;
+}
+
 function logi(msg) { 
   console.info("[" + nowStr() + "][StartLiveRoom][INFO] " + msg);
   if (CONFIG.FLOAT_LOG_ENABLED == 1) {
@@ -506,6 +605,527 @@ function doScrollDown() {
 }
 
 // ==============================
+// 一起聊列表：UI 树 dump + XML 解析
+// ==============================
+function isValidUiXml(xml) {
+  if (xml == null) { return false; }
+  var s = "" + xml;
+  if (s.indexOf("<hierarchy") < 0) { return false; }
+  if (s.indexOf("<node") < 0) { return false; }
+  return true;
+}
+
+function readDumpXmlWithRetry(path, retryCount, waitMs) {
+  var i = 0;
+  for (i = 0; i < retryCount; i = i + 1) {
+    var f = new FileX(path);
+    if (f != null && f.exists()) {
+      var size = f.size();
+      if (size > 0) {
+        var xml = f.read();
+        if (isValidUiXml(xml)) { return "" + xml; }
+      }
+    }
+    sleepMs(waitMs);
+  }
+  return null;
+}
+
+function dumpChatListUiXml() {
+  if (CONFIG.USE_SHIZUKU_DUMP != 1) {
+    logw("[LIST_DUMP] 禁用 Shizuku dump");
+    return null;
+  }
+  if (!ensureShizukuReady()) {
+    logw("[LIST_DUMP] Shizuku 未就绪");
+    return null;
+  }
+  try {
+    var cmd = "uiautomator dump --compressed " + CONFIG.LIST_DUMP_PATH;
+    logi("[LIST_DUMP] " + cmd);
+    execShizuku(cmd);
+  } catch (e) {
+    logw("[LIST_DUMP] dump 异常: " + e);
+  }
+  sleepMs(CONFIG.LIST_DUMP_STABLE_WAIT_MS);
+  var xml = readDumpXmlWithRetry(CONFIG.LIST_DUMP_PATH, 10, CONFIG.LIST_DUMP_WAIT_MS);
+  if (!isValidUiXml(xml)) {
+    logw("[LIST_DUMP] 主路径失败，尝试默认路径");
+    execShizuku("uiautomator dump --compressed");
+    xml = readDumpXmlWithRetry("/sdcard/window_dump.xml", 10, CONFIG.LIST_DUMP_WAIT_MS);
+  }
+  if (!isValidUiXml(xml)) {
+    logw("[LIST_DUMP] 获取 XML 失败");
+    return null;
+  }
+  return "" + xml;
+}
+
+function parseAttrs(tag) {
+  var attrs = {};
+  if (tag == null) { return attrs; }
+  var s = "" + tag;
+  if (s.indexOf("</node") == 0) { return attrs; }
+  var len = s.length;
+  var i = 0;
+  while (i < len) {
+    var eq = s.indexOf("=", i);
+    if (eq < 0) { break; }
+    var j = eq - 1;
+    while (j >= 0) {
+      var cj = s.charAt(j);
+      if (cj == " " || cj == "\n" || cj == "\t" || cj == "<") { break; }
+      j = j - 1;
+    }
+    var key = s.substring(j + 1, eq);
+    var q1 = s.indexOf("\"", eq + 1);
+    if (q1 < 0) { break; }
+    var q2 = s.indexOf("\"", q1 + 1);
+    if (q2 < 0) { break; }
+    if (key != null && key.length > 0) {
+      attrs["" + key] = s.substring(q1 + 1, q2);
+    }
+    i = q2 + 1;
+  }
+  return attrs;
+}
+
+function isSelfClosingNodeTag(tag) {
+  if (tag == null) { return false; }
+  var s = "" + tag;
+  var len = s.length;
+  if (len < 2) { return false; }
+  return s.charAt(len - 2) == "/" && s.charAt(len - 1) == ">";
+}
+
+function buildTreeFromXml(xml) {
+  var startMs = new Date().getTime();
+  var treeRoot = { attrs: {}, children: [] };
+  if (xml == null) { return treeRoot; }
+  var s = "" + xml;
+  var len = s.length;
+  var stack = [treeRoot];
+  var count = 0;
+  var cursor = 0;
+  while (cursor < len) {
+    var nowMs = new Date().getTime();
+    if (nowMs - startMs > CONFIG.LIST_PARSE_TIMEOUT_MS) {
+      logw("[LIST_PARSE] 解析超时，已处理=" + count);
+      break;
+    }
+    var lt = s.indexOf("<", cursor);
+    if (lt < 0) { break; }
+    if (s.indexOf("</node", lt) == lt) {
+      var gt1 = s.indexOf(">", lt + 2);
+      if (gt1 < 0) { break; }
+      if (stack.length > 1) { stack.pop(); }
+      count = count + 1;
+      if (CONFIG.LIST_PARSE_LOG_EVERY > 0 && (count % CONFIG.LIST_PARSE_LOG_EVERY) == 0) {
+        logi("[LIST_PARSE] 进度=" + count);
+      }
+      if (count > CONFIG.LIST_PARSE_MAX_MATCHES) {
+        logw("[LIST_PARSE] 节点数超上限: " + count);
+        break;
+      }
+      cursor = gt1 + 1;
+      continue;
+    }
+    if (s.indexOf("<node", lt) == lt) {
+      var gt2 = s.indexOf(">", lt + 5);
+      if (gt2 < 0) { break; }
+      var tag = s.substring(lt, gt2 + 1);
+      var attrs = null;
+      try { attrs = parseAttrs(tag); } catch (e1) { attrs = {}; }
+      var node = { attrs: attrs, children: [] };
+      var parent = stack[stack.length - 1];
+      if (parent != null && parent.children != null) {
+        parent.children.push(node);
+      }
+      if (!isSelfClosingNodeTag(tag)) { stack.push(node); }
+      count = count + 1;
+      if (CONFIG.LIST_PARSE_LOG_EVERY > 0 && (count % CONFIG.LIST_PARSE_LOG_EVERY) == 0) {
+        logi("[LIST_PARSE] 进度=" + count);
+      }
+      if (count > CONFIG.LIST_PARSE_MAX_MATCHES) {
+        logw("[LIST_PARSE] 节点数超上限: " + count);
+        break;
+      }
+      cursor = gt2 + 1;
+      continue;
+    }
+    var gt3 = s.indexOf(">", lt + 1);
+    if (gt3 < 0) { break; }
+    cursor = gt3 + 1;
+  }
+  return treeRoot;
+}
+
+function getAttr(node, key) {
+  if (node == null) { return ""; }
+  if (node.attrs == null) { return ""; }
+  var v = node.attrs[key];
+  if (v == null) { return ""; }
+  return "" + v;
+}
+
+function parseBoundsCenter(bounds) {
+  if (bounds == null) { return null; }
+  var s = "" + bounds;
+  if (s.length == 0) { return null; }
+  var nums = [];
+  var cur = "";
+  var i = 0;
+  while (i < s.length) {
+    var c = s.charAt(i);
+    if (c >= "0" && c <= "9") {
+      cur = cur + c;
+    } else {
+      if (cur.length > 0) {
+        nums.push(toInt(cur));
+        cur = "";
+      }
+    }
+    i = i + 1;
+  }
+  if (cur.length > 0) { nums.push(toInt(cur)); }
+  if (nums.length < 4) { return null; }
+  var x1 = nums[0];
+  var y1 = nums[1];
+  var x2 = nums[2];
+  var y2 = nums[3];
+  var cx = Math.floor((x1 + x2) / 2);
+  var cy = Math.floor((y1 + y2) / 2);
+  return {x: cx, y: cy};
+}
+
+function toInt(s) {
+  if (s == null) { return 0; }
+  var t = "" + s;
+  var n = 0;
+  var i = 0;
+  while (i < t.length) {
+    var c = t.charAt(i);
+    if (c >= "0" && c <= "9") {
+      n = n * 10 + (c.charCodeAt(0) - 48);
+    }
+    i = i + 1;
+  }
+  return n;
+}
+
+function isTargetUserGroup(node) {
+  if (node == null) { return false; }
+  if (getAttr(node, "class") != CONFIG.LIST_TARGET_CLASS) { return false; }
+  if (getAttr(node, "package") != CONFIG.LIST_TARGET_PACKAGE) { return false; }
+  if (getAttr(node, "content-desc") != CONFIG.LIST_TARGET_CONTENT_DESC) { return false; }
+  if (getAttr(node, "checkable") != CONFIG.LIST_TARGET_CHECKABLE) { return false; }
+  if (getAttr(node, "checked") != CONFIG.LIST_TARGET_CHECKED) { return false; }
+  if (getAttr(node, "clickable") != CONFIG.LIST_TARGET_CLICKABLE) { return false; }
+  return true;
+}
+
+function collectUserGroups(node, out) {
+  if (node == null) { return; }
+  if (isTargetUserGroup(node)) { out.push(node); }
+  var children = node.children;
+  if (children != null) {
+    var i = 0;
+    for (i = 0; i < children.length; i = i + 1) {
+      collectUserGroups(children[i], out);
+    }
+  }
+}
+
+function nodeKey(node) {
+  var cls = getAttr(node, "class");
+  var rid = getAttr(node, "resource-id");
+  var bounds = getAttr(node, "bounds");
+  var text = getAttr(node, "text");
+  var desc = getAttr(node, "content-desc");
+  return cls + "|" + rid + "|" + bounds + "|" + text + "|" + desc;
+}
+
+function dedupNodes(nodes) {
+  var out = [];
+  var map = {};
+  var i = 0;
+  for (i = 0; i < nodes.length; i = i + 1) {
+    var k = nodeKey(nodes[i]);
+    if (map[k] == true) { continue; }
+    map[k] = true;
+    out.push(nodes[i]);
+  }
+  return out;
+}
+
+function strTrim(s) {
+  if (s == null) { return ""; }
+  var t = "" + s;
+  var start = 0;
+  var end = t.length - 1;
+  while (start <= end) {
+    var c1 = t.charAt(start);
+    if (c1 != " " && c1 != "\n" && c1 != "\t" && c1 != "\r") { break; }
+    start = start + 1;
+  }
+  while (end >= start) {
+    var c2 = t.charAt(end);
+    if (c2 != " " && c2 != "\n" && c2 != "\t" && c2 != "\r") { break; }
+    end = end - 1;
+  }
+  if (end < start) { return ""; }
+  return t.substring(start, end + 1);
+}
+
+function isNonEmptyText(s) {
+  return strTrim(s).length > 0;
+}
+
+function initIndexTextMap() {
+  return {"0": "", "1": "", "2": ""};
+}
+
+function hasChildIndexInSubtree(node, idxStr) {
+  if (node == null) { return false; }
+  var stack = [node];
+  while (stack.length > 0) {
+    var cur = stack.pop();
+    if (cur == null) { continue; }
+    var idx = getAttr(cur, "index");
+    if (idx == idxStr) { return true; }
+    var children = cur.children;
+    if (children != null) {
+      var i = 0;
+      for (i = 0; i < children.length; i = i + 1) {
+        stack.push(children[i]);
+      }
+    }
+  }
+  return false;
+}
+
+function allIndexFound(map) {
+  if (map == null) { return false; }
+  return map["0"] != "" && map["1"] != "" && map["2"] != "";
+}
+
+function collectIndexTextsInSubtree(node, map) {
+  if (node == null || map == null) { return; }
+  var stack = [node];
+  while (stack.length > 0) {
+    var cur = stack.pop();
+    if (cur == null) { continue; }
+    var idx = getAttr(cur, "index");
+    if (idx == "0" || idx == "1" || idx == "2") {
+      if (map[idx] == "") {
+        var txt = getAttr(cur, "text");
+        if (isNonEmptyText(txt)) { map[idx] = strTrim(txt); }
+      }
+    }
+    if (allIndexFound(map)) { return; }
+    var children = cur.children;
+    if (children != null) {
+      var i = 0;
+      for (i = 0; i < children.length; i = i + 1) {
+        stack.push(children[i]);
+      }
+    }
+  }
+}
+
+function collectFirstTextsInSubtree(node, limit) {
+  var out = [];
+  if (node == null) { return out; }
+  var stack = [node];
+  while (stack.length > 0) {
+    var cur = stack.pop();
+    if (cur == null) { continue; }
+    var txt = getAttr(cur, "text");
+    if (isNonEmptyText(txt)) {
+      out.push(strTrim(txt));
+      if (out.length >= limit) { return out; }
+    }
+    var children = cur.children;
+    if (children != null) {
+      var i = 0;
+      for (i = 0; i < children.length; i = i + 1) {
+        stack.push(children[i]);
+      }
+    }
+  }
+  return out;
+}
+
+function collectAllTextsInSubtree(node, limit) {
+  var out = [];
+  if (node == null) { return out; }
+  var stack = [node];
+  while (stack.length > 0) {
+    var cur = stack.pop();
+    if (cur == null) { continue; }
+    var txt = getAttr(cur, "text");
+    if (isNonEmptyText(txt)) {
+      out.push(strTrim(txt));
+      if (limit != null && limit > 0 && out.length >= limit) { return out; }
+    }
+    var children = cur.children;
+    if (children != null) {
+      var i = 0;
+      for (i = 0; i < children.length; i = i + 1) {
+        stack.push(children[i]);
+      }
+    }
+  }
+  return out;
+}
+
+function listContainsText(texts, token) {
+  if (texts == null || token == null) { return false; }
+  var t = ("" + token).trim();
+  if (t == "") { return false; }
+  var i = 0;
+  for (i = 0; i < texts.length; i = i + 1) {
+    if (("" + texts[i]).indexOf(t) >= 0) { return true; }
+  }
+  return false;
+}
+
+function isKeyMatchedInStore(groupTexts) {
+  if (g_listClickedKeyList == null || g_listClickedKeyList.length <= 0) { return false; }
+  if (groupTexts == null || groupTexts.length == 0) { return false; }
+  var i = 0;
+  for (i = 0; i < g_listClickedKeyList.length; i = i + 1) {
+    var keyId = g_listClickedKeyList[i];
+    if (keyId == null) { continue; }
+    var raw = "" + keyId;
+    if (raw.indexOf("KEY:") == 0) { raw = raw.substring(4); }
+    if (raw == "") { continue; }
+    var parts = raw.split("|");
+    var ok = true;
+    var j = 0;
+    for (j = 0; j < parts.length; j = j + 1) {
+      if (!listContainsText(groupTexts, parts[j])) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) { return true; }
+  }
+  return false;
+}
+
+function getUserGroupKey(node) {
+  var map = initIndexTextMap();
+  collectIndexTextsInSubtree(node, map);
+  var parts = [];
+  if (map["0"] != "") { parts.push(map["0"]); }
+  if (map["1"] != "") { parts.push(map["1"]); }
+  if (map["2"] != "") { parts.push(map["2"]); }
+  if (parts.length > 0) { return parts.join("|"); }
+  var fallback = collectFirstTextsInSubtree(node, 3);
+  return fallback.join("|");
+}
+
+function buildUserGroupKeyForClick(node) {
+  var map = initIndexTextMap();
+  collectIndexTextsInSubtree(node, map);
+  var idx0 = map["0"];
+  var idx1 = map["1"];
+  var idx2 = map["2"];
+  var allowByIdx0 = (idx0 != "" && idx0 != "一起聊");
+  var hasIdx3 = hasChildIndexInSubtree(node, "3");
+  if (!hasIdx3 && !allowByIdx0) { return ""; }
+  var key = "";
+  if (allowByIdx0) {
+    var parts = [];
+    if (idx0 != "") { parts.push(idx0); }
+    if (idx1 != "") { parts.push(idx1); }
+    key = parts.join("|");
+  } else if (idx0 == "一起聊") {
+    var parts2 = [];
+    if (idx1 != "") { parts2.push(idx1); }
+    if (idx2 != "") { parts2.push(idx2); }
+    key = parts2.join("|");
+  } else {
+    key = getUserGroupKey(node);
+  }
+  return key;
+}
+
+function scanChatListCards() {
+  var xml = dumpChatListUiXml();
+  if (xml == null || xml.indexOf("<hierarchy") < 0) {
+    logw("[LIST_SCAN] XML 获取失败");
+    return {items: [], allKeysArr: []};
+  }
+  var treeRoot = buildTreeFromXml(xml);
+  var groups = [];
+  collectUserGroups(treeRoot, groups);
+  groups = dedupNodes(groups);
+  var items = [];
+  var allKeysArr = [];
+  var seenAll = [];
+  var seenItems = [];
+  var i = 0;
+  for (i = 0; i < groups.length; i = i + 1) {
+    var key = buildUserGroupKeyForClick(groups[i]);
+    if (key == "") { continue; }
+    var keyId = "KEY:" + key;
+    logi("[LIST_KEY] keyId=" + keyId);
+    if (!containsKey(seenAll, keyId)) { seenAll.push(keyId); allKeysArr.push(keyId); }
+    var groupTexts = collectAllTextsInSubtree(groups[i], 30);
+    if (containsKey(g_listClickedAllList, keyId) || containsKey(seenItems, keyId) || isKeyMatchedInStore(groupTexts)) { continue; }
+    seenItems.push(keyId);
+    var bounds = getAttr(groups[i], "bounds");
+    var pt = parseBoundsCenter(bounds);
+    if (pt == null) { continue; }
+    items.push({keyId: keyId, key: key, x: pt.x, y: pt.y});
+  }
+  return {items: items, allKeysArr: allKeysArr};
+}
+
+function buildKeysSignatureArr(list) {
+  if (list == null || list.length <= 0) { return ""; }
+  var arr = list.slice(0);
+  arr.sort();
+  return arr.join("|");
+}
+
+function listSwipeUp() {
+  try {
+    var sx = CONFIG.LIST_SWIPE_START_X;
+    var sy = CONFIG.LIST_SWIPE_START_Y;
+    var ex = CONFIG.LIST_SWIPE_END_X;
+    var ey = CONFIG.LIST_SWIPE_END_Y;
+    if (sy < ey) {
+      var t = sy; sy = ey; ey = t;
+      t = sx; sx = ex; ex = t;
+    }
+    callScript("AdbSwipe", "swipe", sx, sy, ex, ey, CONFIG.LIST_SWIPE_DURATION);
+  } catch (e) {
+    logw("[LIST_SWIPE] 上滑异常: " + e);
+  }
+  sleepMs(CONFIG.LIST_SWIPE_AFTER_WAIT_MS);
+}
+
+function listSwipeDown() {
+  try {
+    var sx = CONFIG.LIST_SWIPE_START_X;
+    var sy = CONFIG.LIST_SWIPE_START_Y;
+    var ex = CONFIG.LIST_SWIPE_END_X;
+    var ey = CONFIG.LIST_SWIPE_END_Y;
+    if (sy > ey) {
+      var t = sy; sy = ey; ey = t;
+      t = sx; sx = ex; ex = t;
+    }
+    callScript("AdbSwipe", "swipe", sx, sy, ex, ey, CONFIG.LIST_SWIPE_DURATION);
+  } catch (e) {
+    logw("[LIST_SWIPE] 下滑异常: " + e);
+  }
+  sleepMs(CONFIG.LIST_SWIPE_AFTER_WAIT_MS);
+}
+
+// ==============================
 // App操作
 // ==============================
 function safeLaunchApp() {
@@ -529,16 +1149,12 @@ function safeKillBackgroundApp() {
 }
 
 function checkShizukuInstalled() {
-  try {
-    if (getAppVersionName(CONFIG.SHIZUKU_PKG)) {
-      return true;
-    }
-  } catch (e) {}
+  // 避免在部分引擎中 getAppVersionName 不存在导致编译失败
   return true;
 }
 
 function ensureShizukuReady() {
-  if (CONFIG.USE_SHIZUKU_RESTART != 1) {
+  if (CONFIG.USE_SHIZUKU_RESTART != 1 && CONFIG.USE_SHIZUKU_DUMP != 1) {
     return false;
   }
   if (!checkShizukuInstalled()) {
@@ -883,10 +1499,64 @@ function enterNextLiveBySwipe(prevKey) {
     var curKey = normalizeKeyText(getRoomKeyFromLiveRoom());
     var prev = normalizeKeyText(prevKey);
     if (curKey != "" && prev != "" && curKey != prev) {
+      try {
+        var ph = callScript("PopupHandler");
+        if (ph != null && ph.handled == true) { sleepMs(800); }
+      } catch (eph) {
+        logw("[POPUP] enterNextLiveBySwipe 异常: " + eph);
+      }
       logi("[NEXT_LIVE] 已进入下一个直播间 key=" + curKey);
       return true;
     }
     logw("[NEXT_LIVE] 未进入下一个直播间 prevKey=" + prev + " curKey=" + curKey);
+  }
+  return false;
+}
+
+function tapChatListItem(item) {
+  if (item == null) { return false; }
+  var x = item.x;
+  var y = item.y;
+  if (x == null || y == null) { return false; }
+  var ok = false;
+  try {
+    ok = callScript("AdbClick", "click", x, y);
+  } catch (e) {
+    logw("[LIST_TAP] AdbClick 异常: " + e);
+    ok = false;
+  }
+  return ok;
+}
+
+function backToChatTab() {
+  var i = 0;
+  for (i = 0; i < 6; i = i + 1) {
+    logi("[BACK_TO_CHAT] attempt=" + (i + 1) + "/6");
+    if (isChatTabPage()) { return true; }
+
+    if (isLiveRoomPage()) {
+      logi("[BACK_TO_CHAT] in live room, do back()");
+      backAndWait("BACK_TO_CHAT");
+    } else {
+      logi("[BACK_TO_CHAT] not in live room, try popup+back()");
+      try {
+        var ph = callScript("PopupHandler");
+        if (ph != null && ph.handled == true) { sleepMs(500); }
+      } catch (eph) {}
+      try { back(); } catch (e) {}
+    }
+
+    // 给页面更长的稳定时间
+    sleepMs(CONFIG.CLICK_WAIT_MS + 800);
+    if (isChatTabPage()) { return true; }
+    logw("[BACK_TO_CHAT] still not in chat tab after attempt=" + (i + 1));
+  }
+
+  // 多次返回仍失败时才兜底回首页
+  logw("[BACK_TO_CHAT] failed after 6 attempts, fallback ensureHome+ensureChatTab");
+  if (ensureHome()) {
+    ensureChatTab();
+    if (isChatTabPage()) { return true; }
   }
   return false;
 }
@@ -910,6 +1580,14 @@ function processOneLive(alreadyInLive) {
     logi("[STEP_1] 成功进入直播间");
   }
 
+  // Step 1.0: 进入直播间后处理弹窗
+  try {
+    var ph = callScript("PopupHandler");
+    if (ph != null && ph.handled == true) { sleepMs(800); }
+  } catch (eph) {
+    logw("[POPUP] processOneLive 异常: " + eph);
+  }
+
   // Step 1.1: 进入直播间后优先去重（基于 roomNo）
   if (CONFIG.CLICK_LIVE_WAIT_MS != null && CONFIG.CLICK_LIVE_WAIT_MS > 0) {
     logi("[STEP_1.1] 等待 CLICK_LIVE_WAIT_MS=" + CONFIG.CLICK_LIVE_WAIT_MS + "ms 后读取 roomNo");
@@ -923,6 +1601,7 @@ function processOneLive(alreadyInLive) {
       return "SKIP";
     }
     logi("[STEP_1.1] 去重通过：新直播间 key=" + earlyKey + " seenCount=" + g_seen.length);
+    markListClicked("ROOM:" + earlyKey);
   } else {
     logw("[STEP_1.1] roomNo 为空，无法提前去重");
   }
@@ -1059,40 +1738,36 @@ function processOneLive(alreadyInLive) {
 // ==============================
 function mainLoop() {
   var noNewScroll = 0;
+  var lastKeysSig = "";
 
   while (true) {
     // 检查数据库写入上限
     var insertCount = 0;
-    try {
-      // callScript("DataHandler", "getCount")
-      insertCount = callScript("DataHandler", "getCount");
-    } catch (e) {}
-    
+    try { insertCount = callScript("DataHandler", "getCount"); } catch (e) {}
     if (insertCount >= CONFIG.STOP_AFTER_ROWS) {
       logw("达到 STOP_AFTER_ROWS=" + CONFIG.STOP_AFTER_ROWS);
       break;
     }
 
     // 检查直播间点击次数限制
-    if (CONFIG.LOOP_LIVE_TOTAL != null) {
-      if (CONFIG.LOOP_LIVE_TOTAL > 0) {
-        if (g_liveClickCount >= CONFIG.LOOP_LIVE_TOTAL) {
-          logw("达到 LOOP_LIVE_TOTAL=" + CONFIG.LOOP_LIVE_TOTAL);
-          break;
-        }
+    if (CONFIG.LOOP_LIVE_TOTAL != null && CONFIG.LOOP_LIVE_TOTAL > 0) {
+      if (g_liveClickCount >= CONFIG.LOOP_LIVE_TOTAL) {
+        logw("达到 LOOP_LIVE_TOTAL=" + CONFIG.LOOP_LIVE_TOTAL);
+        break;
       }
     }
 
-    // 已在直播间则直接处理，否则重启后切到一起聊
-    var inLive = isLiveRoomPage();
-    if (!inLive) {
+    // 确保在一起聊页面
+    if (isLiveRoomPage()) {
+      backToChatTab();
+    }
+    if (!isChatTabPage()) {
       if (g_skipRestartOnce == true) {
         g_skipRestartOnce = false;
         logw("主脚本刚拉起App，优先回首页并切到一起聊（跳过重启流程）");
         if (!ensureHome()) {
           logw("回首页失败，改为执行重启流程(RESTART_TO_CHAT_RETRY=" + CONFIG.RESTART_TO_CHAT_RETRY + ")");
-          var ok2 = restartToChatTab("not_in_live");
-          if (!ok2) {
+          if (!restartToChatTab("not_in_chat")) {
             logw("重启流程失败（未进入一起聊），等待 " + CONFIG.CHAT_TAB_CHECK_WAIT_MS + "ms 后重试");
             sleepMs(CONFIG.CHAT_TAB_CHECK_WAIT_MS);
             continue;
@@ -1105,9 +1780,8 @@ function mainLoop() {
           continue;
         }
       } else {
-        logw("不在直播间，执行重启流程(RESTART_TO_CHAT_RETRY=" + CONFIG.RESTART_TO_CHAT_RETRY + ")");
-        var ok = restartToChatTab("not_in_live");
-        if (!ok) {
+        logw("不在一起聊界面，执行重启流程(RESTART_TO_CHAT_RETRY=" + CONFIG.RESTART_TO_CHAT_RETRY + ")");
+        if (!restartToChatTab("not_in_chat")) {
           logw("重启流程失败（未进入一起聊），等待 " + CONFIG.CHAT_TAB_CHECK_WAIT_MS + "ms 后重试");
           sleepMs(CONFIG.CHAT_TAB_CHECK_WAIT_MS);
           continue;
@@ -1115,54 +1789,82 @@ function mainLoop() {
       }
     }
 
-    // 通过固定坐标点击进入直播间
-    var r = processOneLive(inLive);
-    if (r == "STOP_DB_MAX") {
-      logw("达到数据库上限，停止");
-      break;
-    }
-    if (r == "FAIL_ENTER") {
-      logw("进入直播间失败(ENTER_LIVE_RETRY=" + CONFIG.ENTER_LIVE_RETRY + ")，跳过滑动，执行重启流程(RESTART_TO_CHAT_RETRY=" + CONFIG.RESTART_TO_CHAT_RETRY + ")");
-      var okRestart = restartToChatTab("enter_live_failed");
-      if (!okRestart) {
-        logw("重启流程失败（未进入一起聊），等待 " + CONFIG.CHAT_TAB_CHECK_WAIT_MS + "ms 后重试");
-        sleepMs(CONFIG.CHAT_TAB_CHECK_WAIT_MS);
-      }
-      continue;
-    }
+    // 从直播间返回后，给列表界面稳定时间再 dump UI
+    sleepMs(1500);
 
-    if (r == "OK") {
-      noNewScroll = 0;
-    } else if (r == "SKIP") {
+    // 扫描列表
+    var scan = scanChatListCards();
+    var items = scan.items;
+    var keysSig = buildKeysSignatureArr(scan.allKeysArr);
+    if (keysSig != "") { lastKeysSig = keysSig; }
+
+    if (items.length == 0) {
       noNewScroll = noNewScroll + 1;
     } else {
-      noNewScroll = noNewScroll + 1;
-      logw("处理失败，继续尝试下一个直播间");
+      noNewScroll = 0;
     }
 
-    // 滑动进入下一个直播间（失败触发重启流程）
-    var prevKey = normalizeKeyText(g_lastRoomKey);
-    if (prevKey == "") {
-      prevKey = normalizeKeyText(getRoomKeyFromLiveRoom());
-    }
-    var nextOk = enterNextLiveBySwipe(prevKey);
-    if (!nextOk) {
-      logw("多次滑动仍未进入下一个直播间，执行重启流程(RESTART_TO_CHAT_RETRY=" + CONFIG.RESTART_TO_CHAT_RETRY + ")");
-      var okNextRestart = restartToChatTab("next_live_failed");
-      if (!okNextRestart) {
-        logw("重启流程失败（未进入一起聊），等待 " + CONFIG.CHAT_TAB_CHECK_WAIT_MS + "ms 后重试");
-        sleepMs(CONFIG.CHAT_TAB_CHECK_WAIT_MS);
+    // 逐个点击进入直播间
+    var i = 0;
+    for (i = 0; i < items.length; i = i + 1) {
+      if (CONFIG.LOOP_LIVE_TOTAL != null && CONFIG.LOOP_LIVE_TOTAL > 0) {
+        if (g_liveClickCount >= CONFIG.LOOP_LIVE_TOTAL) { break; }
       }
-      continue;
+      markListClicked(items[i].keyId);
+      logi("[LIST_CLICK] key=" + items[i].key + " x=" + items[i].x + " y=" + items[i].y);
+      var tapOk = tapChatListItem(items[i]);
+      logi("[LIST_CLICK] tapOk=" + tapOk);
+      sleepMs(CONFIG.CLICK_LIVE_WAIT_MS);
+      if (!isLiveRoomPage()) {
+        logw("[LIST_CLICK] 未进入直播间，跳过");
+        continue;
+      }
+      var r = processOneLive(true);
+      if (r == "STOP_DB_MAX") {
+        logw("达到数据库上限，停止");
+        return;
+      }
+      logi("[AFTER_LIVE] processOneLive result=" + r + " , back to chat...");
+      var backOk = backToChatTab();
+      logi("[AFTER_LIVE] backToChatTab ok=" + backOk);
+      if (!backOk) {
+        logw("返回一起聊失败，执行重启流程");
+        restartToChatTab("back_to_chat_failed");
+      }
+      // 每处理一个直播间都检查数据上限
+      try { insertCount = callScript("DataHandler", "getCount"); } catch (e2) {}
+      if (insertCount >= CONFIG.STOP_AFTER_ROWS) {
+        logw("达到 STOP_AFTER_ROWS=" + CONFIG.STOP_AFTER_ROWS);
+        return;
+      }
     }
 
     logi("noNewScroll=" + noNewScroll + "/" + CONFIG.NO_NEW_SCROLL_LIMIT);
-
     if (noNewScroll >= CONFIG.NO_NEW_SCROLL_LIMIT) {
-      logw("连续多次无新内容，重启");
-      restartApp("no_new_items");
-      noNewScroll = 0;
+      // 判定是否为页面已完成或卡顿
+      var sig0 = lastKeysSig;
+      listSwipeUp();
+      var scanUp = scanChatListCards();
+      var sigUp = buildKeysSignatureArr(scanUp.allKeysArr);
+      listSwipeDown();
+      var scanDown = scanChatListCards();
+      var sigDown = buildKeysSignatureArr(scanDown.allKeysArr);
+      var hasChange = false;
+      if (sigDown != "" && sigDown != sigUp) { hasChange = true; }
+      if (!hasChange && sig0 != "" && sigDown != "" && sigDown != sig0) { hasChange = true; }
+      if (hasChange) {
+        logw("列表可滚动但无新卡片，认为采集完毕");
+        break;
+      } else {
+        logw("列表无变化，疑似卡顿，重启后继续");
+        restartToChatTab("list_stuck");
+        noNewScroll = 0;
+        continue;
+      }
     }
+
+    // 继续上滑加载下一屏
+    listSwipeUp();
   }
 }
 
@@ -1198,6 +1900,28 @@ function main(config) {
     if (params.NEXT_SWIPE_END_X != null) { CONFIG.NEXT_SWIPE_END_X = params.NEXT_SWIPE_END_X; }
     if (params.NEXT_SWIPE_END_Y != null) { CONFIG.NEXT_SWIPE_END_Y = params.NEXT_SWIPE_END_Y; }
     if (params.NEXT_SWIPE_DURATION != null) { CONFIG.NEXT_SWIPE_DURATION = params.NEXT_SWIPE_DURATION; }
+    if (params.LIST_DUMP_PATH != null) { CONFIG.LIST_DUMP_PATH = params.LIST_DUMP_PATH; }
+    if (params.LIST_TARGET_CLASS != null) { CONFIG.LIST_TARGET_CLASS = params.LIST_TARGET_CLASS; }
+    if (params.LIST_TARGET_PACKAGE != null) { CONFIG.LIST_TARGET_PACKAGE = params.LIST_TARGET_PACKAGE; }
+    if (params.LIST_TARGET_CONTENT_DESC != null) { CONFIG.LIST_TARGET_CONTENT_DESC = params.LIST_TARGET_CONTENT_DESC; }
+    if (params.LIST_TARGET_CHECKABLE != null) { CONFIG.LIST_TARGET_CHECKABLE = params.LIST_TARGET_CHECKABLE; }
+    if (params.LIST_TARGET_CHECKED != null) { CONFIG.LIST_TARGET_CHECKED = params.LIST_TARGET_CHECKED; }
+    if (params.LIST_TARGET_CLICKABLE != null) { CONFIG.LIST_TARGET_CLICKABLE = params.LIST_TARGET_CLICKABLE; }
+    if (params.LIST_CLICKED_KEYS_DIR != null) { CONFIG.LIST_CLICKED_KEYS_DIR = params.LIST_CLICKED_KEYS_DIR; }
+    if (params.LIST_CLICKED_KEYS_FILE_PREFIX != null) { CONFIG.LIST_CLICKED_KEYS_FILE_PREFIX = params.LIST_CLICKED_KEYS_FILE_PREFIX; }
+    if (params.LIST_CLICKED_KEYS_FILE_SUFFIX != null) { CONFIG.LIST_CLICKED_KEYS_FILE_SUFFIX = params.LIST_CLICKED_KEYS_FILE_SUFFIX; }
+    if (params.LIST_SWIPE_START_X != null) { CONFIG.LIST_SWIPE_START_X = params.LIST_SWIPE_START_X; }
+    if (params.LIST_SWIPE_START_Y != null) { CONFIG.LIST_SWIPE_START_Y = params.LIST_SWIPE_START_Y; }
+    if (params.LIST_SWIPE_END_X != null) { CONFIG.LIST_SWIPE_END_X = params.LIST_SWIPE_END_X; }
+    if (params.LIST_SWIPE_END_Y != null) { CONFIG.LIST_SWIPE_END_Y = params.LIST_SWIPE_END_Y; }
+    if (params.LIST_SWIPE_DURATION != null) { CONFIG.LIST_SWIPE_DURATION = params.LIST_SWIPE_DURATION; }
+    if (params.LIST_SWIPE_AFTER_WAIT_MS != null) { CONFIG.LIST_SWIPE_AFTER_WAIT_MS = params.LIST_SWIPE_AFTER_WAIT_MS; }
+    if (params.LIST_DUMP_WAIT_MS != null) { CONFIG.LIST_DUMP_WAIT_MS = params.LIST_DUMP_WAIT_MS; }
+    if (params.LIST_DUMP_STABLE_WAIT_MS != null) { CONFIG.LIST_DUMP_STABLE_WAIT_MS = params.LIST_DUMP_STABLE_WAIT_MS; }
+    if (params.LIST_PARSE_LOG_EVERY != null) { CONFIG.LIST_PARSE_LOG_EVERY = params.LIST_PARSE_LOG_EVERY; }
+    if (params.LIST_PARSE_MAX_MATCHES != null) { CONFIG.LIST_PARSE_MAX_MATCHES = params.LIST_PARSE_MAX_MATCHES; }
+    if (params.LIST_PARSE_TIMEOUT_MS != null) { CONFIG.LIST_PARSE_TIMEOUT_MS = params.LIST_PARSE_TIMEOUT_MS; }
+    if (params.USE_SHIZUKU_DUMP != null) { CONFIG.USE_SHIZUKU_DUMP = params.USE_SHIZUKU_DUMP; }
     if (params.FLOAT_LOG_ENABLED != null) { CONFIG.FLOAT_LOG_ENABLED = params.FLOAT_LOG_ENABLED; }
     if (params.DEBUG_PAUSE_ON_ERROR != null) { CONFIG.DEBUG_PAUSE_ON_ERROR = params.DEBUG_PAUSE_ON_ERROR; }
     if (params.USE_SHIZUKU_RESTART != null) { CONFIG.USE_SHIZUKU_RESTART = params.USE_SHIZUKU_RESTART; }
@@ -1223,6 +1947,8 @@ function main(config) {
 
   // 初始化本地homekey文件
   initHomeKeyStore();
+  // 初始化列表卡片去重
+  initListClickedStore();
   
   // 初始化数据库
   try {
@@ -1261,6 +1987,7 @@ function main(config) {
   }
   
   logi("脚本结束");
+  return g_liveClickCount;
 }
 
 // 注意：不要在文件末尾调用 main()

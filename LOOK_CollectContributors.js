@@ -20,6 +20,7 @@ var ID_USER_NAME = "com.netease.play:id/artist_name";
 var ID_AVATAR = "com.netease.play:id/avatar";
 var ID_USER_MORE = "com.netease.play:id/tv_user_more";
 var ID_PROFILE_TVID = "com.netease.play:id/tvID";
+var ID_PROFILE_TVID_VALUE = "com.netease.play:id/tvIDValue";
 var ID_NUM = "com.netease.play:id/num";
 
 // 应用名称（用于数据库记录）
@@ -373,9 +374,17 @@ function readUserIdFromProfile(clickWaitMs) {
 
   var profileId = cleanId(getTextOfFirst("id:" + ID_PROFILE_TVID, {maxStep: 2}));
   if (isEmptyText(profileId)) {
-    logw("[readUserIdFromProfile] tvID未找到，尝试上滑后再次查找");
+    logw("[readUserIdFromProfile] tvID未找到，尝试读取tvIDValue");
+    profileId = cleanId(getTextOfFirst("id:" + ID_PROFILE_TVID_VALUE, {maxStep: 2}));
+  }
+  if (isEmptyText(profileId)) {
+    logw("[readUserIdFromProfile] tvID仍未找到，尝试上滑后再次查找");
     doProfileSwipeUp();
     profileId = cleanId(getTextOfFirst("id:" + ID_PROFILE_TVID, {maxStep: 2}));
+    if (isEmptyText(profileId)) {
+      logw("[readUserIdFromProfile] 上滑后tvID仍为空，尝试读取tvIDValue");
+      profileId = cleanId(getTextOfFirst("id:" + ID_PROFILE_TVID_VALUE, {maxStep: 2}));
+    }
   }
 
   if (isEmptyText(profileId)) {

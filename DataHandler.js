@@ -1,18 +1,21 @@
 // Worker URL (deployed successfully)
 var CLOUD_API_URL = "https://neon.sssr.edu.kg/upload"; 
 var API_KEY = "lrm_7Kx9mP2vN5qR8wT4yU3zB6aC1dE"; // API key for authentication
+var g_insertCount = 0;
+var g_dbName = "";
+var g_inited = false;
 
 function uploadToCloud(data) {
   if (CLOUD_API_URL == null) {
      alert("URL Config Error");
-     return;
+     return false;
   }
 
   if (typeof rsContext === "undefined") {
       var msg = "No rsContext";
       console.error(msg);
       alert(msg);
-      return;
+      return false;
   }
   
   console.log("Starting cloud upload...");
@@ -115,7 +118,7 @@ function uploadToCloud(data) {
     
     if (!success) {
         alert("上传失败(重试3次):\\n" + lastError);
-        return;
+        return false;
     }
     
   } catch (e) {
@@ -128,8 +131,10 @@ function uploadToCloud(data) {
     }
     console.error(exMsg);
     alert("脚本运行错误: " + exMsg);
-    return;
+    return false;
   }
+  
+  return true;
 }
 
 function dbInsertRow(appName, homeid, homename, fansnumber, homeip, dayuesenumber, weekuesenumber, monthuesenumber, ueseid, uesename, consumption, ueseip, summaryConsumption) {
@@ -152,8 +157,12 @@ function dbInsertRow(appName, homeid, homename, fansnumber, homeip, dayuesenumbe
       summaryconsumption: summaryConsumption
   };
   
-  uploadToCloud(rowData);
-  return 1;
+  var ok = uploadToCloud(rowData);
+  if (ok) {
+    g_insertCount = g_insertCount + 1;
+    return 1;
+  }
+  return 0;
 }
 
 function main(action, param1, param2, param3, param4, param5, param6, param7, param8, param9, param10, param11, param12, param13) {
@@ -166,6 +175,27 @@ function main(action, param1, param2, param3, param4, param5, param6, param7, pa
     if (opts.row != null) {
         row = opts.row;
     }
+    if (opts.dbName != null) {
+        param1 = opts.dbName;
+    }
+  }
+
+  if (action == "init") {
+    g_insertCount = 0;
+    g_inited = true;
+    g_dbName = (param1 == null ? "" : (param1 + ""));
+    console.log("DataHandler init: " + g_dbName);
+    return 1;
+  }
+
+  if (action == "getCount") {
+    return g_insertCount;
+  }
+
+  if (action == "close") {
+    g_inited = false;
+    console.log("DataHandler close: " + g_dbName);
+    return g_insertCount;
   }
 
   // 2. Build rowData based on available input
@@ -231,8 +261,12 @@ function main(action, param1, param2, param3, param4, param5, param6, param7, pa
   if(rowData.summaryconsumption == null) { rowData.summaryconsumption = ""; }
 
   if (action == "insert") {
-    uploadToCloud(rowData);
-    return 1;
+    var ok2 = uploadToCloud(rowData);
+    if (ok2) {
+      g_insertCount = g_insertCount + 1;
+      return 1;
+    }
+    return 0;
   }
   return 0;
 }
