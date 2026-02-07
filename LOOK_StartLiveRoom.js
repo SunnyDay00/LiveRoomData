@@ -1309,6 +1309,23 @@ function isLiveRoomPage() {
   return false;
 }
 
+function isInLookApp() {
+  try {
+    var cur = getCurPackageName();
+    if (cur == CONFIG.APP_PKG) {
+      return true;
+    }
+    if (cur != null && cur != "" && cur != "null" && cur != "undefined") {
+      logw("[PKG] 当前前台包名=" + cur + "，目标包名=" + CONFIG.APP_PKG);
+      return false;
+    }
+  } catch (e) {
+    logw("[PKG] getCurPackageName 异常: " + e);
+  }
+  // 当前台包名不可用时，避免误判导致频繁拉起
+  return true;
+}
+
 function ensureHome() {
   var i = 0;
 
@@ -1538,6 +1555,14 @@ function backToChatTab() {
       logi("[BACK_TO_CHAT] in live room, do back()");
       backAndWait("BACK_TO_CHAT");
     } else {
+      if (!isInLookApp()) {
+        logw("[BACK_TO_CHAT] 不在 LOOK 前台，先拉起应用");
+        var started = startApp();
+        logi("[BACK_TO_CHAT] startApp ok=" + started);
+        sleepMs(CONFIG.APP_RESTART_WAIT_MS);
+        if (isChatTabPage()) { return true; }
+        continue;
+      }
       logi("[BACK_TO_CHAT] not in live room, try popup+back()");
       try {
         var ph = callScript("PopupHandler");
@@ -1824,6 +1849,10 @@ function mainLoop() {
         logw("达到数据库上限，停止");
         return;
       }
+      // 先等待页面状态稳定，再执行返回一起聊判定，避免切窗瞬态误判
+      var stableWaitMs = 1000;
+      logi("[AFTER_LIVE] wait stable " + stableWaitMs + "ms before backToChatTab");
+      sleepMs(stableWaitMs);
       logi("[AFTER_LIVE] processOneLive result=" + r + " , back to chat...");
       var backOk = backToChatTab();
       logi("[AFTER_LIVE] backToChatTab ok=" + backOk);

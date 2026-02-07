@@ -1,9 +1,42 @@
 // Worker URL (deployed successfully)
 var CLOUD_API_URL = "https://neon.sssr.edu.kg/upload"; 
 var API_KEY = "lrm_7Kx9mP2vN5qR8wT4yU3zB6aC1dE"; // API key for authentication
-var g_insertCount = 0;
 var g_dbName = "";
-var g_inited = false;
+var COUNT_FILE_PATH = "/storage/emulated/0/LiveRoomData/datahandler_count.txt";
+
+function parsePositiveInt(text) {
+  if (text == null) { return 0; }
+  var t = ("" + text).trim();
+  if (t == "") { return 0; }
+  var i = 0;
+  var n = 0;
+  for (i = 0; i < t.length; i = i + 1) {
+    var c = t.charAt(i);
+    if (c < "0" || c > "9") { return 0; }
+    n = n * 10 + (c.charCodeAt(0) - 48);
+  }
+  return n;
+}
+
+function readCountFromFile() {
+  try {
+    var f = new FileX(COUNT_FILE_PATH);
+    var s = f.read();
+    return parsePositiveInt(s);
+  } catch (e) {
+  }
+  return 0;
+}
+
+function writeCountToFile(n) {
+  try {
+    var f2 = new FileX(COUNT_FILE_PATH);
+    f2.write("" + n);
+    return true;
+  } catch (e) {
+  }
+  return false;
+}
 
 function uploadToCloud(data) {
   if (CLOUD_API_URL == null) {
@@ -159,7 +192,9 @@ function dbInsertRow(appName, homeid, homename, fansnumber, homeip, dayuesenumbe
   
   var ok = uploadToCloud(rowData);
   if (ok) {
-    g_insertCount = g_insertCount + 1;
+    var cnt = readCountFromFile();
+    cnt = cnt + 1;
+    writeCountToFile(cnt);
     return 1;
   }
   return 0;
@@ -181,21 +216,18 @@ function main(action, param1, param2, param3, param4, param5, param6, param7, pa
   }
 
   if (action == "init") {
-    g_insertCount = 0;
-    g_inited = true;
     g_dbName = (param1 == null ? "" : (param1 + ""));
     console.log("DataHandler init: " + g_dbName);
     return 1;
   }
 
   if (action == "getCount") {
-    return g_insertCount;
+    return readCountFromFile();
   }
 
   if (action == "close") {
-    g_inited = false;
     console.log("DataHandler close: " + g_dbName);
-    return g_insertCount;
+    return readCountFromFile();
   }
 
   // 2. Build rowData based on available input
@@ -263,7 +295,9 @@ function main(action, param1, param2, param3, param4, param5, param6, param7, pa
   if (action == "insert") {
     var ok2 = uploadToCloud(rowData);
     if (ok2) {
-      g_insertCount = g_insertCount + 1;
+      var cnt2 = readCountFromFile();
+      cnt2 = cnt2 + 1;
+      writeCountToFile(cnt2);
       return 1;
     }
     return 0;

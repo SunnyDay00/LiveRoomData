@@ -15,7 +15,7 @@ var CONFIG = {
   APP_NAME: "LOOK直播", // 应用名称
   GKD_PKG: "hello.litiaotiao.app-1", // 李跳跳（主包名）
   GKD_PKG_LIST: ["hello.litiaotiao.app-1", "hello.litiaotiao.app"], // 李跳跳候选包名（如多开/分身）
-  AZNFZ_PKG: "com.libra.aznfz-1", // 冰狐智能辅助包名（客户端）
+  AZNFZ_PKG: "com.libra.aznfz", // 冰狐智能辅助包名（客户端）
 
   LOOP_LIVE_TOTAL: 0, // 0=无限；>0=点击直播间总次数
   STOP_AFTER_ROWS: 200, // 写入多少条停止（安全停止）
@@ -105,10 +105,58 @@ var CONFIG = {
 var g_mainLaunchedApp = 0;
 var g_forceLaunchApp = 0;
 var g_needWaitAfterStart = 0;
+var COUNT_DIR = "/storage/emulated/0/LiveRoomData";
+var COUNT_FILE_PATH = "/storage/emulated/0/LiveRoomData/datahandler_count.txt";
 
 // ==============================
 // 工具函数
 // ==============================
+function ensureDir(path) {
+  try {
+    var dir = new FileX(path);
+    if (!dir.exists()) {
+      dir.makeDirs();
+    }
+  } catch (e) {
+    logw("创建目录失败: " + e);
+  }
+}
+
+function initCountFile() {
+  try {
+    ensureDir(COUNT_DIR);
+    var f = new FileX(COUNT_FILE_PATH);
+    f.write("0");
+    logi("初始化计数文件: " + COUNT_FILE_PATH);
+    return true;
+  } catch (e) {
+    logw("初始化计数文件失败: " + e);
+    return false;
+  }
+}
+
+function backToAznfz() {
+  var target = CONFIG.AZNFZ_PKG;
+  if (ensureShizukuReady()) {
+    execShizuku("input keyevent 3");
+    sleepMs(800);
+    execShizuku("am start -a android.intent.action.MAIN -c android.intent.category.HOME");
+    sleepMs(800);
+    execShizuku("monkey -p " + target + " -c android.intent.category.LAUNCHER 1");
+    sleepMs(800);
+  } else {
+    try { refresh({packageName: target}); } catch (e1) {}
+    try { launchApp(target, ""); } catch (e2) {}
+    sleepMs(800);
+  }
+  try {
+    var cur = getCurPackageName();
+    if (cur == target) { return true; }
+    logw("返回 AZNFZ 失败，当前包: " + cur + ", target=" + target);
+  } catch (e3) {}
+  return false;
+}
+
 function nowStr() { 
   // 获取UTC时间戳,然后加上北京时间偏移(UTC+8小时)
   var utcTime = new Date().getTime();
@@ -502,6 +550,9 @@ function main() {
   // Step 2.1: 处理开屏广告/弹窗（已移除 PopupHandler 调用）
   CONFIG.MAIN_LAUNCHED_APP = g_mainLaunchedApp;
 
+  // 初始化写入计数文件（每次运行清零）
+  initCountFile();
+
   // Step 3: 崩溃监控（已禁用）
   // 由于 currentPackage() 函数在此引擎中不可用，监控功能无法正常工作
   // 如需启用，需要找到引擎支持的前台检测方法
@@ -542,19 +593,17 @@ function main() {
   }
 
   // 切回 AZNFZ_PKG 并提示完成
-  try { refresh({packageName: CONFIG.AZNFZ_PKG}); } catch (e3) {}
-  try { launchApp(CONFIG.AZNFZ_PKG, ""); } catch (e4) {}
+  backToAznfz();
   var doneMsg = "采集已完成";
   if (roomCount >= 0) { doneMsg = doneMsg + "\n\n采集直播间数量: " + roomCount; }
   if (writeCount >= 0) { doneMsg = doneMsg + "\n写入数据行数: " + writeCount; }
   try {
-    callScript("DingTalkBot", { content: doneMsg, silent: true });
+    callScript("DingTalkBot", doneMsg);
   } catch (e5) {
     logw("DingTalkBot 发送失败: " + e5);
   }
   alert(doneMsg);
 
   logi("========== LOOK直播数据采集脚本结束 ==========");
+  try { stop(); } catch (e6) {}
 }
-
-main();

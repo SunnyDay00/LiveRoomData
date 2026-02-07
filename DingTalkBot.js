@@ -15,13 +15,19 @@ var DING_AT_ALL = false;
 
 function main(action, param1, param2, param3, param4, param5) {
   var opts = normalizeOptions(action, param1, param2, param3, param4, param5);
-  if (opts.webhook == null || opts.webhook == "") {
+  if (opts.webhook == null || opts.webhook == "" || opts.webhook == "undefined") {
     alert("Please set webhook.");
     return;
   }
 
   var ts = nowTimestamp();
   var url = buildWebhookUrl(opts.webhook, opts.secret, ts);
+  if (url == null || url == "" || url == "undefined") {
+    if (!opts.silent) {
+      alert("Webhook is invalid.");
+    }
+    return;
+  }
   var msg = buildMessage(opts.content, opts.keyword, ts);
   var payload = buildTextPayload(msg, opts.atMobiles, opts.atAll);
 
@@ -48,9 +54,8 @@ function main(action, param1, param2, param3, param4, param5) {
     return;
   }
 
-  if (!opts.silent) {
-    alert("Send success: " + ret.data);
-  }
+  // 成功时仅记录日志，不弹窗，避免打断主流程
+  console.log("Send success: " + ret.data);
 }
 
 function normalizeOptions(action, p1, p2, p3, p4, p5) {
@@ -73,6 +78,9 @@ function normalizeOptions(action, p1, p2, p3, p4, p5) {
     if (o.atMobiles != null) { opts.atMobiles = o.atMobiles; }
     if (o.atAll != null) { opts.atAll = o.atAll; }
     if (o.silent == true) { opts.silent = true; }
+    if (opts.webhook == null || opts.webhook == "" || opts.webhook == "undefined") { opts.webhook = DING_WEBHOOK; }
+    if (opts.secret == null || opts.secret == "undefined") { opts.secret = ""; }
+    if (opts.keyword == null || opts.keyword == "undefined") { opts.keyword = ""; }
     return opts;
   }
 
@@ -97,7 +105,10 @@ function nowTimestamp() {
 }
 
 function buildWebhookUrl(webhook, secret, timestamp) {
-  if (secret == null || secret == "") {
+  if (webhook == null || webhook == "" || webhook == "undefined") {
+    return "";
+  }
+  if (secret == null || secret == "" || secret == "undefined") {
     return webhook;
   }
   if (timestamp == null || timestamp == 0) {
@@ -114,13 +125,15 @@ function buildWebhookUrl(webhook, secret, timestamp) {
 }
 
 function buildMessage(content, keyword, timestamp) {
-  var msg = content;
+  var msg = "";
+  if (content != null) { msg = "" + content; }
   if (msg == null || msg == "") {
     msg = "DingTalk bot test " + timestamp;
   }
   if (keyword != null && keyword != "") {
-    if (msg.indexOf(keyword) < 0) {
-      msg = keyword + "\n\n" + msg;
+    var kw = "" + keyword;
+    if (msg.indexOf(kw) < 0) {
+      msg = kw + "\n\n" + msg;
     }
   }
   return msg;
