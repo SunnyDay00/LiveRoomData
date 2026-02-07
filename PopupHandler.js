@@ -5,9 +5,8 @@
  * 1. 无效直播间（加入合唱按钮）
  * 2. 全屏广告（rootContainer + closeBtn）
  * 
- * 使用方式：
- *   var handled = callScript("PopupHandler");
- *   if (handled) { sleep(1000); }
+ * 备注：
+ *   该脚本保留为独立弹窗处理实现，主流程脚本已改为内联逻辑，不再直接调用本脚本。
  */
 
 // ==============================
@@ -22,6 +21,11 @@ function nowStr() {
 function logi(msg) { 
   console.info("[" + nowStr() + "][PopupHandler][INFO] " + msg);
   try { floatMessage("[Popup] " + msg); } catch (e) {}
+}
+
+function logw(msg) { 
+  console.warn("[" + nowStr() + "][PopupHandler][WARN] " + msg);
+  try { floatMessage("[Popup][WARN] " + msg); } catch (e) {}
 }
 
 function sleepMs(ms) { 
@@ -66,6 +70,23 @@ function clickObj(v, stepName) {
   }
 }
 
+function restartLookAppFromPopupHandler(reason) {
+  var pkg = "com.netease.play";
+  logw("[RESTART] reason=" + reason + "，执行重启应用");
+  try {
+    killBackgroundApp(pkg);
+  } catch (e1) {
+    logw("[RESTART] killBackgroundApp 异常: " + e1);
+  }
+  sleepMs(2000);
+  try {
+    launchApp(pkg, "");
+  } catch (e2) {
+    logw("[RESTART] launchApp 异常: " + e2);
+  }
+  sleepMs(5000);
+}
+
 // ==============================
 // 具体的弹窗处理逻辑
 // ==============================
@@ -81,21 +102,40 @@ function handleInvalidLiveRoom() {
 
 // 2. 处理全屏广告
 function handleFullScreenAd() {
-  // 更精确的检测：必须同时存在广告容器和关闭按钮
-  // 先找关闭按钮，避免无广告时做两次等待型查找
-  var closeRet = findRet("id:com.netease.play:id/closeBtn", {maxStep: 5});
-  if (!hasRet(closeRet)) { return false; }
+  var rootTag = "id:com.netease.play:id/rootContainer";
+  if (!hasView(rootTag, {maxStep: 3})) { return false; }
 
-  var containerRet = findRet("id:com.netease.play:id/rootContainer", {maxStep: 5});
-  if (!hasRet(containerRet)) { return false; }
+  var maxRetry = 5;
+  var i = 0;
+  logi("检测到 [全屏广告]（rootContainer），不点关闭，改为 back() 退回");
+  for (i = 0; i < maxRetry; i = i + 1) {
+    if (!hasView(rootTag, {maxStep: 3})) {
+      return true;
+    }
+    logi("[全屏广告] back 重试 " + (i + 1) + "/" + maxRetry);
+    try {
+      back();
+    } catch (e) {
+      logw("[全屏广告] back 异常: " + e);
+    }
+    sleepMs(800);
+    if (!hasView(rootTag, {maxStep: 3})) {
+      logi("[全屏广告] rootContainer 已消失");
+      return true;
+    }
+  }
 
-  logi("检测到 [全屏广告]（rootContainer + closeBtn），尝试点击关闭...");
-
-  if (clickObj(closeRet.views[0], "CLICK_AD_CLOSE")) {
-    sleepMs(500);  // 等待关闭动画
+  if (hasView(rootTag, {maxStep: 3})) {
+    logw("[全屏广告] back 重试 " + maxRetry + " 次后仍存在，触发重启");
+    restartLookAppFromPopupHandler("rootContainer_stuck");
+    if (hasView(rootTag, {maxStep: 3})) {
+      logw("[全屏广告] 重启后 rootContainer 仍存在");
+    } else {
+      logi("[全屏广告] 重启后 rootContainer 已消失");
+    }
     return true;
   }
-  return false;
+  return true;
 }
 
 // ==============================

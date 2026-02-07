@@ -2,7 +2,18 @@
 var CLOUD_API_URL = "https://neon.sssr.edu.kg/upload"; 
 var API_KEY = "lrm_7Kx9mP2vN5qR8wT4yU3zB6aC1dE"; // API key for authentication
 var g_dbName = "";
-var COUNT_FILE_PATH = "/storage/emulated/0/LiveRoomData/datahandler_count.txt";
+var COUNT_DIR = "/storage/emulated/0/LiveRoomData/runtime";
+var COUNT_FILE_PATH = "/storage/emulated/0/LiveRoomData/runtime/datahandler_count.txt";
+
+function ensureDir(path) {
+  try {
+    var dir = new FileX(path);
+    if (!dir.exists()) {
+      dir.makeDirs();
+    }
+  } catch (e) {
+  }
+}
 
 function parsePositiveInt(text) {
   if (text == null) { return 0; }
@@ -20,7 +31,11 @@ function parsePositiveInt(text) {
 
 function readCountFromFile() {
   try {
+    ensureDir(COUNT_DIR);
     var f = new FileX(COUNT_FILE_PATH);
+    if (f == null || !f.exists()) {
+      return 0;
+    }
     var s = f.read();
     return parsePositiveInt(s);
   } catch (e) {
@@ -30,6 +45,7 @@ function readCountFromFile() {
 
 function writeCountToFile(n) {
   try {
+    ensureDir(COUNT_DIR);
     var f2 = new FileX(COUNT_FILE_PATH);
     f2.write("" + n);
     return true;

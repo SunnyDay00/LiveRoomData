@@ -25,7 +25,7 @@ var CONFIG = {
   TARGET_CHECKED: "false",
   TARGET_CLICKABLE: "true",
   ID_ROOM_NO: "com.netease.play:id/roomNo",
-  CLICKED_KEYS_DIR: "/sdcard/homekey",
+  CLICKED_KEYS_DIR: "/storage/emulated/0/LiveRoomData/test_records",
   CLICKED_KEYS_FILE_PREFIX: "LOOK_clicked_rooms_",
   CLICKED_KEYS_FILE_SUFFIX: ".txt",
   CLICK_WAIT_MS: 2000,

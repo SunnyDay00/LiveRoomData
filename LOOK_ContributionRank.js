@@ -598,6 +598,14 @@ function switchToMonthRank(clickWaitMs) {
 // ==============================
 // 业务逻辑
 // ==============================
+function isCollectResultSuccess(ret) {
+  if (ret === true) { return true; }
+  if (ret != null && typeof ret === "object") {
+    if (ret.success === true) { return true; }
+  }
+  return false;
+}
+
 function processContributionRank(hostInfo, clickCount, clickWaitMs, stopAfterRows, retryCount) {
   logi("开始处理贡献榜，重试次数=" + retryCount);
   
@@ -628,16 +636,22 @@ function processContributionRank(hostInfo, clickCount, clickWaitMs, stopAfterRow
   
   // ========== 第一步：采集日榜数据 ==========
   logi("========== [日榜] 开始采集日榜用户数据 ==========");
+  var dayResult = null;
   try {
     // callScript("LOOK_CollectContributors", hostId, hostName, hostFans, hostIp, rankType, clickCount, clickWaitMs, stopAfterRows)
-    callScript("LOOK_CollectContributors", 
+    dayResult = callScript("LOOK_CollectContributors", 
       hostInfo.id, hostInfo.name, hostInfo.fans, hostInfo.ip,
       "day",  // rankType = 'day'
       clickCount, clickWaitMs, stopAfterRows);
-    logi("========== [日榜] 日榜数据采集完成 ==========");
   } catch (e) {
     loge("[日榜] callScript CollectContributors error: " + e);
+    return { success: false, error: "collect day exception" };
   }
+  if (!isCollectResultSuccess(dayResult)) {
+    loge("[日榜] 采集结果异常: " + dayResult);
+    return { success: false, error: "collect day failed", detail: dayResult };
+  }
+  logi("========== [日榜] 日榜数据采集完成 ==========");
   
   // ========== 第二步：切换到周榜 ==========
   if (!switchToWeekRank(clickWaitMs)) {
@@ -649,16 +663,22 @@ function processContributionRank(hostInfo, clickCount, clickWaitMs, stopAfterRow
   
   // ========== 第三步：采集周榜数据 ==========
   logi("========== [周榜] 开始采集周榜用户数据 ==========");
+  var weekResult = null;
   try {
     // callScript("LOOK_CollectContributors", hostId, hostName, hostFans, hostIp, rankType, clickCount, clickWaitMs, stopAfterRows)
-    callScript("LOOK_CollectContributors", 
+    weekResult = callScript("LOOK_CollectContributors", 
       hostInfo.id, hostInfo.name, hostInfo.fans, hostInfo.ip,
       "week",  // rankType = 'week'
       clickCount, clickWaitMs, stopAfterRows);
-    logi("========== [周榜] 周榜数据采集完成 ==========");
   } catch (e) {
     loge("[周榜] callScript CollectContributors error: " + e);
+    return { success: false, error: "collect week exception" };
   }
+  if (!isCollectResultSuccess(weekResult)) {
+    loge("[周榜] 采集结果异常: " + weekResult);
+    return { success: false, error: "collect week failed", detail: weekResult };
+  }
+  logi("========== [周榜] 周榜数据采集完成 ==========");
   
   // ========== 第四步：切换到月榜 ==========
   if (!switchToMonthRank(clickWaitMs)) {
@@ -670,28 +690,42 @@ function processContributionRank(hostInfo, clickCount, clickWaitMs, stopAfterRow
   
   // ========== 第五步：采集月榜数据 ==========
   logi("========== [月榜] 开始采集月榜用户数据 ==========");
+  var monthResult = null;
   try {
     // callScript("LOOK_CollectContributors", hostId, hostName, hostFans, hostIp, rankType, clickCount, clickWaitMs, stopAfterRows)
-    callScript("LOOK_CollectContributors", 
+    monthResult = callScript("LOOK_CollectContributors", 
       hostInfo.id, hostInfo.name, hostInfo.fans, hostInfo.ip,
       "month",  // rankType = 'month'
       clickCount, clickWaitMs, stopAfterRows);
-    logi("========== [月榜] 月榜数据采集完成 ==========");
   } catch (e) {
     loge("[月榜] callScript CollectContributors error: " + e);
+    return { success: false, error: "collect month exception" };
   }
+  if (!isCollectResultSuccess(monthResult)) {
+    loge("[月榜] 采集结果异常: " + monthResult);
+    return { success: false, error: "collect month failed", detail: monthResult };
+  }
+  logi("========== [月榜] 月榜数据采集完成 ==========");
+
+  var doneResult = {
+    success: true,
+    day: dayResult,
+    week: weekResult,
+    month: monthResult
+  };
   
   // 返回：月榜 -> 贡献榜 -> 魅力榜/直播 -> 直播
   logi("返回直播间...");
-  if (isLiveRoomPage()) { return; }
-  if (isHomePage()) { return; }
+  if (isLiveRoomPage()) { return doneResult; }
+  if (isHomePage()) { return doneResult; }
   backAndWait("BACK_MONTH_TO_CONTRIB", clickWaitMs);
-  if (isLiveRoomPage()) { return; }
-  if (isHomePage()) { return; }
+  if (isLiveRoomPage()) { return doneResult; }
+  if (isHomePage()) { return doneResult; }
   backAndWait("BACK_CONTRIB_TO_CHARM", clickWaitMs);
-  if (isLiveRoomPage()) { return; }
-  if (isHomePage()) { return; }
+  if (isLiveRoomPage()) { return doneResult; }
+  if (isHomePage()) { return doneResult; }
   backAndWait("BACK_CHARM_TO_LIVE", clickWaitMs);
+  return doneResult;
 }
 
 // ==============================

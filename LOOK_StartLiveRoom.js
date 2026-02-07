@@ -55,9 +55,10 @@ var CONFIG = {
   LIST_TARGET_CHECKABLE: "false",
   LIST_TARGET_CHECKED: "false",
   LIST_TARGET_CLICKABLE: "true",
-  LIST_CLICKED_KEYS_DIR: "/sdcard/homekey",
-  LIST_CLICKED_KEYS_FILE_PREFIX: "LOOK_clicked_rooms_",
-  LIST_CLICKED_KEYS_FILE_SUFFIX: ".txt",
+  DATA_ROOT_DIR: "/storage/emulated/0/LiveRoomData",
+  DEDUP_SUB_DIR: "records",
+  DEDUP_FILE_NAME: "live_room_dedup_state.txt",
+  RECOLLECT_INTERVAL_HOURS: 24,
   LIST_SWIPE_START_X: 540,
   LIST_SWIPE_START_Y: 1700,
   LIST_SWIPE_END_X: 540,
@@ -89,20 +90,21 @@ var CONFIG = {
   ID_CLOSEBTN: "com.netease.play:id/closeBtn"
 };
 
+var POPUP_INVALID_ROOM_BTN_ID = "com.netease.play:id/btn_join_chorus";
+var POPUP_FULLSCREEN_ROOT_ID = "com.netease.play:id/rootContainer";
+var POPUP_FULLSCREEN_BACK_MAX_RETRY = 5;
+var POPUP_FULLSCREEN_BACK_WAIT_MS = 800;
+
 // ==============================
 // 全局变量
 // ==============================
-var g_seen = [];
 var g_liveClickCount = 0;
-var g_homeKeyDate = "";
-var g_homeKeyFile = null;
-var g_homeKeyData = null;
 var g_lastRoomKey = "";
 var g_skipRestartOnce = false;
-var g_listClickedPath = "";
-var g_listClickedCount = 0;
-var g_listClickedKeyList = [];
-var g_listClickedAllList = [];
+var g_dedupPath = "";
+var g_dedupMapByListKey = {};
+var g_dedupMapByRoomKey = {};
+var g_dedupStateCount = 0;
 
 // ==============================
 // 工具函数
@@ -114,48 +116,14 @@ function nowStr() {
   return "" + (utcTime + beijingOffset);
 }
 
-function pad2(n) {
-  return (n < 10 ? "0" : "") + n;
-}
-
-function civilFromDays(z) {
-  // 算法: Howard Hinnant civil_from_days
-  var z2 = z + 719468;
-  var era = Math.floor(z2 / 146097);
-  var doe = z2 - era * 146097;
-  var yoe = Math.floor((doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365);
-  var y = yoe + era * 400;
-  var doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100));
-  var mp = Math.floor((5 * doy + 2) / 153);
-  var d = doy - Math.floor((153 * mp + 2) / 5) + 1;
-  var m = mp + (mp < 10 ? 3 : -9);
-  y = y + (m <= 2 ? 1 : 0);
-  return {y: y, m: m, d: d};
-}
-
-function dateStrYmd() {
-  // 避免使用 getUTC* 等方法（在部分环境不可用）
-  var utcTime = new Date().getTime();
-  var beijingOffset = 8 * 60 * 60 * 1000;
-  var ms = utcTime + beijingOffset;
-  var days = Math.floor(ms / 86400000);
-  var ymd = civilFromDays(days);
-  return "" + ymd.y + pad2(ymd.m) + pad2(ymd.d);
-}
-
-function escapeJsonString(s) {
-  var out = "";
-  var i = 0;
-  for (i = 0; i < s.length; i = i + 1) {
-    var c = s.charAt(i);
-    if (c == "\\") { out = out + "\\\\"; }
-    else if (c == "\"") { out = out + "\\\""; }
-    else if (c == "\n") { out = out + "\\n"; }
-    else if (c == "\r") { out = out + "\\r"; }
-    else if (c == "\t") { out = out + "\\t"; }
-    else { out = out + c; }
+function nowMs() {
+  var t = 0;
+  try {
+    t = new Date().getTime();
+  } catch (e) {
+    t = 0;
   }
-  return out;
+  return t;
 }
 
 function containsKey(arr, key) {
@@ -169,69 +137,6 @@ function containsKey(arr, key) {
   return false;
 }
 
-function parseKeysFromJson(text) {
-  var keys = [];
-  if (text == null) { return keys; }
-  var t = ("" + text);
-  var idx = t.indexOf("\"keys\"");
-  if (idx < 0) { return keys; }
-  var start = t.indexOf("[", idx);
-  if (start < 0) { return keys; }
-  var end = t.indexOf("]", start);
-  if (end < 0) { return keys; }
-  var arrText = t.substring(start + 1, end);
-  var i = 0;
-  var inStr = false;
-  var esc = false;
-  var cur = "";
-  for (i = 0; i < arrText.length; i = i + 1) {
-    var c = arrText.charAt(i);
-    if (!inStr) {
-      if (c == "\"") {
-        inStr = true;
-        cur = "";
-      }
-      continue;
-    }
-    if (esc) {
-      cur = cur + c;
-      esc = false;
-      continue;
-    }
-    if (c == "\\") {
-      esc = true;
-      continue;
-    }
-    if (c == "\"") {
-      if (!containsKey(keys, cur)) {
-        keys.push(cur);
-      }
-      inStr = false;
-      continue;
-    }
-    cur = cur + c;
-  }
-  return keys;
-}
-
-function buildHomeKeyJson(data) {
-  var parts = [];
-  var i = 0;
-  for (i = 0; i < data.keys.length; i = i + 1) {
-    parts.push("\"" + escapeJsonString("" + data.keys[i]) + "\"");
-  }
-  var keysPart = parts.join(",");
-  return "{\"date\":\"" + data.date + "\",\"updatedAt\":\"" + data.updatedAt + "\",\"keys\":[" + keysPart + "]}";
-}
-
-function buildHomeKeyFileName(dateStr) {
-  var d = dateStr;
-  if (d == null || d == "") { d = dateStrYmd(); }
-  var dir = "/storage/emulated/0/homekey";
-  ensureDir(dir);
-  return dir + "/homekey_" + d + ".json";
-}
-
 function ensureDir(path) {
   try {
     var dir = new FileX(path);
@@ -239,159 +144,331 @@ function ensureDir(path) {
       dir.makeDirs();
     }
   } catch (e) {
-    logw("[HOMEKEY] 创建目录失败: " + e);
+    logw("[DEDUP] 创建目录失败: " + e);
   }
 }
 
-function loadHomeKeyData(file) {
-  if (!file.exists()) {
-    return {
-      date: dateStrYmd(),
-      updatedAt: nowStr(),
-      keys: []
-    };
+function normalizeStateKey(text) {
+  if (text == null) { return ""; }
+  var s = ("" + text).trim();
+  if (s == "" || s == "null" || s == "undefined") {
+    return "";
   }
-  var txt = "";
+  return s;
+}
+
+function parsePositiveInt(text) {
+  if (text == null) { return 0; }
+  var s = ("" + text).trim();
+  if (s == "") { return 0; }
+  var i = 0;
+  var n = 0;
+  for (i = 0; i < s.length; i = i + 1) {
+    var c = s.charAt(i);
+    if (c < "0" || c > "9") {
+      return 0;
+    }
+    n = n * 10 + (c.charCodeAt(0) - 48);
+  }
+  return n;
+}
+
+function isNilValue(v) {
+  if (v == null) { return true; }
+  var s = "";
   try {
-    txt = file.read();
+    s = "" + v;
   } catch (e) {
-    logw("[HOMEKEY] 读取文件失败: " + e);
-    return {
-      date: dateStrYmd(),
-      updatedAt: nowStr(),
-      keys: []
-    };
+    s = "";
   }
+  if (s == "undefined" || s == "null") {
+    return true;
+  }
+  return false;
+}
+
+function escapeStateField(text) {
+  var s = normalizeStateKey(text);
+  var out = "";
+  var i = 0;
+  for (i = 0; i < s.length; i = i + 1) {
+    var c = s.charAt(i);
+    if (c == "\\") { out = out + "\\\\"; }
+    else if (c == "\t") { out = out + "\\t"; }
+    else if (c == "\n") { out = out + "\\n"; }
+    else if (c == "\r") { out = out + "\\r"; }
+    else { out = out + c; }
+  }
+  return out;
+}
+
+function unescapeStateField(text) {
+  if (text == null) { return ""; }
+  var s = "" + text;
+  var out = "";
+  var i = 0;
+  var esc = false;
+  for (i = 0; i < s.length; i = i + 1) {
+    var c = s.charAt(i);
+    if (esc) {
+      if (c == "t") { out = out + "\t"; }
+      else if (c == "n") { out = out + "\n"; }
+      else if (c == "r") { out = out + "\r"; }
+      else { out = out + c; }
+      esc = false;
+      continue;
+    }
+    if (c == "\\") {
+      esc = true;
+      continue;
+    }
+    out = out + c;
+  }
+  if (esc) {
+    out = out + "\\";
+  }
+  return out;
+}
+
+function buildDedupStorePath() {
+  var rootDir = normalizeStateKey(CONFIG.DATA_ROOT_DIR);
+  if (rootDir == "") {
+    rootDir = "/storage/emulated/0/LiveRoomData";
+  }
+  var subDir = normalizeStateKey(CONFIG.DEDUP_SUB_DIR);
+  if (subDir == "") {
+    subDir = "records";
+  }
+  var fileName = normalizeStateKey(CONFIG.DEDUP_FILE_NAME);
+  if (fileName == "") {
+    fileName = "live_room_dedup_state.txt";
+  }
+  var dir = rootDir + "/" + subDir;
+  ensureDir(dir);
+  return dir + "/" + fileName;
+}
+
+function clearDedupStoreCache() {
+  g_dedupMapByListKey = {};
+  g_dedupMapByRoomKey = {};
+  g_dedupStateCount = 0;
+}
+
+function createDedupState(listKey) {
   return {
-    date: dateStrYmd(),
-    updatedAt: nowStr(),
-    keys: parseKeysFromJson(txt)
+    listKey: normalizeStateKey(listKey),
+    roomKey: "",
+    clickedAt: 0,
+    processedAt: 0
   };
 }
 
-function writeHomeKeyData(file, data) {
-  var content = "";
+function getDedupStateByListKey(listKey) {
+  var lk = normalizeStateKey(listKey);
+  if (lk == "") { return null; }
+  var state = g_dedupMapByListKey[lk];
+  if (isNilValue(state)) { return null; }
+  return state;
+}
+
+function getDedupStateByRoomKey(roomKey) {
+  var rk = normalizeStateKey(roomKey);
+  if (rk == "") { return null; }
+  var state = g_dedupMapByRoomKey[rk];
+  if (isNilValue(state)) { return null; }
+  return state;
+}
+
+function getStateField(state, fieldName) {
+  if (isNilValue(state)) { return null; }
+  var v = null;
   try {
-    content = buildHomeKeyJson(data);
+    v = state[fieldName];
   } catch (e) {
-    logw("[HOMEKEY] JSON 序列化失败: " + e);
-    return false;
+    v = null;
   }
-  try {
-    // 依据 文档 文件.md: FileX.write 写入字符串
-    file.write(content);
-    return true;
-  } catch (e2) {
-    logw("[HOMEKEY] 写入文件失败: " + e2);
-    return false;
-  }
+  if (isNilValue(v)) { return null; }
+  return v;
 }
 
-function initHomeKeyStore() {
-  var dateStr = dateStrYmd();
-  g_homeKeyDate = dateStr;
-  g_homeKeyFile = new FileX(buildHomeKeyFileName(dateStr));
-  g_homeKeyData = loadHomeKeyData(g_homeKeyFile);
-  if (g_homeKeyData == null || g_homeKeyData.keys == null) {
-    g_homeKeyData = {date: dateStr, updatedAt: nowStr(), keys: []};
-  }
-  g_seen = g_homeKeyData.keys;
-  logi("[HOMEKEY] file=" + g_homeKeyFile.getPath() + " keys=" + g_seen.length);
+function putStateRoomIndex(state) {
+  if (isNilValue(state)) { return; }
+  var rk = normalizeStateKey(getStateField(state, "roomKey"));
+  if (rk == "") { return; }
+  g_dedupMapByRoomKey[rk] = state;
 }
 
-function ensureHomeKeyStore() {
-  var curDate = dateStrYmd();
-  if (g_homeKeyDate == null || g_homeKeyDate == "" || g_homeKeyFile == null || g_homeKeyData == null) {
-    initHomeKeyStore();
-    return;
-  }
-  if (curDate != g_homeKeyDate) {
-    logi("[HOMEKEY] 日期切换 " + g_homeKeyDate + " -> " + curDate);
-    initHomeKeyStore();
-  }
+function ensureDedupStateByListKey(listKey) {
+  var lk = normalizeStateKey(listKey);
+  if (lk == "") { return null; }
+  var state = g_dedupMapByListKey[lk];
+  if (!isNilValue(state)) { return state; }
+  state = createDedupState(lk);
+  g_dedupMapByListKey[lk] = state;
+  g_dedupStateCount = g_dedupStateCount + 1;
+  return state;
 }
 
-function addHomeKey(key) {
-  if (key == null || ("" + key).trim() == "") { return false; }
-  ensureHomeKeyStore();
-  if (containsKey(g_seen, key)) { return false; }
-  g_seen.push("" + key);
-  g_homeKeyData.updatedAt = nowStr();
-  var ok = writeHomeKeyData(g_homeKeyFile, g_homeKeyData);
-  if (!ok) {
-    logw("[HOMEKEY] 写入失败 key=" + key);
+function applyDedupClick(listKey, clickedAt) {
+  var state = ensureDedupStateByListKey(listKey);
+  if (state == null) { return null; }
+  if (clickedAt > 0) {
+    state.clickedAt = clickedAt;
   }
-  return ok;
+  return state;
 }
 
-// ==============================
-// 一起聊列表卡片去重
-// ==============================
-function buildListClickedKeysFilePath() {
-  var d = dateStrYmd();
-  return CONFIG.LIST_CLICKED_KEYS_DIR + "/" +
-    CONFIG.LIST_CLICKED_KEYS_FILE_PREFIX + d + CONFIG.LIST_CLICKED_KEYS_FILE_SUFFIX;
+function applyDedupDone(listKey, roomKey, processedAt) {
+  var rk = normalizeStateKey(roomKey);
+  if (rk == "") { return null; }
+  var state = ensureDedupStateByListKey(listKey);
+  if (state == null) { return null; }
+  state.roomKey = rk;
+  if (processedAt > 0) {
+    state.processedAt = processedAt;
+    if (state.clickedAt <= 0) {
+      state.clickedAt = processedAt;
+    }
+  }
+  putStateRoomIndex(state);
+  return state;
 }
 
-function loadListClickedKeys(path) {
-  var allList = [];
-  var keyList = [];
+function loadDedupStore(path) {
+  clearDedupStoreCache();
   try {
     var f = new FileX(path);
-    if (f != null && f.exists()) {
-      var text = f.read();
-      if (text != null) {
-        var s = "" + text;
-        var lines = s.split("\n");
-        var i = 0;
-        for (i = 0; i < lines.length; i = i + 1) {
-          var line = ("" + lines[i]).trim();
-          if (line != "") {
-            if (!containsKey(allList, line)) {
-              allList.push(line);
-              if (line.indexOf("KEY:") == 0) { keyList.push(line); }
-            }
-          }
-        }
+    if (f == null || !f.exists()) {
+      return;
+    }
+    var text = f.read();
+    if (text == null) {
+      return;
+    }
+    var lines = ("" + text).split("\n");
+    var i = 0;
+    for (i = 0; i < lines.length; i = i + 1) {
+      var line = ("" + lines[i]).trim();
+      if (line == "") { continue; }
+      var parts = line.split("\t");
+      if (parts == null || parts.length <= 0) { continue; }
+      var tp = ("" + parts[0]).trim();
+      if (tp == "CLICK" && parts.length >= 3) {
+        var clickListKey = unescapeStateField(parts[1]);
+        var clickAt = parsePositiveInt(parts[2]);
+        applyDedupClick(clickListKey, clickAt);
+      } else if (tp == "DONE" && parts.length >= 4) {
+        var doneListKey = unescapeStateField(parts[1]);
+        var doneRoomKey = unescapeStateField(parts[2]);
+        var doneAt = parsePositiveInt(parts[3]);
+        applyDedupDone(doneListKey, doneRoomKey, doneAt);
       }
     }
   } catch (e) {
-    logw("[LIST_CLICKED] 读取记录失败: " + e);
+    logw("[DEDUP] 读取记录失败: " + e);
   }
-  return {allList: allList, keyList: keyList, count: allList.length};
 }
 
-function appendListClickedKey(path, key) {
-  if (key == null) { return; }
-  var k = ("" + key).trim();
-  if (k == "") { return; }
+function appendDedupClick(listKey, clickedAt) {
+  var lk = normalizeStateKey(listKey);
+  if (lk == "") { return false; }
+  var ts = clickedAt;
+  if (ts <= 0) {
+    ts = nowMs();
+  }
   try {
-    var f = new FileX(path);
-    f.append(k + "\n");
+    var f = new FileX(g_dedupPath);
+    f.append("CLICK\t" + escapeStateField(lk) + "\t" + ts + "\n");
+    return true;
   } catch (e) {
-    logw("[LIST_CLICKED] 写入失败: " + e);
+    logw("[DEDUP] 写入点击记录失败: " + e);
+    return false;
   }
 }
 
-function initListClickedStore() {
-  ensureDir(CONFIG.LIST_CLICKED_KEYS_DIR);
-  g_listClickedPath = buildListClickedKeysFilePath();
-  var loaded = loadListClickedKeys(g_listClickedPath);
-  g_listClickedAllList = (loaded.allList != null ? loaded.allList : []);
-  g_listClickedKeyList = (loaded.keyList != null ? loaded.keyList : []);
-  g_listClickedCount = loaded.count;
-  logi("[LIST_CLICKED] file=" + g_listClickedPath + " keys=" + g_listClickedCount);
+function appendDedupDone(listKey, roomKey, processedAt) {
+  var lk = normalizeStateKey(listKey);
+  var rk = normalizeStateKey(roomKey);
+  if (lk == "" || rk == "") { return false; }
+  var ts = processedAt;
+  if (ts <= 0) {
+    ts = nowMs();
+  }
+  try {
+    var f = new FileX(g_dedupPath);
+    f.append("DONE\t" + escapeStateField(lk) + "\t" + escapeStateField(rk) + "\t" + ts + "\n");
+    return true;
+  } catch (e) {
+    logw("[DEDUP] 写入完成记录失败: " + e);
+    return false;
+  }
 }
 
-function markListClicked(key) {
-  if (key == null) { return false; }
-  var k = ("" + key).trim();
-  if (k == "") { return false; }
-  if (containsKey(g_listClickedAllList, k)) { return false; }
-  g_listClickedAllList.push(k);
-  appendListClickedKey(g_listClickedPath, k);
-  g_listClickedCount = g_listClickedCount + 1;
-  if (k.indexOf("KEY:") == 0) { g_listClickedKeyList.push(k); }
+function initDedupStore() {
+  g_dedupPath = buildDedupStorePath();
+  loadDedupStore(g_dedupPath);
+  logi("[DEDUP] file=" + g_dedupPath + " states=" + g_dedupStateCount);
+}
+
+function getRecollectIntervalMs() {
+  var h = CONFIG.RECOLLECT_INTERVAL_HOURS;
+  if (h == null) { h = 24; }
+  if (h <= 0) { h = 24; }
+  return h * 60 * 60 * 1000;
+}
+
+function isRecentProcessedAt(processedAt) {
+  if (processedAt == null || processedAt <= 0) { return false; }
+  var intervalMs = getRecollectIntervalMs();
+  if (intervalMs <= 0) { return false; }
+  var age = nowMs() - processedAt;
+  if (age < 0) { age = 0; }
+  if (age < intervalMs) {
+    return true;
+  }
+  return false;
+}
+
+function isStateProcessed(state) {
+  if (isNilValue(state)) { return false; }
+  var roomKey = normalizeStateKey(getStateField(state, "roomKey"));
+  if (roomKey == "") { return false; }
+  var processedAt = parsePositiveInt(getStateField(state, "processedAt"));
+  if (processedAt <= 0) { return false; }
+  return true;
+}
+
+function isListKeyProcessedRecently(listKey) {
+  var state = getDedupStateByListKey(listKey);
+  if (!isStateProcessed(state)) { return false; }
+  return isRecentProcessedAt(parsePositiveInt(getStateField(state, "processedAt")));
+}
+
+function isRoomKeyProcessedRecently(roomKey) {
+  var state = getDedupStateByRoomKey(roomKey);
+  if (!isStateProcessed(state)) { return false; }
+  return isRecentProcessedAt(parsePositiveInt(getStateField(state, "processedAt")));
+}
+
+function markListClicked(listKey) {
+  var lk = normalizeStateKey(listKey);
+  if (lk == "") { return false; }
+  var ts = nowMs();
+  applyDedupClick(lk, ts);
+  appendDedupClick(lk, ts);
+  return true;
+}
+
+function markRoomProcessed(listKey, roomKey) {
+  var rk = normalizeStateKey(roomKey);
+  if (rk == "") { return false; }
+  var lk = normalizeStateKey(listKey);
+  if (lk == "") {
+    lk = "ROOM:" + rk;
+  }
+  var ts = nowMs();
+  applyDedupDone(lk, rk, ts);
+  appendDedupDone(lk, rk, ts);
   return true;
 }
 
@@ -462,6 +539,87 @@ function getFirstView(tag, options) {
     }
   }
   return null;
+}
+
+function hasRet(ret) {
+  if (ret == null) {
+    return false;
+  }
+  if (ret.length > 0) {
+    return true;
+  }
+  return false;
+}
+
+function handleInvalidLiveRoomPopupInStart() {
+  var btnRet = findRet("id:" + POPUP_INVALID_ROOM_BTN_ID, {maxStep: 3});
+  if (!hasRet(btnRet)) {
+    return false;
+  }
+  logi("[POPUP] 检测到无效直播间（加入合唱），交由主流程跳过");
+  return true;
+}
+
+function handleFullScreenAdPopupInStart() {
+  var result = {handled: false, restarted: false};
+  var rootTag = "id:" + POPUP_FULLSCREEN_ROOT_ID;
+  if (!hasView(rootTag, {maxStep: 3})) {
+    return result;
+  }
+
+  result.handled = true;
+  logi("[POPUP] 检测到全屏广告(rootContainer)，不点关闭，改为 back() 退回");
+
+  var i = 0;
+  for (i = 0; i < POPUP_FULLSCREEN_BACK_MAX_RETRY; i = i + 1) {
+    if (!hasView(rootTag, {maxStep: 3})) {
+      return result;
+    }
+    logi("[POPUP] 全屏广告 back 重试 " + (i + 1) + "/" + POPUP_FULLSCREEN_BACK_MAX_RETRY);
+    try {
+      back();
+    } catch (e) {
+      logw("[POPUP] 全屏广告 back 异常: " + e);
+    }
+    sleepMs(POPUP_FULLSCREEN_BACK_WAIT_MS);
+    if (!hasView(rootTag, {maxStep: 3})) {
+      logi("[POPUP] 全屏广告 rootContainer 已消失");
+      return result;
+    }
+  }
+
+  if (hasView(rootTag, {maxStep: 3})) {
+    logw("[POPUP] 全屏广告 rootContainer 持续存在，触发重启流程");
+    var restartOk = restartToChatTab("popup_fullscreen_root_stuck");
+    logi("[POPUP] 重启流程结果 ok=" + restartOk);
+    result.restarted = true;
+  }
+  return result;
+}
+
+function handlePopupModulesInStart() {
+  var result = {handled: false, invalidRoom: false, restarted: false, reason: ""};
+
+  var adRet = handleFullScreenAdPopupInStart();
+  if (adRet != null) {
+    if (adRet.handled === true) {
+      result.handled = true;
+      result.reason = "fullscreen_ad";
+    }
+    if (adRet.restarted === true) {
+      result.restarted = true;
+      result.reason = "fullscreen_ad_stuck";
+      return result;
+    }
+  }
+
+  if (handleInvalidLiveRoomPopupInStart()) {
+    result.handled = true;
+    result.invalidRoom = true;
+    result.reason = "invalid_room";
+  }
+
+  return result;
 }
 
 // 获取第一个控件的文本
@@ -979,39 +1137,15 @@ function collectAllTextsInSubtree(node, limit) {
   return out;
 }
 
-function listContainsText(texts, token) {
-  if (texts == null || token == null) { return false; }
-  var t = ("" + token).trim();
-  if (t == "") { return false; }
-  var i = 0;
-  for (i = 0; i < texts.length; i = i + 1) {
-    if (("" + texts[i]).indexOf(t) >= 0) { return true; }
+function shouldSkipListKeyByDedup(keyId) {
+  if (!isListKeyProcessedRecently(keyId)) {
+    return false;
   }
-  return false;
-}
-
-function isKeyMatchedInStore(groupTexts) {
-  if (g_listClickedKeyList == null || g_listClickedKeyList.length <= 0) { return false; }
-  if (groupTexts == null || groupTexts.length == 0) { return false; }
-  var i = 0;
-  for (i = 0; i < g_listClickedKeyList.length; i = i + 1) {
-    var keyId = g_listClickedKeyList[i];
-    if (keyId == null) { continue; }
-    var raw = "" + keyId;
-    if (raw.indexOf("KEY:") == 0) { raw = raw.substring(4); }
-    if (raw == "") { continue; }
-    var parts = raw.split("|");
-    var ok = true;
-    var j = 0;
-    for (j = 0; j < parts.length; j = j + 1) {
-      if (!listContainsText(groupTexts, parts[j])) {
-        ok = false;
-        break;
-      }
-    }
-    if (ok) { return true; }
-  }
-  return false;
+  var state = getDedupStateByListKey(keyId);
+  var roomKey = normalizeStateKey(getStateField(state, "roomKey"));
+  var processedAt = parsePositiveInt(getStateField(state, "processedAt"));
+  logi("[LIST_SCAN] 间隔去重命中 key=" + keyId + " roomKey=" + roomKey + " processedAt=" + processedAt);
+  return true;
 }
 
 function getUserGroupKey(node) {
@@ -1073,8 +1207,7 @@ function scanChatListCards() {
     var keyId = "KEY:" + key;
     logi("[LIST_KEY] keyId=" + keyId);
     if (!containsKey(seenAll, keyId)) { seenAll.push(keyId); allKeysArr.push(keyId); }
-    var groupTexts = collectAllTextsInSubtree(groups[i], 30);
-    if (containsKey(g_listClickedAllList, keyId) || containsKey(seenItems, keyId) || isKeyMatchedInStore(groupTexts)) { continue; }
+    if (containsKey(seenItems, keyId) || shouldSkipListKeyByDedup(keyId)) { continue; }
     seenItems.push(keyId);
     var bounds = getAttr(groups[i], "bounds");
     var pt = parseBoundsCenter(bounds);
@@ -1516,11 +1649,18 @@ function enterNextLiveBySwipe(prevKey) {
     var curKey = normalizeKeyText(getRoomKeyFromLiveRoom());
     var prev = normalizeKeyText(prevKey);
     if (curKey != "" && prev != "" && curKey != prev) {
+      var phSwipe = null;
       try {
-        var ph = callScript("PopupHandler");
-        if (ph != null && ph.handled == true) { sleepMs(800); }
+        phSwipe = handlePopupModulesInStart();
       } catch (eph) {
+        phSwipe = null;
         logw("[POPUP] enterNextLiveBySwipe 异常: " + eph);
+      }
+      if (phSwipe != null && phSwipe.handled == true) {
+        sleepMs(800);
+      }
+      if (phSwipe != null && phSwipe.restarted == true) {
+        return false;
       }
       logi("[NEXT_LIVE] 已进入下一个直播间 key=" + curKey);
       return true;
@@ -1564,10 +1704,21 @@ function backToChatTab() {
         continue;
       }
       logi("[BACK_TO_CHAT] not in live room, try popup+back()");
+      var phBack = null;
       try {
-        var ph = callScript("PopupHandler");
-        if (ph != null && ph.handled == true) { sleepMs(500); }
-      } catch (eph) {}
+        phBack = handlePopupModulesInStart();
+      } catch (eph) {
+        phBack = null;
+      }
+      if (phBack != null && phBack.handled == true) {
+        sleepMs(500);
+      }
+      if (phBack != null && phBack.restarted == true) {
+        if (isChatTabPage()) {
+          return true;
+        }
+        continue;
+      }
       try { back(); } catch (e) {}
     }
 
@@ -1589,7 +1740,16 @@ function backToChatTab() {
 // ==============================
 // 处理单个直播间
 // ==============================
-function processOneLive(alreadyInLive) {
+function isContributionCollectDone(ret) {
+  if (ret === true) { return true; }
+  if (ret != null && typeof ret === "object") {
+    if (ret.success === true) { return true; }
+  }
+  return false;
+}
+
+function processOneLive(alreadyInLive, listKeyId) {
+  var currentListKey = normalizeStateKey(listKeyId);
   logi("========== 开始处理直播间 ==========");
 
   // Step 1: 进入直播间
@@ -1606,11 +1766,23 @@ function processOneLive(alreadyInLive) {
   }
 
   // Step 1.0: 进入直播间后处理弹窗
+  var phEnter = null;
   try {
-    var ph = callScript("PopupHandler");
-    if (ph != null && ph.handled == true) { sleepMs(800); }
+    phEnter = handlePopupModulesInStart();
   } catch (eph) {
+    phEnter = null;
     logw("[POPUP] processOneLive 异常: " + eph);
+  }
+  if (phEnter != null && phEnter.invalidRoom == true) {
+    logi("[STEP_1.0] 检测到无效直播间（加入合唱），跳过");
+    return "SKIP";
+  }
+  if (phEnter != null && phEnter.handled == true) {
+    sleepMs(800);
+  }
+  if (phEnter != null && phEnter.restarted == true) {
+    logw("[STEP_1.0] 全屏广告触发重启，结束当前直播间处理");
+    return "SKIP";
   }
 
   // Step 1.1: 进入直播间后优先去重（基于 roomNo）
@@ -1620,13 +1792,14 @@ function processOneLive(alreadyInLive) {
   }
   var earlyKey = normalizeKeyText(getRoomKeyFromLiveRoom());
   if (earlyKey != "") {
-    ensureHomeKeyStore();
-    if (containsKey(g_seen, earlyKey)) {
-      logw("[STEP_1.1] 去重命中：重复直播间 key=" + earlyKey + " seenCount=" + g_seen.length);
+    if (isRoomKeyProcessedRecently(earlyKey)) {
+      var hitStateEarly = getDedupStateByRoomKey(earlyKey);
+      var hitListKeyEarly = normalizeStateKey(getStateField(hitStateEarly, "listKey"));
+      var hitTsEarly = parsePositiveInt(getStateField(hitStateEarly, "processedAt"));
+      logw("[STEP_1.1] 去重命中（间隔小时）roomKey=" + earlyKey + " listKey=" + hitListKeyEarly + " processedAt=" + hitTsEarly);
       return "SKIP";
     }
-    logi("[STEP_1.1] 去重通过：新直播间 key=" + earlyKey + " seenCount=" + g_seen.length);
-    markListClicked("ROOM:" + earlyKey);
+    logi("[STEP_1.1] 去重通过：roomKey=" + earlyKey);
   } else {
     logw("[STEP_1.1] roomNo 为空，无法提前去重");
   }
@@ -1635,20 +1808,28 @@ function processOneLive(alreadyInLive) {
   logi("[STEP_2] 检查直播间有效性...");
   var isValid = false;
   var invalidRoom = false;
+  var needRestart = false;
   try {
     // callScript("LOOK_CheckLiveRoom", retryCount, checkInterval)
     var checkRet = callScript("LOOK_CheckLiveRoom", CONFIG.LIVE_ROOM_CHECK_RETRY, 1000);
     if (checkRet != null && typeof checkRet === "object") {
       if (checkRet.invalidRoom === true) { invalidRoom = true; }
+      if (checkRet.needRestart === true) { needRestart = true; }
       if (checkRet.valid === true) { isValid = true; }
     } else {
       if (checkRet === "INVALID_ROOM") { invalidRoom = true; }
+      if (checkRet === "NEED_RESTART") { needRestart = true; }
       if (checkRet === true) { isValid = true; }
     }
   } catch (e) {
     loge("[STEP_2] callScript error: " + e);
   }
 
+  if (needRestart) {
+    logw("[STEP_2] 全屏广告 rootContainer 多次返回仍存在，执行重启流程");
+    restartToChatTab("check_live_room_popup_stuck");
+    return "SKIP";
+  }
   if (invalidRoom) {
     logi("[STEP_2] 检测到无效直播间（加入合唱），跳过");
     return "SKIP";
@@ -1724,16 +1905,17 @@ function processOneLive(alreadyInLive) {
   logi("[STEP_3] 直播间Key=" + roomKey);
   g_lastRoomKey = "" + roomKey;
 
-  ensureHomeKeyStore();
   if (earlyKey == "" || earlyKey == null) {
-    var isDup = containsKey(g_seen, roomKey);
-    if (isDup) {
-      logw("[STEP_3] 去重命中：重复直播间 key=" + roomKey + " seenCount=" + g_seen.length);
+    if (isRoomKeyProcessedRecently(roomKey)) {
+      var hitState = getDedupStateByRoomKey(roomKey);
+      var hitListKey = normalizeStateKey(getStateField(hitState, "listKey"));
+      var hitTs = parsePositiveInt(getStateField(hitState, "processedAt"));
+      logw("[STEP_3] 去重命中（间隔小时）roomKey=" + roomKey + " listKey=" + hitListKey + " processedAt=" + hitTs);
       return "SKIP";
     }
-    logi("[STEP_3] 去重通过：新直播间 key=" + roomKey + " seenCount=" + g_seen.length);
+    logi("[STEP_3] 去重通过：roomKey=" + roomKey);
   }
-  addHomeKey(roomKey);
+
   g_liveClickCount = g_liveClickCount + 1;
   if (CONFIG.LOOP_LIVE_TOTAL != null && CONFIG.LOOP_LIVE_TOTAL > 0) {
     var remain = CONFIG.LOOP_LIVE_TOTAL - g_liveClickCount;
@@ -1745,13 +1927,28 @@ function processOneLive(alreadyInLive) {
 
   // Step 4: 采集贡献榜信息
   logi("[STEP_4] 采集贡献榜信息...");
+  var contribRet = null;
+  var collectDone = false;
   try {
     // callScript("LOOK_ContributionRank", hostId, hostName, hostFans, hostIp, clickCount, clickWaitMs, stopAfterRows, retryCount)
-    callScript("LOOK_ContributionRank", 
+    contribRet = callScript("LOOK_ContributionRank", 
       hostInfo.id, hostInfo.name, hostInfo.fans, hostInfo.ip,
       CONFIG.CONTRIB_CLICK_COUNT, CONFIG.CLICK_WAIT_MS, CONFIG.STOP_AFTER_ROWS, CONFIG.ENTER_LIVE_RETRY);
+    collectDone = isContributionCollectDone(contribRet);
   } catch (e) {
     loge("[STEP_4] callScript error: " + e);
+    collectDone = false;
+  }
+
+  if (!collectDone) {
+    logw("[STEP_4] 贡献榜采集未完成，不标记已处理 roomKey=" + roomKey + " listKey=" + currentListKey + " ret=" + contribRet);
+    return "SKIP_NOT_DONE";
+  }
+
+  if (!markRoomProcessed(currentListKey, roomKey)) {
+    logw("[STEP_4] 标记已处理失败 roomKey=" + roomKey + " listKey=" + currentListKey);
+  } else {
+    logi("[STEP_4] 已标记处理完成 roomKey=" + roomKey + " listKey=" + currentListKey);
   }
 
   logi("========== 完成处理直播间 key=" + roomKey + " ==========");
@@ -1844,7 +2041,7 @@ function mainLoop() {
         logw("[LIST_CLICK] 未进入直播间，跳过");
         continue;
       }
-      var r = processOneLive(true);
+      var r = processOneLive(true, items[i].keyId);
       if (r == "STOP_DB_MAX") {
         logw("达到数据库上限，停止");
         return;
@@ -1936,9 +2133,10 @@ function main(config) {
     if (params.LIST_TARGET_CHECKABLE != null) { CONFIG.LIST_TARGET_CHECKABLE = params.LIST_TARGET_CHECKABLE; }
     if (params.LIST_TARGET_CHECKED != null) { CONFIG.LIST_TARGET_CHECKED = params.LIST_TARGET_CHECKED; }
     if (params.LIST_TARGET_CLICKABLE != null) { CONFIG.LIST_TARGET_CLICKABLE = params.LIST_TARGET_CLICKABLE; }
-    if (params.LIST_CLICKED_KEYS_DIR != null) { CONFIG.LIST_CLICKED_KEYS_DIR = params.LIST_CLICKED_KEYS_DIR; }
-    if (params.LIST_CLICKED_KEYS_FILE_PREFIX != null) { CONFIG.LIST_CLICKED_KEYS_FILE_PREFIX = params.LIST_CLICKED_KEYS_FILE_PREFIX; }
-    if (params.LIST_CLICKED_KEYS_FILE_SUFFIX != null) { CONFIG.LIST_CLICKED_KEYS_FILE_SUFFIX = params.LIST_CLICKED_KEYS_FILE_SUFFIX; }
+    if (params.DATA_ROOT_DIR != null) { CONFIG.DATA_ROOT_DIR = params.DATA_ROOT_DIR; }
+    if (params.DEDUP_SUB_DIR != null) { CONFIG.DEDUP_SUB_DIR = params.DEDUP_SUB_DIR; }
+    if (params.DEDUP_FILE_NAME != null) { CONFIG.DEDUP_FILE_NAME = params.DEDUP_FILE_NAME; }
+    if (params.RECOLLECT_INTERVAL_HOURS != null) { CONFIG.RECOLLECT_INTERVAL_HOURS = params.RECOLLECT_INTERVAL_HOURS; }
     if (params.LIST_SWIPE_START_X != null) { CONFIG.LIST_SWIPE_START_X = params.LIST_SWIPE_START_X; }
     if (params.LIST_SWIPE_START_Y != null) { CONFIG.LIST_SWIPE_START_Y = params.LIST_SWIPE_START_Y; }
     if (params.LIST_SWIPE_END_X != null) { CONFIG.LIST_SWIPE_END_X = params.LIST_SWIPE_END_X; }
@@ -1974,10 +2172,8 @@ function main(config) {
 
   logi("脚本启动");
 
-  // 初始化本地homekey文件
-  initHomeKeyStore();
-  // 初始化列表卡片去重
-  initListClickedStore();
+  // 初始化统一去重状态文件（点击+已处理）
+  initDedupStore();
   
   // 初始化数据库
   try {

@@ -57,9 +57,10 @@ var CONFIG = {
   LIST_TARGET_CHECKABLE: "false",
   LIST_TARGET_CHECKED: "false",
   LIST_TARGET_CLICKABLE: "true",
-  LIST_CLICKED_KEYS_DIR: "/sdcard/homekey",
-  LIST_CLICKED_KEYS_FILE_PREFIX: "LOOK_clicked_rooms_",
-  LIST_CLICKED_KEYS_FILE_SUFFIX: ".txt",
+  DATA_ROOT_DIR: "/storage/emulated/0/LiveRoomData",
+  DEDUP_SUB_DIR: "records",
+  DEDUP_FILE_NAME: "live_room_dedup_state.txt",
+  RECOLLECT_INTERVAL_HOURS: 24,
   LIST_SWIPE_START_X: 540,
   LIST_SWIPE_START_Y: 1700,
   LIST_SWIPE_END_X: 540,
@@ -105,8 +106,8 @@ var CONFIG = {
 var g_mainLaunchedApp = 0;
 var g_forceLaunchApp = 0;
 var g_needWaitAfterStart = 0;
-var COUNT_DIR = "/storage/emulated/0/LiveRoomData";
-var COUNT_FILE_PATH = "/storage/emulated/0/LiveRoomData/datahandler_count.txt";
+var COUNT_DIR = "/storage/emulated/0/LiveRoomData/runtime";
+var COUNT_FILE_PATH = "/storage/emulated/0/LiveRoomData/runtime/datahandler_count.txt";
 
 // ==============================
 // 工具函数

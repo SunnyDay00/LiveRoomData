@@ -753,7 +753,13 @@ function collectContributors(hostInfo, rankType, clickCount, clickWaitMs, stopAf
   for (rank = 1; rank <= clickCount; rank = rank + 1) {
     if (totalInserted >= stopAfterRows) { 
       logw("达到数据库写入上限 " + stopAfterRows); 
-      return;
+      return {
+        success: true,
+        rankType: rankType,
+        wrote: wrote,
+        totalInserted: totalInserted,
+        stoppedByLimit: true
+      };
     }
 
     var rankStr = "" + rank;
@@ -838,6 +844,13 @@ function collectContributors(hostInfo, rankType, clickCount, clickWaitMs, stopAf
   }
 
   logi("采集完成，共采集 " + wrote + " 个用户");
+  return {
+    success: true,
+    rankType: rankType,
+    wrote: wrote,
+    totalInserted: totalInserted,
+    stoppedByLimit: false
+  };
 }
 
 // ==============================
