@@ -59,6 +59,7 @@ var CONFIG = {
   DEDUP_SUB_DIR: "records",
   DEDUP_FILE_NAME: "live_room_dedup_state.txt",
   RECOLLECT_INTERVAL_HOURS: 24,
+  PROCESSED_ROOMS_FILE_PATH: "/storage/emulated/0/LiveRoomData/runtime/processed_rooms.txt",
   LIST_SWIPE_START_X: 540,
   LIST_SWIPE_START_Y: 1700,
   LIST_SWIPE_END_X: 540,
@@ -81,6 +82,12 @@ var CONFIG = {
   RETRY_INTERVAL: 2000,
   PERMISSION_TIMEOUT: 10000,
   MAIN_LAUNCHED_APP: 0, // 运行时标记：是否由主脚本拉起App
+  POPUP_FULLSCREEN_BACK_MAX_RETRY: 8, // 全屏广告 back 最大重试次数
+  POPUP_FULLSCREEN_BACK_WAIT_MS: 800, // 全屏广告 back 重试间隔
+  POPUP_SCAN_WAIT_MS: 600, // 多轮弹窗扫描间隔
+  POPUP_SCAN_AFTER_ENTER_ROUNDS: 3, // 刚进入直播间后扫描轮数
+  POPUP_SCAN_AFTER_HOST_ROUNDS: 2, // 采集主播信息返回直播间后扫描轮数
+  POPUP_SCAN_DURING_RUN_ROUNDS: 1, // 运行过程中周期扫描轮数
   
   ID_TAB: "com.netease.play:id/tv_dragon_tab",
   ID_RNVIEW: "com.netease.play:id/rnView",
@@ -92,8 +99,8 @@ var CONFIG = {
 
 var POPUP_INVALID_ROOM_BTN_ID = "com.netease.play:id/btn_join_chorus";
 var POPUP_FULLSCREEN_ROOT_ID = "com.netease.play:id/rootContainer";
-var POPUP_FULLSCREEN_BACK_MAX_RETRY = 5;
-var POPUP_FULLSCREEN_BACK_WAIT_MS = 800;
+var POPUP_FULLSCREEN_BACK_MAX_RETRY_DEFAULT = 5;
+var POPUP_FULLSCREEN_BACK_WAIT_MS_DEFAULT = 800;
 
 // ==============================
 // 全局变量
@@ -102,9 +109,10 @@ var g_liveClickCount = 0;
 var g_lastRoomKey = "";
 var g_skipRestartOnce = false;
 var g_dedupPath = "";
-var g_dedupMapByListKey = {};
-var g_dedupMapByRoomKey = {};
+var g_dedupStates = [];
 var g_dedupStateCount = 0;
+var g_processedRoomsPath = "";
+var g_processedRoomRecordKeys = [];
 
 // ==============================
 // 工具函数
@@ -249,8 +257,7 @@ function buildDedupStorePath() {
 }
 
 function clearDedupStoreCache() {
-  g_dedupMapByListKey = {};
-  g_dedupMapByRoomKey = {};
+  g_dedupStates = [];
   g_dedupStateCount = 0;
 }
 
@@ -266,17 +273,33 @@ function createDedupState(listKey) {
 function getDedupStateByListKey(listKey) {
   var lk = normalizeStateKey(listKey);
   if (lk == "") { return null; }
-  var state = g_dedupMapByListKey[lk];
-  if (isNilValue(state)) { return null; }
-  return state;
+  var i = 0;
+  for (i = 0; i < g_dedupStates.length; i = i + 1) {
+    var state = null;
+    try { state = g_dedupStates[i]; } catch (e1) { state = null; }
+    if (isNilValue(state)) { continue; }
+    var cur = normalizeStateKey(getStateField(state, "listKey"));
+    if (cur == lk) {
+      return state;
+    }
+  }
+  return null;
 }
 
 function getDedupStateByRoomKey(roomKey) {
   var rk = normalizeStateKey(roomKey);
   if (rk == "") { return null; }
-  var state = g_dedupMapByRoomKey[rk];
-  if (isNilValue(state)) { return null; }
-  return state;
+  var i = 0;
+  for (i = 0; i < g_dedupStates.length; i = i + 1) {
+    var state = null;
+    try { state = g_dedupStates[i]; } catch (e1) { state = null; }
+    if (isNilValue(state)) { continue; }
+    var cur = normalizeStateKey(getStateField(state, "roomKey"));
+    if (cur == rk) {
+      return state;
+    }
+  }
+  return null;
 }
 
 function getStateField(state, fieldName) {
@@ -292,20 +315,18 @@ function getStateField(state, fieldName) {
 }
 
 function putStateRoomIndex(state) {
-  if (isNilValue(state)) { return; }
-  var rk = normalizeStateKey(getStateField(state, "roomKey"));
-  if (rk == "") { return; }
-  g_dedupMapByRoomKey[rk] = state;
+  // 数组结构不需要额外索引
+  return;
 }
 
 function ensureDedupStateByListKey(listKey) {
   var lk = normalizeStateKey(listKey);
   if (lk == "") { return null; }
-  var state = g_dedupMapByListKey[lk];
+  var state = getDedupStateByListKey(lk);
   if (!isNilValue(state)) { return state; }
   state = createDedupState(lk);
-  g_dedupMapByListKey[lk] = state;
-  g_dedupStateCount = g_dedupStateCount + 1;
+  g_dedupStates.push(state);
+  g_dedupStateCount = g_dedupStates.length;
   return state;
 }
 
@@ -472,6 +493,100 @@ function markRoomProcessed(listKey, roomKey) {
   return true;
 }
 
+function normalizeRecordField(text) {
+  var s = normalizeStateKey(text);
+  if (s == "") { return ""; }
+  var out = "";
+  var i = 0;
+  for (i = 0; i < s.length; i = i + 1) {
+    var c = s.charAt(i);
+    if (c == "\n" || c == "\r" || c == "\t") {
+      out = out + " ";
+    } else {
+      out = out + c;
+    }
+  }
+  return out.trim();
+}
+
+function ensureParentDirByFilePath(path) {
+  var p = normalizeStateKey(path);
+  if (p == "") { return; }
+  var idx = p.lastIndexOf("/");
+  if (idx <= 0) { return; }
+  var dir = p.substring(0, idx);
+  if (dir != "") {
+    ensureDir(dir);
+  }
+}
+
+function initProcessedRoomStore() {
+  g_processedRoomRecordKeys = [];
+  var p = normalizeStateKey(CONFIG.PROCESSED_ROOMS_FILE_PATH);
+  if (p == "") {
+    p = "/storage/emulated/0/LiveRoomData/runtime/processed_rooms.txt";
+  }
+  g_processedRoomsPath = p;
+  ensureParentDirByFilePath(g_processedRoomsPath);
+  try {
+    var f = new FileX(g_processedRoomsPath);
+    if (f != null && f.exists()) {
+      var text = f.read();
+      if (text != null) {
+        var lines = ("" + text).split("\n");
+        var i = 0;
+        for (i = 0; i < lines.length; i = i + 1) {
+          var line = ("" + lines[i]).trim();
+          if (line == "") { continue; }
+          var tabIdx = line.indexOf("\t");
+          var hostId = "";
+          var hostName = "";
+          if (tabIdx >= 0) {
+            hostId = normalizeRecordField(line.substring(0, tabIdx));
+            hostName = normalizeRecordField(line.substring(tabIdx + 1));
+          } else {
+            hostId = normalizeRecordField(line);
+          }
+          var recordKey = hostId + "|" + hostName;
+          if (!containsKey(g_processedRoomRecordKeys, recordKey)) {
+            g_processedRoomRecordKeys.push(recordKey);
+          }
+        }
+      }
+    }
+  } catch (e) {
+    logw("[PROCESSED_ROOMS] 初始化读取失败: " + e);
+  }
+  logi("[PROCESSED_ROOMS] file=" + g_processedRoomsPath + " records=" + g_processedRoomRecordKeys.length);
+}
+
+function appendProcessedRoomRecord(hostId, hostName, roomKey) {
+  if (normalizeStateKey(g_processedRoomsPath) == "") {
+    initProcessedRoomStore();
+  }
+  var hid = normalizeRecordField(hostId);
+  if (hid == "") {
+    hid = normalizeRecordField(roomKey);
+  }
+  var hname = normalizeRecordField(hostName);
+  if (hid == "" && hname == "") {
+    return false;
+  }
+  var recordKey = hid + "|" + hname;
+  if (containsKey(g_processedRoomRecordKeys, recordKey)) {
+    return false;
+  }
+  try {
+    var f = new FileX(g_processedRoomsPath);
+    f.append(hid + "\t" + hname + "\n");
+    g_processedRoomRecordKeys.push(recordKey);
+    return true;
+  } catch (e) {
+    logw("[PROCESSED_ROOMS] 追加写入失败: " + e);
+    return false;
+  }
+}
+
 function logi(msg) { 
   console.info("[" + nowStr() + "][StartLiveRoom][INFO] " + msg);
   if (CONFIG.FLOAT_LOG_ENABLED == 1) {
@@ -551,6 +666,97 @@ function hasRet(ret) {
   return false;
 }
 
+function normalizePopupRounds(v, defVal) {
+  var n = v;
+  if (n == null || n <= 0) {
+    n = defVal;
+  }
+  if (n == null || n <= 0) {
+    n = 1;
+  }
+  return n;
+}
+
+function getPopupFullScreenBackMaxRetry() {
+  return normalizePopupRounds(CONFIG.POPUP_FULLSCREEN_BACK_MAX_RETRY, POPUP_FULLSCREEN_BACK_MAX_RETRY_DEFAULT);
+}
+
+function getPopupFullScreenBackWaitMs() {
+  var ms = CONFIG.POPUP_FULLSCREEN_BACK_WAIT_MS;
+  if (ms == null || ms <= 0) {
+    ms = POPUP_FULLSCREEN_BACK_WAIT_MS_DEFAULT;
+  }
+  if (ms == null || ms <= 0) {
+    ms = 800;
+  }
+  return ms;
+}
+
+function getPopupScanWaitMs() {
+  var ms = CONFIG.POPUP_SCAN_WAIT_MS;
+  if (ms == null || ms <= 0) {
+    ms = 600;
+  }
+  return ms;
+}
+
+function mergePopupScanResult(dst, src) {
+  if (dst == null) {
+    dst = {handled: false, invalidRoom: false, restarted: false, reason: ""};
+  }
+  if (src == null) {
+    return dst;
+  }
+  if (src.handled === true) {
+    dst.handled = true;
+  }
+  if (src.invalidRoom === true) {
+    dst.invalidRoom = true;
+  }
+  if (src.restarted === true) {
+    dst.restarted = true;
+  }
+  var r = "";
+  try { r = "" + src.reason; } catch (e) { r = ""; }
+  if (r != "" && r != "null" && r != "undefined") {
+    dst.reason = r;
+  }
+  return dst;
+}
+
+function runPopupScanRounds(sceneTag, rounds) {
+  var retAll = {handled: false, invalidRoom: false, restarted: false, reason: ""};
+  var total = normalizePopupRounds(rounds, 1);
+  var waitMs = getPopupScanWaitMs();
+  var i = 0;
+  for (i = 0; i < total; i = i + 1) {
+    var cur = null;
+    try {
+      cur = handlePopupModulesInStart();
+    } catch (e) {
+      cur = null;
+      logw("[POPUP][" + sceneTag + "] 扫描异常 round=" + (i + 1) + "/" + total + " err=" + e);
+    }
+    retAll = mergePopupScanResult(retAll, cur);
+    if (cur != null && (cur.handled === true || cur.invalidRoom === true || cur.restarted === true)) {
+      var reason = "";
+      try { reason = "" + cur.reason; } catch (e2) { reason = ""; }
+      logi("[POPUP][" + sceneTag + "] round=" + (i + 1) + "/" + total +
+        " handled=" + (cur.handled === true ? 1 : 0) +
+        " invalid=" + (cur.invalidRoom === true ? 1 : 0) +
+        " restarted=" + (cur.restarted === true ? 1 : 0) +
+        " reason=" + reason);
+    }
+    if (retAll.restarted === true || retAll.invalidRoom === true) {
+      return retAll;
+    }
+    if (i < total - 1) {
+      sleepMs(waitMs);
+    }
+  }
+  return retAll;
+}
+
 function handleInvalidLiveRoomPopupInStart() {
   var btnRet = findRet("id:" + POPUP_INVALID_ROOM_BTN_ID, {maxStep: 3});
   if (!hasRet(btnRet)) {
@@ -570,18 +776,20 @@ function handleFullScreenAdPopupInStart() {
   result.handled = true;
   logi("[POPUP] 检测到全屏广告(rootContainer)，不点关闭，改为 back() 退回");
 
+  var backRetry = getPopupFullScreenBackMaxRetry();
+  var backWaitMs = getPopupFullScreenBackWaitMs();
   var i = 0;
-  for (i = 0; i < POPUP_FULLSCREEN_BACK_MAX_RETRY; i = i + 1) {
+  for (i = 0; i < backRetry; i = i + 1) {
     if (!hasView(rootTag, {maxStep: 3})) {
       return result;
     }
-    logi("[POPUP] 全屏广告 back 重试 " + (i + 1) + "/" + POPUP_FULLSCREEN_BACK_MAX_RETRY);
+    logi("[POPUP] 全屏广告 back 重试 " + (i + 1) + "/" + backRetry);
     try {
       back();
     } catch (e) {
       logw("[POPUP] 全屏广告 back 异常: " + e);
     }
-    sleepMs(POPUP_FULLSCREEN_BACK_WAIT_MS);
+    sleepMs(backWaitMs);
     if (!hasView(rootTag, {maxStep: 3})) {
       logi("[POPUP] 全屏广告 rootContainer 已消失");
       return result;
@@ -1138,14 +1346,48 @@ function collectAllTextsInSubtree(node, limit) {
 }
 
 function shouldSkipListKeyByDedup(keyId) {
-  if (!isListKeyProcessedRecently(keyId)) {
-    return false;
-  }
+  var status = getListKeyCompareStatus(keyId);
+  return status.shouldSkip;
+}
+
+function getListKeyCompareStatus(keyId) {
   var state = getDedupStateByListKey(keyId);
-  var roomKey = normalizeStateKey(getStateField(state, "roomKey"));
+  var clickedAt = parsePositiveInt(getStateField(state, "clickedAt"));
   var processedAt = parsePositiveInt(getStateField(state, "processedAt"));
-  logi("[LIST_SCAN] 间隔去重命中 key=" + keyId + " roomKey=" + roomKey + " processedAt=" + processedAt);
-  return true;
+  var roomKey = normalizeStateKey(getStateField(state, "roomKey"));
+  var clicked = (clickedAt > 0);
+  var processed = (roomKey != "" && processedAt > 0);
+  var inWindow = false;
+  if (processed) {
+    inWindow = isRecentProcessedAt(processedAt);
+  }
+  return {
+    clicked: clicked,
+    processed: processed,
+    inWindow: inWindow,
+    shouldSkip: (processed && inWindow),
+    clickedAt: clickedAt,
+    processedAt: processedAt,
+    roomKey: roomKey
+  };
+}
+
+function logListKeyCompareStatus(keyId, status) {
+  if (keyId == null || keyId == "") { return; }
+  if (status == null) { return; }
+  var intervalHours = CONFIG.RECOLLECT_INTERVAL_HOURS;
+  if (intervalHours == null || intervalHours <= 0) {
+    intervalHours = 24;
+  }
+  var msg = "[LIST_COMPARE] keyId=" + keyId +
+    " clicked=" + (status.clicked ? 1 : 0) +
+    " processed=" + (status.processed ? 1 : 0) +
+    " inWindow(" + intervalHours + "h)=" + (status.inWindow ? 1 : 0) +
+    " skip=" + (status.shouldSkip ? 1 : 0) +
+    " clickedAt=" + status.clickedAt +
+    " processedAt=" + status.processedAt +
+    " roomKey=" + status.roomKey;
+  logi(msg);
 }
 
 function getUserGroupKey(node) {
@@ -1205,9 +1447,10 @@ function scanChatListCards() {
     var key = buildUserGroupKeyForClick(groups[i]);
     if (key == "") { continue; }
     var keyId = "KEY:" + key;
-    logi("[LIST_KEY] keyId=" + keyId);
     if (!containsKey(seenAll, keyId)) { seenAll.push(keyId); allKeysArr.push(keyId); }
-    if (containsKey(seenItems, keyId) || shouldSkipListKeyByDedup(keyId)) { continue; }
+    var compare = getListKeyCompareStatus(keyId);
+    logListKeyCompareStatus(keyId, compare);
+    if (containsKey(seenItems, keyId) || compare.shouldSkip) { continue; }
     seenItems.push(keyId);
     var bounds = getAttr(groups[i], "bounds");
     var pt = parseBoundsCenter(bounds);
@@ -1703,6 +1946,14 @@ function backToChatTab() {
         if (isChatTabPage()) { return true; }
         continue;
       }
+      if (isHomePage()) {
+        logi("[BACK_TO_CHAT] 已在首页，优先切一起聊，避免 back 退桌面");
+        ensureChatTab();
+        sleepMs(CONFIG.CLICK_WAIT_MS);
+        if (isChatTabPage()) { return true; }
+        logw("[BACK_TO_CHAT] 首页切一起聊失败，继续下一次尝试");
+        continue;
+      }
       logi("[BACK_TO_CHAT] not in live room, try popup+back()");
       var phBack = null;
       try {
@@ -1765,14 +2016,8 @@ function processOneLive(alreadyInLive, listKeyId) {
     logi("[STEP_1] 成功进入直播间");
   }
 
-  // Step 1.0: 进入直播间后处理弹窗
-  var phEnter = null;
-  try {
-    phEnter = handlePopupModulesInStart();
-  } catch (eph) {
-    phEnter = null;
-    logw("[POPUP] processOneLive 异常: " + eph);
-  }
+  // Step 1.0: 进入直播间后多轮处理弹窗
+  var phEnter = runPopupScanRounds("STEP_1.0_ENTER", CONFIG.POPUP_SCAN_AFTER_ENTER_ROUNDS);
   if (phEnter != null && phEnter.invalidRoom == true) {
     logi("[STEP_1.0] 检测到无效直播间（加入合唱），跳过");
     return "SKIP";
@@ -1885,6 +2130,24 @@ function processOneLive(alreadyInLive, listKeyId) {
     }
   }
 
+  // Step 3.0: 采集主播信息后，返回直播间再次多轮检查全屏广告/弹窗
+  if (isLiveRoomPage()) {
+    var phAfterHost = runPopupScanRounds("STEP_3.0_AFTER_HOST", CONFIG.POPUP_SCAN_AFTER_HOST_ROUNDS);
+    if (phAfterHost != null && phAfterHost.invalidRoom == true) {
+      logi("[STEP_3.0] 主播信息采集后检测到无效直播间，跳过");
+      return "SKIP";
+    }
+    if (phAfterHost != null && phAfterHost.handled == true) {
+      sleepMs(500);
+    }
+    if (phAfterHost != null && phAfterHost.restarted == true) {
+      logw("[STEP_3.0] 主播信息采集后全屏广告触发重启，结束当前直播间处理");
+      return "SKIP";
+    }
+  } else {
+    logw("[STEP_3.0] 主播信息采集后不在直播间，跳过弹窗复检");
+  }
+
   logi("[STEP_3] 主播信息: id=" + hostInfo.id + " name=" + hostInfo.name);
 
   // Step 3.1: 获取直播间Key并去重
@@ -1950,6 +2213,12 @@ function processOneLive(alreadyInLive, listKeyId) {
   } else {
     logi("[STEP_4] 已标记处理完成 roomKey=" + roomKey + " listKey=" + currentListKey);
   }
+  var appendRunRecordOk = appendProcessedRoomRecord(hostInfo.id, hostInfo.name, roomKey);
+  if (appendRunRecordOk) {
+    logi("[STEP_4] 已记录本次运行已处理直播间 id=" + hostInfo.id + " name=" + hostInfo.name);
+  } else {
+    logi("[STEP_4] 本次运行直播间记录未追加（可能重复） id=" + hostInfo.id + " name=" + hostInfo.name);
+  }
 
   logi("========== 完成处理直播间 key=" + roomKey + " ==========");
   return "OK";
@@ -1977,6 +2246,13 @@ function mainLoop() {
         logw("达到 LOOP_LIVE_TOTAL=" + CONFIG.LOOP_LIVE_TOTAL);
         break;
       }
+    }
+
+    // 运行过程中周期扫描弹窗（包括全屏广告）
+    var loopPopup = runPopupScanRounds("MAIN_LOOP_SCAN", CONFIG.POPUP_SCAN_DURING_RUN_ROUNDS);
+    if (loopPopup != null && loopPopup.restarted == true) {
+      logw("[MAIN_LOOP] 周期扫描触发重启，继续下一轮");
+      continue;
     }
 
     // 确保在一起聊页面
@@ -2037,6 +2313,15 @@ function mainLoop() {
       var tapOk = tapChatListItem(items[i]);
       logi("[LIST_CLICK] tapOk=" + tapOk);
       sleepMs(CONFIG.CLICK_LIVE_WAIT_MS);
+      var clickPopup = runPopupScanRounds("LIST_AFTER_CLICK", CONFIG.POPUP_SCAN_DURING_RUN_ROUNDS);
+      if (clickPopup != null && clickPopup.restarted == true) {
+        logw("[LIST_CLICK] 点击后弹窗扫描触发重启，跳过当前卡片");
+        continue;
+      }
+      if (clickPopup != null && clickPopup.invalidRoom == true) {
+        logi("[LIST_CLICK] 点击后检测到无效直播间，跳过当前卡片");
+        continue;
+      }
       if (!isLiveRoomPage()) {
         logw("[LIST_CLICK] 未进入直播间，跳过");
         continue;
@@ -2137,6 +2422,7 @@ function main(config) {
     if (params.DEDUP_SUB_DIR != null) { CONFIG.DEDUP_SUB_DIR = params.DEDUP_SUB_DIR; }
     if (params.DEDUP_FILE_NAME != null) { CONFIG.DEDUP_FILE_NAME = params.DEDUP_FILE_NAME; }
     if (params.RECOLLECT_INTERVAL_HOURS != null) { CONFIG.RECOLLECT_INTERVAL_HOURS = params.RECOLLECT_INTERVAL_HOURS; }
+    if (params.PROCESSED_ROOMS_FILE_PATH != null) { CONFIG.PROCESSED_ROOMS_FILE_PATH = params.PROCESSED_ROOMS_FILE_PATH; }
     if (params.LIST_SWIPE_START_X != null) { CONFIG.LIST_SWIPE_START_X = params.LIST_SWIPE_START_X; }
     if (params.LIST_SWIPE_START_Y != null) { CONFIG.LIST_SWIPE_START_Y = params.LIST_SWIPE_START_Y; }
     if (params.LIST_SWIPE_END_X != null) { CONFIG.LIST_SWIPE_END_X = params.LIST_SWIPE_END_X; }
@@ -2157,6 +2443,12 @@ function main(config) {
     if (params.RETRY_INTERVAL != null) { CONFIG.RETRY_INTERVAL = params.RETRY_INTERVAL; }
     if (params.PERMISSION_TIMEOUT != null) { CONFIG.PERMISSION_TIMEOUT = params.PERMISSION_TIMEOUT; }
     if (params.MAIN_LAUNCHED_APP != null) { CONFIG.MAIN_LAUNCHED_APP = params.MAIN_LAUNCHED_APP; }
+    if (params.POPUP_FULLSCREEN_BACK_MAX_RETRY != null) { CONFIG.POPUP_FULLSCREEN_BACK_MAX_RETRY = params.POPUP_FULLSCREEN_BACK_MAX_RETRY; }
+    if (params.POPUP_FULLSCREEN_BACK_WAIT_MS != null) { CONFIG.POPUP_FULLSCREEN_BACK_WAIT_MS = params.POPUP_FULLSCREEN_BACK_WAIT_MS; }
+    if (params.POPUP_SCAN_WAIT_MS != null) { CONFIG.POPUP_SCAN_WAIT_MS = params.POPUP_SCAN_WAIT_MS; }
+    if (params.POPUP_SCAN_AFTER_ENTER_ROUNDS != null) { CONFIG.POPUP_SCAN_AFTER_ENTER_ROUNDS = params.POPUP_SCAN_AFTER_ENTER_ROUNDS; }
+    if (params.POPUP_SCAN_AFTER_HOST_ROUNDS != null) { CONFIG.POPUP_SCAN_AFTER_HOST_ROUNDS = params.POPUP_SCAN_AFTER_HOST_ROUNDS; }
+    if (params.POPUP_SCAN_DURING_RUN_ROUNDS != null) { CONFIG.POPUP_SCAN_DURING_RUN_ROUNDS = params.POPUP_SCAN_DURING_RUN_ROUNDS; }
     if (params.ID_TAB != null) { CONFIG.ID_TAB = params.ID_TAB; }
     if (params.ID_RNVIEW != null) { CONFIG.ID_RNVIEW = params.ID_RNVIEW; }
     if (params.ID_ROOMNO != null) { CONFIG.ID_ROOMNO = params.ID_ROOMNO; }
@@ -2174,6 +2466,8 @@ function main(config) {
 
   // 初始化统一去重状态文件（点击+已处理）
   initDedupStore();
+  // 初始化本次运行已处理直播间记录
+  initProcessedRoomStore();
   
   // 初始化数据库
   try {

@@ -185,6 +185,16 @@ function isUserProfilePage() {
   return false;
 }
 
+function isContributionRankPage() {
+  if (hasView("txt:日榜奖励？", {maxStep: 4})) { return true; }
+  if (hasView("txt:周榜奖励？", {maxStep: 4})) { return true; }
+  if (hasView("txt:榜单说明", {maxStep: 4})) { return true; }
+  if (hasView("txt:日榜", {maxStep: 4})) { return true; }
+  if (hasView("txt:周榜", {maxStep: 4})) { return true; }
+  if (hasView("txt:月榜", {maxStep: 4})) { return true; }
+  return false;
+}
+
 // 自动检测当前是日榜、周榜还是月榜
 function detectRankType() {
   logi("[detectRankType] 开始检测榜单类型...");
@@ -801,7 +811,15 @@ function collectContributors(hostInfo, rankType, clickCount, clickWaitMs, stopAf
 
     if (!isDetailPage()) {
       logw("未进入用户详情，可能是被弹窗遮挡");
-      backAndWait("USER_DETAIL_BACK_FAILSAFE", clickWaitMs);
+      if (isContributionRankPage()) {
+        logi("当前仍在贡献榜界面，跳过 back 防止误退");
+      } else if (isUserProfilePage()) {
+        logw("当前在用户主页，执行返回到贡献榜");
+        backAndWait("BACK_PROFILE_TO_RANK", clickWaitMs);
+      } else {
+        logw("当前页面未知，执行一次保护性返回");
+        backAndWait("USER_DETAIL_BACK_FAILSAFE", clickWaitMs);
+      }
     } else {
       var userInfo = readUserDetail(clickWaitMs);
       

@@ -19,6 +19,7 @@
 var ID_HEADER = "com.netease.play:id/headerUiContainer";
 var ID_VFLIPPER = "com.netease.play:id/vflipper";
 var ID_TAB = "com.netease.play:id/tv_dragon_tab";
+var APP_PKG = "com.netease.play";
 
 // 注意：rankText 是其他界面的组件，不应该点击
 // var ID_RANKTEXT = "com.netease.play:id/rankText";
@@ -194,6 +195,162 @@ function isLiveRoomPage() {
   if (hasView("id:" + ID_VFLIPPER, {maxStep: 2})) { return true; }
   if (hasView("id:" + ID_HEADER, {maxStep: 2})) { return true; }
   return false;
+}
+
+function isInLookApp() {
+  try {
+    var cur = getCurPackageName();
+    if (cur == APP_PKG) {
+      return true;
+    }
+    if (cur != null && cur != "" && cur != "null" && cur != "undefined") {
+      logw("[PKG] 当前前台包名=" + cur + "，目标包名=" + APP_PKG);
+      return false;
+    }
+  } catch (e) {
+    logw("[PKG] getCurPackageName 异常: " + e);
+  }
+  return true;
+}
+
+function isCharmRankPage() {
+  var hasCharm = hasView("txt:魅力榜", {maxStep: 3});
+  var hasRoom = hasView("txt:当前房间", {maxStep: 3});
+  if (hasCharm) {
+    if (hasRoom) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isContributionRankPage() {
+  if (hasView("txt:日榜奖励？", {maxStep: 4})) { return true; }
+  if (hasView("txt:周榜奖励？", {maxStep: 4})) { return true; }
+  if (hasView("txt:榜单说明", {maxStep: 4})) { return true; }
+  if (hasView("txt:日榜", {maxStep: 4})) { return true; }
+  if (hasView("txt:周榜", {maxStep: 4})) { return true; }
+  if (hasView("txt:月榜", {maxStep: 4})) { return true; }
+  if (hasView("txt:贡献榜", {maxStep: 4})) { return true; }
+  return false;
+}
+
+function isRankSelected(targetRank) {
+  if (targetRank == "周榜") {
+    if (hasView("txt:周榜奖励？", {maxStep: 5})) { return true; }
+    if (hasView("txt:周榜", {maxStep: 4}) && !hasView("txt:日榜奖励？", {maxStep: 5})) { return true; }
+    return false;
+  }
+  if (targetRank == "月榜") {
+    if (hasView("txt:月榜", {maxStep: 4}) && hasView("txt:榜单说明", {maxStep: 4})) { return true; }
+    return false;
+  }
+  if (targetRank == "日榜") {
+    if (hasView("txt:日榜奖励？", {maxStep: 5})) { return true; }
+    if (hasView("txt:日榜", {maxStep: 4}) && !hasView("txt:周榜奖励？", {maxStep: 5})) { return true; }
+    return false;
+  }
+  return false;
+}
+
+function getCurrentRankEntryView() {
+  var labels = ["日榜", "周榜", "月榜"];
+  var i = 0;
+  for (i = 0; i < labels.length; i = i + 1) {
+    var label = labels[i];
+    if (hasView("txt:" + label, {maxStep: 4})) {
+      var v = getFirstView("txt:" + label, {maxStep: 4});
+      if (v != null) {
+        logi("当前榜单入口候选=" + label);
+        return v;
+      }
+    }
+  }
+  return null;
+}
+
+function openRankOptions(clickWaitMs) {
+  var entry = getCurrentRankEntryView();
+  if (entry == null) {
+    logw("未找到当前榜单入口（日/周/月）");
+    return false;
+  }
+  var p = getParent(entry);
+  if (p != null) {
+    clickObj(p, "OPEN_RANK_OPTIONS");
+  } else {
+    clickObj(entry, "OPEN_RANK_OPTIONS_TEXT");
+  }
+  sleepMs(clickWaitMs);
+  return true;
+}
+
+function clickRankOption(targetRank, clickWaitMs) {
+  if (!hasView("txt:" + targetRank, {maxStep: 4})) {
+    logw("未找到榜单选项: " + targetRank);
+    return false;
+  }
+  var targetView = getFirstView("txt:" + targetRank, {maxStep: 4});
+  if (targetView == null) {
+    logw(targetRank + " 选项视图为空");
+    return false;
+  }
+  var p = getParent(targetView);
+  if (p != null) {
+    clickObj(p, "SELECT_" + targetRank);
+  } else {
+    clickObj(targetView, "SELECT_" + targetRank + "_TEXT");
+  }
+  sleepMs(clickWaitMs);
+  return true;
+}
+
+function switchToRank(targetRank, clickWaitMs) {
+  var attempt = 0;
+  for (attempt = 0; attempt < 2; attempt = attempt + 1) {
+    if (isRankSelected(targetRank)) {
+      logi("已在" + targetRank + "，无需切换");
+      return true;
+    }
+    if (!openRankOptions(clickWaitMs)) {
+      logw("打开榜单选项失败，attempt=" + (attempt + 1));
+      continue;
+    }
+    if (!clickRankOption(targetRank, clickWaitMs)) {
+      logw("点击" + targetRank + "选项失败，attempt=" + (attempt + 1));
+      continue;
+    }
+    if (isRankSelected(targetRank)) {
+      logi("切换到" + targetRank + "成功");
+      return true;
+    }
+    logw("切换到" + targetRank + "后验证未通过，attempt=" + (attempt + 1));
+  }
+  return false;
+}
+
+function safeBackFromRankFlow(clickWaitMs, reasonTag) {
+  logw("[" + reasonTag + "] 切榜失败，执行安全返回");
+  if (!isInLookApp()) {
+    logw("[" + reasonTag + "] 不在 LOOK 前台，跳过 back");
+    return;
+  }
+  if (isLiveRoomPage() || isHomePage()) {
+    logi("[" + reasonTag + "] 已在直播间/首页，无需 back");
+    return;
+  }
+  if (isContributionRankPage()) {
+    backAndWait(reasonTag + "_BACK_CONTRIB", clickWaitMs);
+  }
+  if (!isInLookApp()) {
+    return;
+  }
+  if (isLiveRoomPage() || isHomePage()) {
+    return;
+  }
+  if (isCharmRankPage()) {
+    backAndWait(reasonTag + "_BACK_CHARM", clickWaitMs);
+  }
 }
 
 // 获取集合大小
@@ -474,60 +631,11 @@ function enterContributionRank(clickWaitMs) {
 // ==============================
 function switchToWeekRank(clickWaitMs) {
   logi("尝试切换到周榜...");
-  
-  // 查找当前榜单入口(日榜)
-  if (!hasView("txt:日榜", {maxStep: 2})) { 
-    loge("未找到日榜入口"); 
-    return false; 
-  }
-  var dayView = getFirstView("txt:日榜", {maxStep: 2});
-  if (dayView == null) {
-    loge("日榜视图为空");
-    return false;
-  }
-
-  // 点击日榜打开选项
-  var p = getParent(dayView);
-  if (p != null) { 
-    clickObj(p, "OPEN_RANK_OPTIONS"); 
-  } else { 
-    clickObj(dayView, "OPEN_RANK_OPTIONS_TEXT"); 
-  }
-  sleepMs(clickWaitMs);
-
-  // 查找周榜选项
-  if (!hasView("txt:周榜", {maxStep: 2})) { 
-    loge("未找到周榜选项"); 
-    return false; 
-  }
-  var weekView = getFirstView("txt:周榜", {maxStep: 2});
-  if (weekView == null) {
-    loge("周榜视图为空");
-    return false;
-  }
-
-  // 点击周榜
-  var pw = getParent(weekView);
-  if (pw != null) { 
-    clickObj(pw, "SELECT_WEEK"); 
-  } else { 
-    clickObj(weekView, "SELECT_WEEK_TEXT"); 
-  }
-  sleepMs(clickWaitMs);
-
-  // 验证:页面有"周榜"和"周榜奖励？"就认为成功
-  var hasW = hasView("txt:周榜", {maxStep: 2});
-  var hasWR = hasView("txt:周榜奖励？", {maxStep: 5});
-  logi("周榜验证: 周榜=" + hasW + ", 周榜奖励？=" + hasWR);
-  
-  if (hasW && hasWR) {
-    logi("成功切换到周榜");
+  if (switchToRank("周榜", clickWaitMs)) {
     return true;
   }
-  
-  // 即使验证没通过，如果点击都成功了也返回 true
-  logi("周榜验证未通过，但点击成功，继续执行");
-  return true;
+  loge("切换周榜失败：未能从当前榜单入口完成切换");
+  return false;
 }
 
 // ==============================
@@ -535,64 +643,11 @@ function switchToWeekRank(clickWaitMs) {
 // ==============================
 function switchToMonthRank(clickWaitMs) {
   logi("尝试切换到月榜...");
-  
-  // 查找当前榜单入口(周榜)
-  var currentRankView = null;
-  if (hasView("txt:周榜", {maxStep: 2})) {
-    currentRankView = getFirstView("txt:周榜", {maxStep: 2});
-    logi("当前在周榜界面");
-  } else if (hasView("txt:日榜", {maxStep: 2})) {
-    currentRankView = getFirstView("txt:日榜", {maxStep: 2});
-    logi("当前在日榜界面");
-  }
-  
-  if (currentRankView == null) {
-    loge("未找到当前榜单入口");
-    return false;
-  }
-
-  // 点击当前榜单打开选项
-  var p = getParent(currentRankView);
-  if (p != null) { 
-    clickObj(p, "OPEN_RANK_OPTIONS"); 
-  } else { 
-    clickObj(currentRankView, "OPEN_RANK_OPTIONS_TEXT"); 
-  }
-  sleepMs(clickWaitMs);
-
-  // 查找月榜选项
-  if (!hasView("txt:月榜", {maxStep: 2})) { 
-    loge("未找到月榜选项"); 
-    return false; 
-  }
-  var monthView = getFirstView("txt:月榜", {maxStep: 2});
-  if (monthView == null) {
-    loge("月榜视图为空");
-    return false;
-  }
-
-  // 点击月榜
-  var pm = getParent(monthView);
-  if (pm != null) { 
-    clickObj(pm, "SELECT_MONTH"); 
-  } else { 
-    clickObj(monthView, "SELECT_MONTH_TEXT"); 
-  }
-  sleepMs(clickWaitMs);
-
-  // 验证:页面有"月榜"和"榜单说明"就认为成功
-  var hasM = hasView("txt:月榜", {maxStep: 2});
-  var hasR = hasView("txt:榜单说明", {maxStep: 2});
-  logi("月榜验证: 月榜=" + hasM + ", 榜单说明=" + hasR);
-  
-  if (hasM && hasR) {
-    logi("成功切换到月榜");
+  if (switchToRank("月榜", clickWaitMs)) {
     return true;
   }
-  
-  // 即使验证没通过，如果点击都成功了也返回 true
-  logi("月榜验证未通过，但点击成功，继续执行");
-  return true;
+  loge("切换月榜失败：未能从当前榜单入口完成切换");
+  return false;
 }
 
 // ==============================
@@ -656,8 +711,7 @@ function processContributionRank(hostInfo, clickCount, clickWaitMs, stopAfterRow
   // ========== 第二步：切换到周榜 ==========
   if (!switchToWeekRank(clickWaitMs)) {
     loge("切换周榜失败");
-    backAndWait("BACK_CONTRIB_FAIL", clickWaitMs);
-    backAndWait("BACK_CHARM_FAIL_2", clickWaitMs);
+    safeBackFromRankFlow(clickWaitMs, "SWITCH_WEEK_FAIL");
     return { success: false, error: "switch week failed" };
   }
   
@@ -683,8 +737,7 @@ function processContributionRank(hostInfo, clickCount, clickWaitMs, stopAfterRow
   // ========== 第四步：切换到月榜 ==========
   if (!switchToMonthRank(clickWaitMs)) {
     loge("切换月榜失败");
-    backAndWait("BACK_CONTRIB_FAIL_2", clickWaitMs);
-    backAndWait("BACK_CHARM_FAIL_3", clickWaitMs);
+    safeBackFromRankFlow(clickWaitMs, "SWITCH_MONTH_FAIL");
     return { success: false, error: "switch month failed" };
   }
   

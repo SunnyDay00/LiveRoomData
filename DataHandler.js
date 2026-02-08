@@ -4,6 +4,8 @@ var API_KEY = "lrm_7Kx9mP2vN5qR8wT4yU3zB6aC1dE"; // API key for authentication
 var g_dbName = "";
 var COUNT_DIR = "/storage/emulated/0/LiveRoomData/runtime";
 var COUNT_FILE_PATH = "/storage/emulated/0/LiveRoomData/runtime/datahandler_count.txt";
+var UPLOAD_RETRY_MAX = 5;
+var UPLOAD_RETRY_WAIT_MS = 2000;
 
 function ensureDir(path) {
   try {
@@ -56,14 +58,13 @@ function writeCountToFile(n) {
 
 function uploadToCloud(data) {
   if (CLOUD_API_URL == null) {
-     alert("URL Config Error");
+     console.error("URL Config Error");
      return false;
   }
 
   if (typeof rsContext === "undefined") {
       var msg = "No rsContext";
       console.error(msg);
-      alert(msg);
       return false;
   }
   
@@ -111,8 +112,8 @@ function uploadToCloud(data) {
     var success = false;
     var lastError = "";
     
-    // 重试循环 3 次
-    for (var r = 0; r < 3; r = r + 1) {
+    // 重试循环（默认 5 次）
+    for (var r = 0; r < UPLOAD_RETRY_MAX; r = r + 1) {
         try {
             console.log("Upload attempt " + (r + 1) + "...");
             var call = client.newCall(request);
@@ -156,17 +157,17 @@ function uploadToCloud(data) {
             console.error("Retry " + (r+1) + " Exception: " + lastError);
         }
         
-        // 等待后重试 (2秒)
-        if (r < 2) {
+        // 等待后重试
+        if (r < (UPLOAD_RETRY_MAX - 1)) {
              try {
-                 sleep(2000);
+                 sleep(UPLOAD_RETRY_WAIT_MS);
              } catch(e) {
              }
         }
     }
     
     if (!success) {
-        alert("上传失败(重试3次):\\n" + lastError);
+        console.error("上传失败(重试" + UPLOAD_RETRY_MAX + "次): " + lastError);
         return false;
     }
     
@@ -179,7 +180,6 @@ function uploadToCloud(data) {
     } catch(ex2) {
     }
     console.error(exMsg);
-    alert("脚本运行错误: " + exMsg);
     return false;
   }
   

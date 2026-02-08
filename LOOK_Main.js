@@ -18,7 +18,7 @@ var CONFIG = {
   AZNFZ_PKG: "com.libra.aznfz", // 冰狐智能辅助包名（客户端）
 
   LOOP_LIVE_TOTAL: 0, // 0=无限；>0=点击直播间总次数
-  STOP_AFTER_ROWS: 200, // 写入多少条停止（安全停止）
+  STOP_AFTER_ROWS: 20000, // 写入多少条停止（安全停止）
 
   CLICK_LIVE_WAIT_MS: 2000, // 点击直播间后等待
   CLICK_WAIT_MS: 1500, // 点击按钮后等待
@@ -61,6 +61,7 @@ var CONFIG = {
   DEDUP_SUB_DIR: "records",
   DEDUP_FILE_NAME: "live_room_dedup_state.txt",
   RECOLLECT_INTERVAL_HOURS: 24,
+  PROCESSED_ROOMS_FILE_PATH: "/storage/emulated/0/LiveRoomData/runtime/processed_rooms.txt",
   LIST_SWIPE_START_X: 540,
   LIST_SWIPE_START_Y: 1700,
   LIST_SWIPE_END_X: 540,
@@ -85,6 +86,12 @@ var CONFIG = {
   USE_SHIZUKU_DUMP: 1, // 1=使用Shizuku进行UI树dump
   MAIN_POPUP_HANDLER_ENABLED: 0, // 1=强制主脚本检查广告（即使App已在前台）
   MAIN_LAUNCHED_APP: 0, // 运行时标记：是否由主脚本拉起App（自动覆盖）
+  POPUP_FULLSCREEN_BACK_MAX_RETRY: 8, // 全屏广告 back 最大重试次数
+  POPUP_FULLSCREEN_BACK_WAIT_MS: 800, // 全屏广告 back 重试间隔
+  POPUP_SCAN_WAIT_MS: 600, // 多轮弹窗扫描间隔
+  POPUP_SCAN_AFTER_ENTER_ROUNDS: 3, // 刚进入直播间后扫描轮数
+  POPUP_SCAN_AFTER_HOST_ROUNDS: 2, // 采集主播信息返回直播间后扫描轮数
+  POPUP_SCAN_DURING_RUN_ROUNDS: 1, // 运行过程中周期扫描轮数
 
   ID_TAB: "com.netease.play:id/tv_dragon_tab", // 首页TAB文本
   ID_RNVIEW: "com.netease.play:id/rnView", // 一起聊 rnView
@@ -108,6 +115,8 @@ var g_forceLaunchApp = 0;
 var g_needWaitAfterStart = 0;
 var COUNT_DIR = "/storage/emulated/0/LiveRoomData/runtime";
 var COUNT_FILE_PATH = "/storage/emulated/0/LiveRoomData/runtime/datahandler_count.txt";
+var PROCESSED_ROOMS_DIR = "/storage/emulated/0/LiveRoomData/runtime";
+var PROCESSED_ROOMS_FILE_PATH = "/storage/emulated/0/LiveRoomData/runtime/processed_rooms.txt";
 
 // ==============================
 // 工具函数
@@ -133,6 +142,173 @@ function initCountFile() {
   } catch (e) {
     logw("初始化计数文件失败: " + e);
     return false;
+  }
+}
+
+function normalizeRuntimeField(text) {
+  if (text == null) { return ""; }
+  var s = ("" + text).trim();
+  if (s == "" || s == "null" || s == "undefined") {
+    return "";
+  }
+  var out = "";
+  var i = 0;
+  for (i = 0; i < s.length; i = i + 1) {
+    var c = s.charAt(i);
+    if (c == "\n" || c == "\r" || c == "\t") {
+      out = out + " ";
+    } else {
+      out = out + c;
+    }
+  }
+  return out.trim();
+}
+
+function containsString(arr, key) {
+  if (arr == null) { return false; }
+  var i = 0;
+  for (i = 0; i < arr.length; i = i + 1) {
+    if (("" + arr[i]) == ("" + key)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function initProcessedRoomsFile() {
+  try {
+    ensureDir(PROCESSED_ROOMS_DIR);
+    var path = PROCESSED_ROOMS_FILE_PATH;
+    var oldFile = new FileX(path);
+    if (oldFile != null && oldFile.exists()) {
+      var rmOk = false;
+      try {
+        rmOk = oldFile.remove();
+      } catch (e1) {
+        rmOk = false;
+      }
+      if (rmOk) {
+        logi("已删除旧直播间记录文件: " + path);
+      } else {
+        logw("删除旧直播间记录文件失败，继续新建: " + path);
+      }
+    }
+
+    var f = new FileX(path);
+    f.write("");
+    logi("初始化本次运行直播间记录文件(已新建): " + path);
+    return true;
+  } catch (e) {
+    logw("初始化本次运行直播间记录文件失败: " + e);
+    return false;
+  }
+}
+
+function readProcessedRoomsFile() {
+  var out = {count: 0, rooms: []};
+  try {
+    ensureDir(PROCESSED_ROOMS_DIR);
+    var f = new FileX(PROCESSED_ROOMS_FILE_PATH);
+    if (f == null || !f.exists()) {
+      return out;
+    }
+    var text = f.read();
+    if (text == null) {
+      return out;
+    }
+    var s = "" + text;
+    var lines = s.split("\n");
+    var seen = [];
+    var i = 0;
+    for (i = 0; i < lines.length; i = i + 1) {
+      var line = ("" + lines[i]).trim();
+      if (line == "") { continue; }
+      var tabIdx = line.indexOf("\t");
+      var hostId = "";
+      var hostName = "";
+      if (tabIdx >= 0) {
+        hostId = normalizeRuntimeField(line.substring(0, tabIdx));
+        hostName = normalizeRuntimeField(line.substring(tabIdx + 1));
+      } else {
+        hostId = normalizeRuntimeField(line);
+      }
+      var key = hostId + "|" + hostName;
+      if (containsString(seen, key)) { continue; }
+      seen.push(key);
+      out.rooms.push({id: hostId, name: hostName});
+    }
+    out.count = out.rooms.length;
+    return out;
+  } catch (e) {
+    logw("读取本次运行直播间记录文件失败: " + e);
+    return {count: -1, rooms: []};
+  }
+}
+
+function buildRoomsTextForDing(rooms) {
+  if (rooms == null || rooms.length <= 0) {
+    return "本次采集直播间列表:\n无";
+  }
+  var lines = [];
+  lines.push("本次采集直播间列表:");
+  var i = 0;
+  for (i = 0; i < rooms.length; i = i + 1) {
+    var item = rooms[i];
+    var hostId = "";
+    var hostName = "";
+    if (item != null) {
+      hostId = normalizeRuntimeField(item.id);
+      hostName = normalizeRuntimeField(item.name);
+    }
+    lines.push((i + 1) + ". ID=" + hostId + " 昵称=" + hostName);
+  }
+  return lines.join("\n");
+}
+
+function buildSummaryTextForBot(roomCount, writeCount, runStartAt, runEndAt, runDurationText) {
+  var lines = [];
+  if (roomCount >= 0) { lines.push("采集直播间数量: " + roomCount); }
+  if (writeCount >= 0) { lines.push("写入数据行数: " + writeCount); }
+  lines.push("开始运行时间: " + runStartAt);
+  lines.push("结束运行时间: " + runEndAt);
+  lines.push("运行时长: " + runDurationText);
+  return lines.join("\n");
+}
+
+function parseRoomCountFromScriptResult(result) {
+  var roomCount = -1;
+  if (result == null) {
+    return roomCount;
+  }
+  var rs = ("" + result).trim();
+  var isNum = (rs != "" && rs != "null" && rs != "undefined");
+  var i = 0;
+  var n = 0;
+  for (i = 0; i < rs.length; i = i + 1) {
+    var c = rs.charAt(i);
+    if (c < "0" || c > "9") {
+      isNum = false;
+      break;
+    }
+    n = n * 10 + (c.charCodeAt(0) - 48);
+  }
+  if (isNum) {
+    roomCount = n;
+  }
+  return roomCount;
+}
+
+function syncProcessedRoomsPathFromConfig() {
+  var p = normalizeRuntimeField(CONFIG.PROCESSED_ROOMS_FILE_PATH);
+  if (p == "") {
+    p = "/storage/emulated/0/LiveRoomData/runtime/processed_rooms.txt";
+  }
+  PROCESSED_ROOMS_FILE_PATH = p;
+  var idx = p.lastIndexOf("/");
+  if (idx > 0) {
+    PROCESSED_ROOMS_DIR = p.substring(0, idx);
+  } else {
+    PROCESSED_ROOMS_DIR = "/storage/emulated/0/LiveRoomData/runtime";
   }
 }
 
@@ -163,6 +339,89 @@ function nowStr() {
   var utcTime = new Date().getTime();
   var beijingOffset = 8 * 60 * 60 * 1000; // 8小时转换为毫秒
   return "" + (utcTime + beijingOffset);
+}
+
+function nowMs() {
+  var t = 0;
+  try {
+    t = new Date().getTime();
+  } catch (e) {
+    t = 0;
+  }
+  return t;
+}
+
+function pad2(n) {
+  if (n < 10) {
+    return "0" + n;
+  }
+  return "" + n;
+}
+
+function pad3(n) {
+  if (n < 10) {
+    return "00" + n;
+  }
+  if (n < 100) {
+    return "0" + n;
+  }
+  return "" + n;
+}
+
+function civilFromDays(z) {
+  var z2 = z + 719468;
+  var era = Math.floor(z2 / 146097);
+  var doe = z2 - era * 146097;
+  var yoe = Math.floor((doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365);
+  var y = yoe + era * 400;
+  var doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100));
+  var mp = Math.floor((5 * doy + 2) / 153);
+  var d = doy - Math.floor((153 * mp + 2) / 5) + 1;
+  var m = mp + (mp < 10 ? 3 : -9);
+  y = y + (m <= 2 ? 1 : 0);
+  return {y: y, m: m, d: d};
+}
+
+function formatBeijingDateTimeFromUtcMs(utcMs) {
+  var ms = utcMs;
+  if (ms == null) {
+    ms = 0;
+  }
+  var beijingOffset = 8 * 60 * 60 * 1000;
+  var localMs = ms + beijingOffset;
+
+  var dayMs = 86400000;
+  var days = Math.floor(localMs / dayMs);
+  var remain = localMs - days * dayMs;
+  if (remain < 0) {
+    remain = remain + dayMs;
+    days = days - 1;
+  }
+
+  var ymd = civilFromDays(days);
+  var hh = Math.floor(remain / 3600000);
+  var mm = Math.floor((remain % 3600000) / 60000);
+
+  return ymd.y + "-" + pad2(ymd.m) + "-" + pad2(ymd.d) + " " +
+    pad2(hh) + ":" + pad2(mm);
+}
+
+function nowReadableStr() {
+  return formatBeijingDateTimeFromUtcMs(nowMs());
+}
+
+function formatDurationMs(durationMs) {
+  var d = durationMs;
+  if (d == null || d < 0) {
+    d = 0;
+  }
+  var totalMin = Math.floor(d / 60000);
+  var h = Math.floor(totalMin / 60);
+  var m = totalMin % 60;
+  if (h > 0) {
+    return h + "小时" + m + "分钟";
+  }
+  return m + "分钟";
 }
 
 function logi(msg) { 
@@ -519,7 +778,11 @@ function main() {
   setLogLevel(5);
   enableVolumeRun(true);
 
+  var runStartAt = nowReadableStr();
+  var runStartMs = nowMs();
+
   logi("========== LOOK直播数据采集脚本启动 ==========");
+  logi("脚本开始运行时间: " + runStartAt);
 
   // Step -1: 如果 App 已在运行，先通过 ADB 强制关闭
   stopAppIfRunningAtStart();
@@ -550,9 +813,12 @@ function main() {
   
   // Step 2.1: 处理开屏广告/弹窗（已移除 PopupHandler 调用）
   CONFIG.MAIN_LAUNCHED_APP = g_mainLaunchedApp;
+  syncProcessedRoomsPathFromConfig();
 
   // 初始化写入计数文件（每次运行清零）
   initCountFile();
+  // 初始化本次运行直播间记录文件（每次运行清空）
+  initProcessedRoomsFile();
 
   // Step 3: 崩溃监控（已禁用）
   // 由于 currentPackage() 函数在此引擎中不可用，监控功能无法正常工作
@@ -569,19 +835,11 @@ function main() {
     loge("callScript LOOK_StartLiveRoom 异常: " + e);
   }
 
-  // 统计采集直播间数量（优先使用子脚本返回值）
-  var roomCount = -1;
-  if (result != null) {
-    var rs = ("" + result).trim();
-    var isNum = (rs != "" && rs != "null" && rs != "undefined");
-    var i = 0;
-    var n = 0;
-    for (i = 0; i < rs.length; i = i + 1) {
-      var c = rs.charAt(i);
-      if (c < "0" || c > "9") { isNum = false; break; }
-      n = n * 10 + (c.charCodeAt(0) - 48);
-    }
-    if (isNum) { roomCount = n; }
+  // 统计采集直播间数量（优先读取本次运行记录文件）
+  var roomsInfo = readProcessedRoomsFile();
+  var roomCount = roomsInfo.count;
+  if (roomCount < 0) {
+    roomCount = parseRoomCountFromScriptResult(result);
   }
 
   // 统计写入数据行数（来自 DataHandler 计数）
@@ -594,12 +852,25 @@ function main() {
   }
 
   // 切回 AZNFZ_PKG 并提示完成
+  var runEndAt = nowReadableStr();
+  var runEndMs = nowMs();
+  var runDurationMs = runEndMs - runStartMs;
+  if (runDurationMs < 0) {
+    runDurationMs = 0;
+  }
+  var runDurationText = formatDurationMs(runDurationMs);
+
   backToAznfz();
   var doneMsg = "采集已完成";
   if (roomCount >= 0) { doneMsg = doneMsg + "\n\n采集直播间数量: " + roomCount; }
   if (writeCount >= 0) { doneMsg = doneMsg + "\n写入数据行数: " + writeCount; }
+  doneMsg = doneMsg + "\n开始运行时间: " + runStartAt;
+  doneMsg = doneMsg + "\n结束运行时间: " + runEndAt;
+  doneMsg = doneMsg + "\n运行时长: " + runDurationText;
+  var dingMsg = buildSummaryTextForBot(roomCount, writeCount, runStartAt, runEndAt, runDurationText);
+  dingMsg = dingMsg + "\n\n" + buildRoomsTextForDing(roomsInfo.rooms);
   try {
-    callScript("DingTalkBot", doneMsg);
+    callScript("DingTalkBot", dingMsg);
   } catch (e5) {
     logw("DingTalkBot 发送失败: " + e5);
   }
