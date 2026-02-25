@@ -704,7 +704,13 @@ function processContributionRank(hostInfo, clickCount, clickWaitMs, stopAfterRow
   }
   if (!isCollectResultSuccess(dayResult)) {
     loge("[日榜] 采集结果异常: " + dayResult);
-    return { success: false, error: "collect day failed", detail: dayResult };
+    return {
+      success: false,
+      error: "collect day failed",
+      detail: dayResult,
+      stopScript: (dayResult != null && dayResult.stopScript === true),
+      stopReason: (dayResult != null ? dayResult.stopReason : "")
+    };
   }
   logi("========== [日榜] 日榜数据采集完成 ==========");
   
@@ -730,7 +736,13 @@ function processContributionRank(hostInfo, clickCount, clickWaitMs, stopAfterRow
   }
   if (!isCollectResultSuccess(weekResult)) {
     loge("[周榜] 采集结果异常: " + weekResult);
-    return { success: false, error: "collect week failed", detail: weekResult };
+    return {
+      success: false,
+      error: "collect week failed",
+      detail: weekResult,
+      stopScript: (weekResult != null && weekResult.stopScript === true),
+      stopReason: (weekResult != null ? weekResult.stopReason : "")
+    };
   }
   logi("========== [周榜] 周榜数据采集完成 ==========");
   
@@ -756,7 +768,13 @@ function processContributionRank(hostInfo, clickCount, clickWaitMs, stopAfterRow
   }
   if (!isCollectResultSuccess(monthResult)) {
     loge("[月榜] 采集结果异常: " + monthResult);
-    return { success: false, error: "collect month failed", detail: monthResult };
+    return {
+      success: false,
+      error: "collect month failed",
+      detail: monthResult,
+      stopScript: (monthResult != null && monthResult.stopScript === true),
+      stopReason: (monthResult != null ? monthResult.stopReason : "")
+    };
   }
   logi("========== [月榜] 月榜数据采集完成 ==========");
 

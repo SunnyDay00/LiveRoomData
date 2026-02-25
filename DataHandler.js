@@ -4,7 +4,7 @@ var API_KEY = "lrm_7Kx9mP2vN5qR8wT4yU3zB6aC1dE"; // API key for authentication
 var g_dbName = "";
 var COUNT_DIR = "/storage/emulated/0/LiveRoomData/runtime";
 var COUNT_FILE_PATH = "/storage/emulated/0/LiveRoomData/runtime/datahandler_count.txt";
-var UPLOAD_RETRY_MAX = 5;
+var UPLOAD_RETRY_MAX = 10;
 var UPLOAD_RETRY_WAIT_MS = 2000;
 
 function ensureDir(path) {
@@ -112,7 +112,7 @@ function uploadToCloud(data) {
     var success = false;
     var lastError = "";
     
-    // 重试循环（默认 5 次）
+    // 重试循环（默认 10 次）
     for (var r = 0; r < UPLOAD_RETRY_MAX; r = r + 1) {
         try {
             console.log("Upload attempt " + (r + 1) + "...");

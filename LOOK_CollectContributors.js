@@ -28,7 +28,7 @@ var APP_NAME = "LOOK直播";
 
 var DEFAULT_CLICK_COUNT = 5;
 var DEFAULT_CLICK_WAIT_MS = 1500;
-var DEFAULT_STOP_AFTER_ROWS = 200;
+var DEFAULT_STOP_AFTER_ROWS = 200000;
 
 // ==============================
 // 工具函数
@@ -847,14 +847,31 @@ function collectContributors(hostInfo, rankType, clickCount, clickWaitMs, stopAf
             var insertResult = callScript("DataHandler", { action: "insert", row: rowData });
             if (typeof insertResult === "number" && insertResult > 0) {
               totalInserted = totalInserted + insertResult;
+              wrote = wrote + 1;
+              logi("数据保存成功，已采集 " + wrote + "/" + clickCount + ", 总计=" + totalInserted);
             } else {
-              totalInserted = totalInserted + 1;
+              loge("数据保存失败：DataHandler 返回 " + insertResult + "，停止本次采集");
+              return {
+                success: false,
+                rankType: rankType,
+                wrote: wrote,
+                totalInserted: totalInserted,
+                stopScript: true,
+                stopReason: "UPLOAD_WRITE_FAILED",
+                error: "upload write failed: DataHandler returned " + insertResult
+              };
             }
-
-            wrote = wrote + 1;
-            logi("数据保存成功，已采集 " + wrote + "/" + clickCount + ", 总计=" + totalInserted);
         } catch (e) {
-            loge("callScript DataHandler error: " + e);
+            loge("callScript DataHandler error: " + e + "，停止本次采集");
+            return {
+              success: false,
+              rankType: rankType,
+              wrote: wrote,
+              totalInserted: totalInserted,
+              stopScript: true,
+              stopReason: "UPLOAD_WRITE_FAILED",
+              error: "upload write failed: callScript DataHandler error: " + e
+            };
         }
 
       backAndWait("BACK_TO_MONTH", clickWaitMs);

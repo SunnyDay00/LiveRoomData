@@ -1999,6 +1999,27 @@ function isContributionCollectDone(ret) {
   return false;
 }
 
+function isUploadWriteFailedRet(ret) {
+  if (ret == null) {
+    return false;
+  }
+  if (typeof ret !== "object") {
+    return false;
+  }
+  if (ret.stopScript === true && ret.stopReason == "UPLOAD_WRITE_FAILED") {
+    return true;
+  }
+  if (ret.stopReason == "UPLOAD_WRITE_FAILED") {
+    return true;
+  }
+  if (ret.detail != null) {
+    if (isUploadWriteFailedRet(ret.detail)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function processOneLive(alreadyInLive, listKeyId) {
   var currentListKey = normalizeStateKey(listKeyId);
   logi("========== 开始处理直播间 ==========");
@@ -2204,6 +2225,10 @@ function processOneLive(alreadyInLive, listKeyId) {
   }
 
   if (!collectDone) {
+    if (isUploadWriteFailedRet(contribRet)) {
+      loge("[STEP_4] 检测到数据上传写入失败，停止主循环");
+      return "STOP_UPLOAD_FAIL";
+    }
     logw("[STEP_4] 贡献榜采集未完成，不标记已处理 roomKey=" + roomKey + " listKey=" + currentListKey + " ret=" + contribRet);
     return "SKIP_NOT_DONE";
   }
@@ -2237,14 +2262,14 @@ function mainLoop() {
     try { insertCount = callScript("DataHandler", "getCount"); } catch (e) {}
     if (insertCount >= CONFIG.STOP_AFTER_ROWS) {
       logw("达到 STOP_AFTER_ROWS=" + CONFIG.STOP_AFTER_ROWS);
-      break;
+      return { success: true, stopReason: "STOP_AFTER_ROWS", liveClickCount: g_liveClickCount };
     }
 
     // 检查直播间点击次数限制
     if (CONFIG.LOOP_LIVE_TOTAL != null && CONFIG.LOOP_LIVE_TOTAL > 0) {
       if (g_liveClickCount >= CONFIG.LOOP_LIVE_TOTAL) {
         logw("达到 LOOP_LIVE_TOTAL=" + CONFIG.LOOP_LIVE_TOTAL);
-        break;
+        return { success: true, stopReason: "LOOP_LIVE_TOTAL", liveClickCount: g_liveClickCount };
       }
     }
 
@@ -2327,9 +2352,13 @@ function mainLoop() {
         continue;
       }
       var r = processOneLive(true, items[i].keyId);
+      if (r == "STOP_UPLOAD_FAIL") {
+        loge("检测到上传写入失败，停止运行并返回主脚本");
+        return { success: false, stopReason: "UPLOAD_WRITE_FAILED", liveClickCount: g_liveClickCount };
+      }
       if (r == "STOP_DB_MAX") {
         logw("达到数据库上限，停止");
-        return;
+        return { success: true, stopReason: "STOP_DB_MAX", liveClickCount: g_liveClickCount };
       }
       // 先等待页面状态稳定，再执行返回一起聊判定，避免切窗瞬态误判
       var stableWaitMs = 1000;
@@ -2346,7 +2375,7 @@ function mainLoop() {
       try { insertCount = callScript("DataHandler", "getCount"); } catch (e2) {}
       if (insertCount >= CONFIG.STOP_AFTER_ROWS) {
         logw("达到 STOP_AFTER_ROWS=" + CONFIG.STOP_AFTER_ROWS);
-        return;
+        return { success: true, stopReason: "STOP_AFTER_ROWS", liveClickCount: g_liveClickCount };
       }
     }
 
@@ -2365,7 +2394,7 @@ function mainLoop() {
       if (!hasChange && sig0 != "" && sigDown != "" && sigDown != sig0) { hasChange = true; }
       if (hasChange) {
         logw("列表可滚动但无新卡片，认为采集完毕");
-        break;
+        return { success: true, stopReason: "NO_NEW_CARD_DONE", liveClickCount: g_liveClickCount };
       } else {
         logw("列表无变化，疑似卡顿，重启后继续");
         restartToChatTab("list_stuck");
@@ -2377,6 +2406,7 @@ function mainLoop() {
     // 继续上滑加载下一屏
     listSwipeUp();
   }
+  return { success: true, stopReason: "LOOP_END", liveClickCount: g_liveClickCount };
 }
 
 // ==============================
@@ -2495,7 +2525,7 @@ function main(config) {
   }
   
   // 开始主循环
-  mainLoop();
+  var loopResult = mainLoop();
   
   // 关闭数据库
   try {
@@ -2506,7 +2536,11 @@ function main(config) {
   }
   
   logi("脚本结束");
-  return g_liveClickCount;
+  return {
+    success: (loopResult != null && loopResult.success === false ? false : true),
+    stopReason: (loopResult != null ? loopResult.stopReason : ""),
+    liveClickCount: g_liveClickCount
+  };
 }
 
 // 注意：不要在文件末尾调用 main()

@@ -60,7 +60,7 @@ var CONFIG = {
   DATA_ROOT_DIR: "/storage/emulated/0/LiveRoomData",
   DEDUP_SUB_DIR: "records",
   DEDUP_FILE_NAME: "live_room_dedup_state.txt",
-  RECOLLECT_INTERVAL_HOURS: 24,
+  RECOLLECT_INTERVAL_HOURS: 12,
   PROCESSED_ROOMS_FILE_PATH: "/storage/emulated/0/LiveRoomData/runtime/processed_rooms.txt",
   LIST_SWIPE_START_X: 540,
   LIST_SWIPE_START_Y: 1700,
@@ -265,8 +265,14 @@ function buildRoomsTextForDing(rooms) {
   return lines.join("\n");
 }
 
-function buildSummaryTextForBot(roomCount, writeCount, runStartAt, runEndAt, runDurationText) {
+function buildSummaryTextForBot(statusTitle, roomCount, writeCount, runStartAt, runEndAt, runDurationText, stopReasonText) {
   var lines = [];
+  if (statusTitle != null && ("" + statusTitle).trim() != "") {
+    lines.push(statusTitle);
+  }
+  if (stopReasonText != null && ("" + stopReasonText).trim() != "") {
+    lines.push("停止原因: " + stopReasonText);
+  }
   if (roomCount >= 0) { lines.push("采集直播间数量: " + roomCount); }
   if (writeCount >= 0) { lines.push("写入数据行数: " + writeCount); }
   lines.push("开始运行时间: " + runStartAt);
@@ -835,6 +841,21 @@ function main() {
     loge("callScript LOOK_StartLiveRoom 异常: " + e);
   }
 
+  var uploadFailedStopped = false;
+  var stopReasonCode = "";
+  var stopReasonText = "";
+  if (result != null && typeof result === "object") {
+    if (result.stopReason != null) {
+      stopReasonCode = "" + result.stopReason;
+    }
+    if (stopReasonCode == "UPLOAD_WRITE_FAILED") {
+      uploadFailedStopped = true;
+      stopReasonText = "上传写入失败";
+    } else {
+      stopReasonText = stopReasonCode;
+    }
+  }
+
   // 统计采集直播间数量（优先读取本次运行记录文件）
   var roomsInfo = readProcessedRoomsFile();
   var roomCount = roomsInfo.count;
@@ -862,12 +883,17 @@ function main() {
 
   backToAznfz();
   var doneMsg = "采集已完成";
+  var statusTitle = "采集任务已完成";
+  if (uploadFailedStopped) {
+    doneMsg = "数据上传写入失败，脚本已停止运行";
+    statusTitle = "【告警】数据上传写入失败，脚本已停止运行";
+  }
   if (roomCount >= 0) { doneMsg = doneMsg + "\n\n采集直播间数量: " + roomCount; }
   if (writeCount >= 0) { doneMsg = doneMsg + "\n写入数据行数: " + writeCount; }
   doneMsg = doneMsg + "\n开始运行时间: " + runStartAt;
   doneMsg = doneMsg + "\n结束运行时间: " + runEndAt;
   doneMsg = doneMsg + "\n运行时长: " + runDurationText;
-  var dingMsg = buildSummaryTextForBot(roomCount, writeCount, runStartAt, runEndAt, runDurationText);
+  var dingMsg = buildSummaryTextForBot(statusTitle, roomCount, writeCount, runStartAt, runEndAt, runDurationText, stopReasonText);
   dingMsg = dingMsg + "\n\n" + buildRoomsTextForDing(roomsInfo.rooms);
   try {
     callScript("DingTalkBot", dingMsg);
