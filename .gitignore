@@ -19,3 +19,12 @@ AGENTS.md
 openapi.txt
 tiktok-remotion
 DingTalkBotTest.js
+
+# ===== LSPosedChatUiCollector (Android/Gradle) =====
+# Keep source/config in git, ignore local/cache/build artifacts only.
+LSPosedChatUiCollector/.gradle/
+LSPosedChatUiCollector/**/build/
+LSPosedChatUiCollector/local.properties
+LSPosedChatUiCollector/.idea/
+LSPosedChatUiCollector/**/*.iml
+LSPosedChatUiCollector/captures/
