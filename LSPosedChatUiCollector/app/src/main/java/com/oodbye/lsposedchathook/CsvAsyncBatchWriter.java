@@ -12,6 +12,10 @@ import java.util.concurrent.Executors;
 
 import de.robv.android.xposed.XposedBridge;
 
+/**
+ * CSV 异步批量写入组件。
+ * 文件职责：缓存待写记录并由单线程后台批量落盘，降低主线程 IO 开销。
+ */
 class CsvAsyncBatchWriter {
     private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor();
 
@@ -122,4 +126,3 @@ class CsvAsyncBatchWriter {
         }
     }
 }
-

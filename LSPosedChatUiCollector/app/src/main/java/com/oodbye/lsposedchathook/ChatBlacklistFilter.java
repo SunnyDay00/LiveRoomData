@@ -9,6 +9,10 @@ import java.util.Set;
 
 import de.robv.android.xposed.XposedBridge;
 
+/**
+ * 聊天黑名单过滤组件。
+ * 文件职责：从 APK 资源中的 chat_blacklist.txt 加载规则，并执行精确匹配过滤。
+ */
 class ChatBlacklistFilter {
     private static final String RESOURCE_PATH = "com/oodbye/lsposedchathook/chat_blacklist.txt";
 

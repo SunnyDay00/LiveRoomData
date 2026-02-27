@@ -16,6 +16,7 @@ import android.widget.Toast;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -34,6 +35,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
  * LOOK 直播间聊天采集入口（LSPosed 模块）。
+ * 文件职责：主流程编排与会话生命周期管理（页面识别、悬浮按钮、广告处理、消息扫描与调度）。
  *
  * 功能概览：
  * 1) 仅在 com.netease.play 进程生效，并在 LiveViewerActivity 生命周期内工作。
@@ -52,7 +54,7 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
     private static final String LIVE_ACTIVITY_KEYWORD = "LiveViewerActivity";
     private static final String TAG = "[LOOKChatHook]";
     private static final String FLOAT_TAG = "LOOK_CHAT_HOOK_FLOAT_BTN";
-    private static final String MODULE_VERSION = "2026.02.25-r9";
+    private static final String MODULE_VERSION = "2026.02.28-r10";
     private static final String CSV_TIMEZONE_ID = "GMT+08:00";
 
     // 采集与去重参数（实时优先）
@@ -70,12 +72,15 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
     private static final int CHAT_ROOT_MISS_CLEAR_THRESHOLD = 20;
     private static final long NEW_MSG_CLICK_COOLDOWN_MS = 350L;
     private static final long NEW_MSG_LOG_COOLDOWN_MS = 3000L;
+    private static final long ACTION_TOAST_COOLDOWN_MS = 1500L;
 
     // 全屏广告处理（参考 PopupHandler.js: handleFullScreenAd）
     private static final long FULL_AD_CHECK_INTERVAL_MS = 300L;
     private static final long FULL_AD_BACK_INTERVAL_MS = 800L;
     private static final float FULL_AD_MIN_WIDTH_RATIO = 0.55f;
     private static final float FULL_AD_MIN_HEIGHT_RATIO = 0.45f;
+    private static final long AD_DETECT_DEBUG_LOG_INTERVAL_MS = 3000L;
+    private static final String AD_SLIDING_FULL_RES_NAME = "com.netease.play:id/slidingContainer";
 
     // 全局共享锁：文件写入与会话状态
     private static final Object FILE_LOCK = new Object();
@@ -123,9 +128,8 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
                     Activity activity = (Activity) param.thisObject;
-                    if (!isLiveActivity(activity)) {
-                        return;
-                    }
+                    boolean isLive = isLiveActivity(activity);
+                    XposedBridge.log(TAG + " onResume activity=" + activity.getClass().getName() + " live=" + isLive);
                     ensureSession(activity);
                 }
             });
@@ -134,9 +138,6 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
                     Activity activity = (Activity) param.thisObject;
-                    if (!isLiveActivity(activity)) {
-                        return;
-                    }
                     UiSession session = getSession(activity);
                     if (session != null) {
                         session.onActivityPause();
@@ -176,15 +177,20 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
             return;
         }
 
+        final boolean isLive = isLiveActivity(activity);
         activity.runOnUiThread(new Runnable() {
             @Override
             public void run() {
                 UiSession session = getSession(activity);
                 if (session == null) {
-                    session = new UiSession(activity);
+                    session = new UiSession(activity, isLive);
                     putSession(activity, session);
+                } else {
+                    session.setLiveActivity(isLive);
                 }
-                session.ensureFloatingButton();
+                if (isLive) {
+                    session.ensureFloatingButton();
+                }
                 session.start();
             }
         });
@@ -220,6 +226,7 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
         private final Runnable scanTask;
         private final Runnable roomInfoPollTask;
         private final Runnable csvFlushTask;
+        private boolean liveActivity;
 
         private TextView floatButton;
         private boolean running;
@@ -227,6 +234,7 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
         private boolean openedDetailFromAvatar;
         private boolean captureEnabled;
         private boolean startupHintShown;
+        private boolean defaultModeApplied;
 
         private int chatVpId;
         private int contentId;
@@ -237,6 +245,7 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
         private int roomNoResId;
         private int newMessageHintResId;
         private int rootContainerResId;
+        private int slidingContainerResId;
         private int closeBtnResId;
 
         private int roomInfoRetryCount;
@@ -247,8 +256,12 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
         private long lastFullAdCheckAt;
         private long lastFullAdBackAt;
         private long lastFullAdLogAt;
+        private long lastFullAdDetectedToastAt;
+        private long lastFullAdToastAt;
+        private long lastAdDetectDebugLogAt;
         private long lastNewMsgClickAt;
         private long lastNewMsgLogAt;
+        private long lastNewMsgToastAt;
         private long lastSummaryLogAt;
 
         private long totalCaptured;
@@ -264,8 +277,9 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
         private final CsvAsyncBatchWriter csvWriter;
         private final ChatBlacklistFilter blacklistFilter;
 
-        UiSession(Activity activity) {
+        UiSession(Activity activity, boolean liveActivity) {
             this.activity = activity;
+            this.liveActivity = liveActivity;
             this.handler = new Handler(Looper.getMainLooper());
             this.csvWriter = new CsvAsyncBatchWriter(TAG);
             this.blacklistFilter = new ChatBlacklistFilter(TAG, BLACKLIST_RELOAD_INTERVAL_MS);
@@ -277,19 +291,28 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
                         return;
                     }
 
-                    maybeHandleFullScreenAd();
-                    if (handlingFullScreenAd) {
-                        refreshButtonStyle();
-                        handler.postDelayed(this, SCAN_INTERVAL_MS);
-                        return;
+                    if (ModuleSettings.isAutoHandleFullscreenAdEnabled()) {
+                        maybeHandleFullScreenAd();
+                        if (handlingFullScreenAd) {
+                            refreshButtonStyle();
+                            handler.postDelayed(this, SCAN_INTERVAL_MS);
+                            return;
+                        }
+                    } else {
+                        handlingFullScreenAd = false;
+                        maybeNotifyAdDetectedWithoutHandling();
                     }
 
-                    maybeClickNewMessageHint();
+                    if (liveActivity) {
+                        maybeClickNewMessageHint();
+                    }
 
-                    if (captureEnabled && !resolvingRoomInfo) {
+                    if (liveActivity && captureEnabled && !resolvingRoomInfo) {
                         scanChatOnce();
                     }
-                    refreshButtonStyle();
+                    if (liveActivity) {
+                        refreshButtonStyle();
+                    }
                     handler.postDelayed(this, SCAN_INTERVAL_MS);
                 }
             };
@@ -316,7 +339,27 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
                 return;
             }
             running = true;
+            if (liveActivity) {
+                applyDefaultModeIfNeeded();
+            }
             handler.post(scanTask);
+        }
+
+        void setLiveActivity(boolean liveActivity) {
+            this.liveActivity = liveActivity;
+        }
+
+        private void applyDefaultModeIfNeeded() {
+            if (defaultModeApplied) {
+                return;
+            }
+            defaultModeApplied = true;
+            if (ModuleSettings.isDefaultCaptureEnabled()) {
+                XposedBridge.log(TAG + " default capture setting=ON, auto enable");
+                startEnableCaptureFlow();
+            } else {
+                XposedBridge.log(TAG + " default capture setting=OFF");
+            }
         }
 
         // 页面切后台时暂停，避免无意义扫描
@@ -419,7 +462,11 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
                 return;
             }
             startupHintShown = true;
-            Toast.makeText(activity, "聊天抓取默认关闭，点击悬浮按钮开启", Toast.LENGTH_SHORT).show();
+            if (ModuleSettings.isDefaultCaptureEnabled()) {
+                Toast.makeText(activity, "聊天抓取默认开启，进入房间会自动尝试开启", Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(activity, "聊天抓取默认关闭，点击悬浮按钮开启", Toast.LENGTH_SHORT).show();
+            }
         }
 
         private void onFloatingButtonClick() {
@@ -646,7 +693,7 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
         }
 
         /**
-         * 检测并处理全屏广告（rootContainer + closeBtn）：
+         * 检测并处理全屏广告（rootContainer/slidingContainer + closeBtn）：
          * - 命中后 back() 一次
          * - 间隔后再次检测，若仍存在继续 back()，直到广告消失
          */
@@ -675,18 +722,42 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
                 }
             }
 
+            maybeToastAdDetected(now, "检测到全屏广告");
             handlingFullScreenAd = true;
             if (now - lastFullAdLogAt > 800L) {
                 lastFullAdLogAt = now;
-                XposedBridge.log(TAG + " 检测到 [全屏广告]（rootContainer），执行 back() 退回");
-                Toast.makeText(activity, "检测到全屏广告，正在处理", Toast.LENGTH_SHORT).show();
+                XposedBridge.log(TAG + " 检测到 [全屏广告]（rootContainer/slidingContainer），执行 back() 退回");
             }
             try {
                 activity.onBackPressed();
                 lastFullAdBackAt = now;
+                if (now - lastFullAdToastAt > ACTION_TOAST_COOLDOWN_MS) {
+                    lastFullAdToastAt = now;
+                    Toast.makeText(activity, "已执行返回关闭全屏广告", Toast.LENGTH_SHORT).show();
+                }
             } catch (Throwable e) {
                 XposedBridge.log(TAG + " [全屏广告] back 异常: " + e);
             }
+        }
+
+        private void maybeNotifyAdDetectedWithoutHandling() {
+            long now = System.currentTimeMillis();
+            if (now - lastFullAdCheckAt < FULL_AD_CHECK_INTERVAL_MS) {
+                return;
+            }
+            lastFullAdCheckAt = now;
+            if (!isFullScreenAdShowing()) {
+                return;
+            }
+            maybeToastAdDetected(now, "检测到全屏广告（自动处理已关闭）");
+        }
+
+        private void maybeToastAdDetected(long now, String message) {
+            if (now - lastFullAdDetectedToastAt < ACTION_TOAST_COOLDOWN_MS) {
+                return;
+            }
+            lastFullAdDetectedToastAt = now;
+            Toast.makeText(activity, message, Toast.LENGTH_SHORT).show();
         }
 
         /**
@@ -727,6 +798,10 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
                 if (now - lastNewMsgLogAt > NEW_MSG_LOG_COOLDOWN_MS) {
                     lastNewMsgLogAt = now;
                     XposedBridge.log(TAG + " 点击 [底部有新消息] 提示");
+                }
+                if (now - lastNewMsgToastAt > ACTION_TOAST_COOLDOWN_MS) {
+                    lastNewMsgToastAt = now;
+                    Toast.makeText(activity, "已点击“底部有新消息”", Toast.LENGTH_SHORT).show();
                 }
             }
         }
@@ -785,6 +860,12 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
                     rootContainerResId = activity.getResources().getIdentifier("rootContainer", "id", activity.getPackageName());
                 }
             }
+            if (slidingContainerResId == 0) {
+                slidingContainerResId = activity.getResources().getIdentifier("slidingContainer", "id", TARGET_PACKAGE);
+                if (slidingContainerResId == 0) {
+                    slidingContainerResId = activity.getResources().getIdentifier("slidingContainer", "id", activity.getPackageName());
+                }
+            }
             if (closeBtnResId == 0) {
                 closeBtnResId = activity.getResources().getIdentifier("closeBtn", "id", TARGET_PACKAGE);
                 if (closeBtnResId == 0) {
@@ -795,25 +876,257 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
 
         private boolean isFullScreenAdShowing() {
             resolveAdResourceIds();
-            if (rootContainerResId == 0) {
-                return false;
+            long now = System.currentTimeMillis();
+
+            // 优先按完整 resource-id 强匹配，覆盖用户反馈场景：
+            // text="" resource-id="com.netease.play:id/slidingContainer" class="android.widget.FrameLayout"
+            View slidingByFullRes = findViewByFullResNameAcrossWindows(AD_SLIDING_FULL_RES_NAME);
+            if (now - lastAdDetectDebugLogAt > AD_DETECT_DEBUG_LOG_INTERVAL_MS) {
+                lastAdDetectDebugLogAt = now;
+                XposedBridge.log(TAG + " ad detect(fullRes=" + AD_SLIDING_FULL_RES_NAME + ")="
+                        + (slidingByFullRes != null));
+            }
+            if (slidingByFullRes != null && (isViewVisible(slidingByFullRes) || isViewLikelyVisibleRelaxed(slidingByFullRes))) {
+                return true;
             }
 
-            View rootContainer = activity.findViewById(rootContainerResId);
-            if (!isViewVisible(rootContainer)) {
+            // 先按 id 名称做兜底查找，避免 getIdentifier/findViewById 在某些窗口场景失效
+            View slidingByName = findViewByIdNameAcrossWindows("slidingContainer");
+            if (slidingByName != null && (isViewVisible(slidingByName) || isViewLikelyVisibleRelaxed(slidingByName))) {
+                return true;
+            }
+            View rootByName = findViewByIdNameAcrossWindows("rootContainer");
+            View closeByName = findViewByIdNameAcrossWindows("closeBtn");
+            if (rootByName != null && isViewVisible(rootByName)) {
+                if (closeByName != null && isViewVisible(closeByName)) {
+                    return true;
+                }
+                if (isLargeVisibleOverlay(rootByName)) {
+                    return true;
+                }
+            }
+
+            View adContainer = null;
+            View slidingContainer = null;
+            if (rootContainerResId != 0) {
+                View rootContainer = findViewByIdAcrossWindows(rootContainerResId);
+                if (isViewVisible(rootContainer)) {
+                    adContainer = rootContainer;
+                }
+            }
+            if (slidingContainerResId != 0) {
+                slidingContainer = findViewByIdAcrossWindows(slidingContainerResId);
+                if (slidingContainer != null && (isViewVisible(slidingContainer) || isViewLikelyVisibleRelaxed(slidingContainer))) {
+                    // slidingContainer 命中时直接判定为广告，避免被严格可见性规则漏判
+                    return true;
+                }
+            }
+            if (adContainer == null) {
                 return false;
             }
 
             // 优先判断 closeBtn 是否可见，避免误判普通容器
             if (closeBtnResId != 0) {
-                View closeBtn = activity.findViewById(closeBtnResId);
+                View closeBtn = findViewByIdAcrossWindows(closeBtnResId);
                 if (isViewVisible(closeBtn)) {
                     return true;
                 }
             }
 
-            // 未找到 closeBtn 时，按 rootContainer 可见占比做兜底判定
-            return isLargeVisibleOverlay(rootContainer);
+            // 未找到 closeBtn 时，按广告容器可见占比做兜底判定
+            return isLargeVisibleOverlay(adContainer);
+        }
+
+        private View findViewByFullResNameAcrossWindows(String fullResName) {
+            if (isEmpty(fullResName)) {
+                return null;
+            }
+            try {
+                View decor = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
+                View found = findViewByFullResNameInTree(decor, fullResName);
+                if (found != null) {
+                    return found;
+                }
+            } catch (Throwable ignored) {
+            }
+            try {
+                Class<?> wmgCls = Class.forName("android.view.WindowManagerGlobal");
+                Object wmg = wmgCls.getMethod("getInstance").invoke(null);
+                Field viewsField = wmgCls.getDeclaredField("mViews");
+                viewsField.setAccessible(true);
+                Object viewsObj = viewsField.get(wmg);
+                if (viewsObj instanceof List) {
+                    List<?> views = (List<?>) viewsObj;
+                    for (int i = views.size() - 1; i >= 0; i--) {
+                        Object item = views.get(i);
+                        if (item instanceof View) {
+                            View found = findViewByFullResNameInTree((View) item, fullResName);
+                            if (found != null) {
+                                return found;
+                            }
+                        }
+                    }
+                }
+            } catch (Throwable ignored2) {
+            }
+            return null;
+        }
+
+        private View findViewByFullResNameInTree(View root, String fullResName) {
+            if (root == null || isEmpty(fullResName)) {
+                return null;
+            }
+            List<View> stack = new ArrayList<View>();
+            stack.add(root);
+            while (!stack.isEmpty()) {
+                int last = stack.size() - 1;
+                View node = stack.remove(last);
+                if (node == null) {
+                    continue;
+                }
+                int id = View.NO_ID;
+                try {
+                    id = node.getId();
+                } catch (Throwable ignored) {
+                    id = View.NO_ID;
+                }
+                if (id != View.NO_ID) {
+                    try {
+                        String name = node.getResources().getResourceName(id);
+                        if (fullResName.equals(name)) {
+                            return node;
+                        }
+                    } catch (Throwable ignored2) {
+                    }
+                }
+                if (node instanceof ViewGroup) {
+                    ViewGroup group = (ViewGroup) node;
+                    int count = group.getChildCount();
+                    for (int i = count - 1; i >= 0; i--) {
+                        stack.add(group.getChildAt(i));
+                    }
+                }
+            }
+            return null;
+        }
+
+        private View findViewByIdNameAcrossWindows(String entryName) {
+            if (isEmpty(entryName)) {
+                return null;
+            }
+            try {
+                View decor = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
+                View found = findViewByIdNameInTree(decor, entryName);
+                if (found != null) {
+                    return found;
+                }
+            } catch (Throwable ignored) {
+            }
+            try {
+                Class<?> wmgCls = Class.forName("android.view.WindowManagerGlobal");
+                Object wmg = wmgCls.getMethod("getInstance").invoke(null);
+                Field viewsField = wmgCls.getDeclaredField("mViews");
+                viewsField.setAccessible(true);
+                Object viewsObj = viewsField.get(wmg);
+                if (viewsObj instanceof List) {
+                    List<?> views = (List<?>) viewsObj;
+                    for (int i = views.size() - 1; i >= 0; i--) {
+                        Object item = views.get(i);
+                        if (item instanceof View) {
+                            View found = findViewByIdNameInTree((View) item, entryName);
+                            if (found != null) {
+                                return found;
+                            }
+                        }
+                    }
+                }
+            } catch (Throwable ignored2) {
+            }
+            return null;
+        }
+
+        private View findViewByIdNameInTree(View root, String entryName) {
+            if (root == null || isEmpty(entryName)) {
+                return null;
+            }
+            List<View> stack = new ArrayList<View>();
+            stack.add(root);
+            while (!stack.isEmpty()) {
+                int last = stack.size() - 1;
+                View node = stack.remove(last);
+                if (node == null) {
+                    continue;
+                }
+                int id = View.NO_ID;
+                try {
+                    id = node.getId();
+                } catch (Throwable ignored) {
+                    id = View.NO_ID;
+                }
+                if (id != View.NO_ID) {
+                    try {
+                        String name = node.getResources().getResourceEntryName(id);
+                        if (entryName.equals(name)) {
+                            return node;
+                        }
+                    } catch (Throwable ignored2) {
+                    }
+                }
+                if (node instanceof ViewGroup) {
+                    ViewGroup group = (ViewGroup) node;
+                    int count = group.getChildCount();
+                    for (int i = count - 1; i >= 0; i--) {
+                        stack.add(group.getChildAt(i));
+                    }
+                }
+            }
+            return null;
+        }
+
+        private View findViewByIdAcrossWindows(int resId) {
+            if (resId == 0) {
+                return null;
+            }
+            try {
+                View v = activity.findViewById(resId);
+                if (v != null) {
+                    return v;
+                }
+            } catch (Throwable ignored) {
+            }
+            try {
+                View decor = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
+                if (decor != null) {
+                    View v2 = decor.findViewById(resId);
+                    if (v2 != null) {
+                        return v2;
+                    }
+                }
+            } catch (Throwable ignored2) {
+            }
+
+            // 兜底：扫描当前进程所有窗口（解决广告在独立 Dialog/浮层窗口中导致 findViewById 找不到）
+            try {
+                Class<?> wmgCls = Class.forName("android.view.WindowManagerGlobal");
+                Object wmg = wmgCls.getMethod("getInstance").invoke(null);
+                Field viewsField = wmgCls.getDeclaredField("mViews");
+                viewsField.setAccessible(true);
+                Object viewsObj = viewsField.get(wmg);
+                if (viewsObj instanceof List) {
+                    List<?> views = (List<?>) viewsObj;
+                    for (int i = views.size() - 1; i >= 0; i--) {
+                        Object item = views.get(i);
+                        if (item instanceof View) {
+                            View found = ((View) item).findViewById(resId);
+                            if (found != null) {
+                                return found;
+                            }
+                        }
+                    }
+                }
+            } catch (Throwable ignored3) {
+            }
+            return null;
         }
 
         private boolean isViewVisible(View view) {
@@ -842,6 +1155,28 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
                 return false;
             }
             return rect.width() > 0 && rect.height() > 0;
+        }
+
+        private boolean isViewLikelyVisibleRelaxed(View view) {
+            if (view == null) {
+                return false;
+            }
+            try {
+                int vis = view.getVisibility();
+                if (vis != View.VISIBLE) {
+                    return false;
+                }
+            } catch (Throwable ignored) {
+                return false;
+            }
+            try {
+                if (view.getAlpha() <= 0.01f) {
+                    return false;
+                }
+            } catch (Throwable ignored2) {
+            }
+            // 放宽规则：不强依赖 isShown/getGlobalVisibleRect，避免动画层或特殊容器漏判
+            return true;
         }
 
         private boolean isLargeVisibleOverlay(View view) {
