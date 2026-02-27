@@ -32,7 +32,22 @@ import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
+/**
+ * LOOK 直播间聊天采集入口（LSPosed 模块）。
+ *
+ * 功能概览：
+ * 1) 仅在 com.netease.play 进程生效，并在 LiveViewerActivity 生命周期内工作。
+ * 2) 页面上注入悬浮按钮，默认“关闭”，点击后先读取 roomNo（房间 ID），成功后开启采集。
+ * 3) 采集来源是 UI 组件树：chatVp 容器下全局可见的文本节点（优先 content id）。
+ * 4) 对可见帧文本做增量对比 + 时间窗去重，避免重复刷屏。
+ * 5) 聊天落盘为 UTF-8 BOM CSV：列为“时间,聊天记录”。
+ *
+ * 说明：
+ * - 当前版本是 UI 组件采集方案，不依赖网络层解包。
+ * - 为保证兼容性，目录会自动从多个候选路径中选择可写目录。
+ */
 public class ChatHookEntry implements IXposedHookLoadPackage {
+    // 目标 App 与页面识别
     private static final String TARGET_PACKAGE = "com.netease.play";
     private static final String LIVE_ACTIVITY_KEYWORD = "LiveViewerActivity";
     private static final String TAG = "[LOOKChatHook]";
@@ -40,16 +55,29 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
     private static final String MODULE_VERSION = "2026.02.25-r9";
     private static final String CSV_TIMEZONE_ID = "GMT+08:00";
 
+    // 采集与去重参数（实时优先）
     private static final long SCAN_INTERVAL_MS = 80L;
-    private static final long TAB_CHECK_INTERVAL_MS = 250L;
     private static final long DEDUP_WINDOW_MS = 1200L;
     private static final int DEDUP_MAX_SIZE = 1200;
+    private static final long CSV_FLUSH_INTERVAL_MS = 300L;
+    private static final long SUMMARY_LOG_INTERVAL_MS = 5000L;
+    private static final long BLACKLIST_RELOAD_INTERVAL_MS = 5000L;
 
+    // 房间信息读取与容错参数
     private static final long ROOM_INFO_POLL_INTERVAL_MS = 250L;
     private static final int ROOM_INFO_POLL_MAX_RETRY = 10;
     private static final int ROOM_INFO_ENTER_MAX_RETRY = 3;
     private static final int CHAT_ROOT_MISS_CLEAR_THRESHOLD = 20;
+    private static final long NEW_MSG_CLICK_COOLDOWN_MS = 350L;
+    private static final long NEW_MSG_LOG_COOLDOWN_MS = 3000L;
 
+    // 全屏广告处理（参考 PopupHandler.js: handleFullScreenAd）
+    private static final long FULL_AD_CHECK_INTERVAL_MS = 300L;
+    private static final long FULL_AD_BACK_INTERVAL_MS = 800L;
+    private static final float FULL_AD_MIN_WIDTH_RATIO = 0.55f;
+    private static final float FULL_AD_MIN_HEIGHT_RATIO = 0.45f;
+
+    // 全局共享锁：文件写入与会话状态
     private static final Object FILE_LOCK = new Object();
     private static final Object STATE_LOCK = new Object();
 
@@ -59,6 +87,9 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
     private static final LinkedHashMap<String, Long> RECENT_MESSAGES = new LinkedHashMap<String, Long>(256, 0.75f, true);
 
     @Override
+    /**
+     * LSPosed 入口：仅命中目标包后安装 Activity 生命周期 hook。
+     */
     public void handleLoadPackage(final XC_LoadPackage.LoadPackageParam lpparam) {
         if (!TARGET_PACKAGE.equals(lpparam.packageName)) {
             return;
@@ -73,6 +104,12 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
         installActivityHooks();
     }
 
+    /**
+     * 安装 Activity 生命周期 hook：
+     * - onResume: 创建/恢复会话并确保悬浮按钮存在
+     * - onPause: 暂停扫描
+     * - onDestroy: 清理会话
+     */
     private void installActivityHooks() {
         if (sHooksInstalled) {
             return;
@@ -123,6 +160,9 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
         }
     }
 
+    /**
+     * 页面识别：只在直播间 Activity 运行采集逻辑。
+     */
     private boolean isLiveActivity(Activity activity) {
         if (activity == null) {
             return false;
@@ -168,11 +208,18 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
         }
     }
 
+    /**
+     * 单个直播页会话：
+     * - 管理悬浮按钮与“开/关”状态
+     * - 周期扫描 chatVp
+     * - 将增量聊天写入 CSV
+     */
     private static class UiSession {
         private final Activity activity;
         private final Handler handler;
         private final Runnable scanTask;
         private final Runnable roomInfoPollTask;
+        private final Runnable csvFlushTask;
 
         private TextView floatButton;
         private boolean running;
@@ -188,24 +235,40 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
         private int headerId;
         private int userIdResId;
         private int roomNoResId;
+        private int newMessageHintResId;
+        private int rootContainerResId;
+        private int closeBtnResId;
 
         private int roomInfoRetryCount;
         private int roomInfoEnterAttempt;
         private long lastMissingLogAt;
-        private long lastNonRoomWarnAt;
-        private long lastTabCheckAt;
         private int chatRootMissStreak;
-        private boolean lastRoomTabActive = true;
+        private boolean handlingFullScreenAd;
+        private long lastFullAdCheckAt;
+        private long lastFullAdBackAt;
+        private long lastFullAdLogAt;
+        private long lastNewMsgClickAt;
+        private long lastNewMsgLogAt;
+        private long lastSummaryLogAt;
+
+        private long totalCaptured;
+        private long totalFilteredBlacklist;
+        private long totalDroppedByDedup;
 
         private String roomId = "";
         private File outputCsvFile;
         private File baseOutputDir;
 
         private List<String> lastFrameMessages = new ArrayList<String>();
+        private boolean csvFlushScheduled;
+        private final CsvAsyncBatchWriter csvWriter;
+        private final ChatBlacklistFilter blacklistFilter;
 
         UiSession(Activity activity) {
             this.activity = activity;
             this.handler = new Handler(Looper.getMainLooper());
+            this.csvWriter = new CsvAsyncBatchWriter(TAG);
+            this.blacklistFilter = new ChatBlacklistFilter(TAG, BLACKLIST_RELOAD_INTERVAL_MS);
 
             this.scanTask = new Runnable() {
                 @Override
@@ -213,6 +276,15 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
                     if (!running || activity.isFinishing() || activity.isDestroyed()) {
                         return;
                     }
+
+                    maybeHandleFullScreenAd();
+                    if (handlingFullScreenAd) {
+                        refreshButtonStyle();
+                        handler.postDelayed(this, SCAN_INTERVAL_MS);
+                        return;
+                    }
+
+                    maybeClickNewMessageHint();
 
                     if (captureEnabled && !resolvingRoomInfo) {
                         scanChatOnce();
@@ -229,8 +301,16 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
                     resolvingRoomInfo = false;
                 }
             };
+
+            this.csvFlushTask = new Runnable() {
+                @Override
+                public void run() {
+                    flushPendingCsvAsync();
+                }
+            };
         }
 
+        // 启动扫描循环（按钮是否开启由 captureEnabled 控制）
         void start() {
             if (running) {
                 return;
@@ -239,9 +319,13 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
             handler.post(scanTask);
         }
 
+        // 页面切后台时暂停，避免无意义扫描
         void onActivityPause() {
             running = false;
             handler.removeCallbacks(scanTask);
+            handler.removeCallbacks(csvFlushTask);
+            handlingFullScreenAd = false;
+            flushPendingCsvAsync();
             if (!resolvingRoomInfo) {
                 handler.removeCallbacks(roomInfoPollTask);
                 lastFrameMessages.clear();
@@ -252,8 +336,11 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
             running = false;
             handler.removeCallbacks(scanTask);
             handler.removeCallbacks(roomInfoPollTask);
+            handler.removeCallbacks(csvFlushTask);
             resolvingRoomInfo = false;
+            handlingFullScreenAd = false;
             lastFrameMessages.clear();
+            flushPendingCsvAsync();
         }
 
         void destroy() {
@@ -270,6 +357,11 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
             }
         }
 
+        /**
+         * 悬浮按钮说明：
+         * - 点击：切换抓取开关（开启前先读取 roomNo）
+         * - 长按：手动触发一次扫描（用于现场排查）
+         */
         void ensureFloatingButton() {
             try {
                 ViewGroup decor = (ViewGroup) activity.getWindow().getDecorView();
@@ -347,6 +439,12 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
             startEnableCaptureFlow();
         }
 
+        /**
+         * 开启采集流程：
+         * 1) 重置上一轮房间信息与文件状态
+         * 2) 从直播页 roomNo 直接读取房间 ID
+         * 3) 成功后初始化 CSV 并切换为开启状态
+         */
         private void startEnableCaptureFlow() {
             resolveRoomResourceIds();
             outputCsvFile = null;
@@ -385,6 +483,7 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
                 failEnableCapture("CSV文件创建失败");
                 return;
             }
+            blacklistFilter.reloadNow();
             refreshButtonStyle();
 
             String info = "ID:" + safe(roomId, "unknown");
@@ -526,6 +625,14 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
                 return;
             }
 
+            if (handlingFullScreenAd) {
+                floatButton.setText("广告处理中");
+                floatButton.setTextColor(Color.WHITE);
+                floatButton.setBackgroundColor(Color.parseColor("#6A1B9A"));
+                floatButton.setAlpha(0.9f);
+                return;
+            }
+
             if (captureEnabled) {
                 floatButton.setText("聊天抓取:开");
                 floatButton.setTextColor(Color.WHITE);
@@ -538,17 +645,238 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
             floatButton.setAlpha(0.88f);
         }
 
-        private void scanChatOnce() {
-            if (!isRoomTabActiveFast()) {
-                long now = System.currentTimeMillis();
-                if (now - lastNonRoomWarnAt > 3000L) {
-                    lastNonRoomWarnAt = now;
-                    XposedBridge.log(TAG + " 当前不在“房间”tab，跳过采集");
+        /**
+         * 检测并处理全屏广告（rootContainer + closeBtn）：
+         * - 命中后 back() 一次
+         * - 间隔后再次检测，若仍存在继续 back()，直到广告消失
+         */
+        private void maybeHandleFullScreenAd() {
+            long now = System.currentTimeMillis();
+            if (now - lastFullAdCheckAt < FULL_AD_CHECK_INTERVAL_MS) {
+                return;
+            }
+            lastFullAdCheckAt = now;
+
+            boolean showing = isFullScreenAdShowing();
+            if (!showing) {
+                if (handlingFullScreenAd) {
+                    handlingFullScreenAd = false;
+                    if (now - lastFullAdLogAt > 800L) {
+                        lastFullAdLogAt = now;
+                        XposedBridge.log(TAG + " [全屏广告] 已消失");
+                    }
                 }
-                lastFrameMessages.clear();
                 return;
             }
 
+            if (handlingFullScreenAd) {
+                if (now - lastFullAdBackAt < FULL_AD_BACK_INTERVAL_MS) {
+                    return;
+                }
+            }
+
+            handlingFullScreenAd = true;
+            if (now - lastFullAdLogAt > 800L) {
+                lastFullAdLogAt = now;
+                XposedBridge.log(TAG + " 检测到 [全屏广告]（rootContainer），执行 back() 退回");
+                Toast.makeText(activity, "检测到全屏广告，正在处理", Toast.LENGTH_SHORT).show();
+            }
+            try {
+                activity.onBackPressed();
+                lastFullAdBackAt = now;
+            } catch (Throwable e) {
+                XposedBridge.log(TAG + " [全屏广告] back 异常: " + e);
+            }
+        }
+
+        /**
+         * 持续检测“底部有新消息”提示并自动点击，尽量把聊天滚动到最新位置。
+         */
+        private void maybeClickNewMessageHint() {
+            long now = System.currentTimeMillis();
+            if (now - lastNewMsgClickAt < NEW_MSG_CLICK_COOLDOWN_MS) {
+                return;
+            }
+
+            resolveRealtimeHintResId();
+            if (newMessageHintResId == 0) {
+                return;
+            }
+
+            View hint = null;
+            try {
+                hint = activity.findViewById(newMessageHintResId);
+            } catch (Throwable ignored) {
+                hint = null;
+            }
+            if (!(hint instanceof TextView)) {
+                return;
+            }
+            TextView tv = (TextView) hint;
+            if (!isViewVisible(tv)) {
+                return;
+            }
+
+            String text = normalize(String.valueOf(tv.getText()));
+            if (text == null || text.indexOf("底部有新消息") < 0) {
+                return;
+            }
+
+            if (performClickWithParentFallback(tv)) {
+                lastNewMsgClickAt = now;
+                if (now - lastNewMsgLogAt > NEW_MSG_LOG_COOLDOWN_MS) {
+                    lastNewMsgLogAt = now;
+                    XposedBridge.log(TAG + " 点击 [底部有新消息] 提示");
+                }
+            }
+        }
+
+        private void resolveRealtimeHintResId() {
+            if (newMessageHintResId == 0) {
+                newMessageHintResId = activity.getResources().getIdentifier("newMessageHint", "id", TARGET_PACKAGE);
+                if (newMessageHintResId == 0) {
+                    newMessageHintResId = activity.getResources().getIdentifier("newMessageHint", "id", activity.getPackageName());
+                }
+            }
+        }
+
+        private boolean performClickWithParentFallback(View view) {
+            if (view == null) {
+                return false;
+            }
+            try {
+                if (view.performClick()) {
+                    return true;
+                }
+            } catch (Throwable ignored) {
+            }
+            try {
+                if (view.callOnClick()) {
+                    return true;
+                }
+            } catch (Throwable ignored2) {
+            }
+            View current = view;
+            for (int i = 0; i < 5; i++) {
+                if (!(current.getParent() instanceof View)) {
+                    break;
+                }
+                current = (View) current.getParent();
+                try {
+                    if (current.performClick()) {
+                        return true;
+                    }
+                } catch (Throwable ignored3) {
+                }
+                try {
+                    if (current.callOnClick()) {
+                        return true;
+                    }
+                } catch (Throwable ignored4) {
+                }
+            }
+            return false;
+        }
+
+        private void resolveAdResourceIds() {
+            if (rootContainerResId == 0) {
+                rootContainerResId = activity.getResources().getIdentifier("rootContainer", "id", TARGET_PACKAGE);
+                if (rootContainerResId == 0) {
+                    rootContainerResId = activity.getResources().getIdentifier("rootContainer", "id", activity.getPackageName());
+                }
+            }
+            if (closeBtnResId == 0) {
+                closeBtnResId = activity.getResources().getIdentifier("closeBtn", "id", TARGET_PACKAGE);
+                if (closeBtnResId == 0) {
+                    closeBtnResId = activity.getResources().getIdentifier("closeBtn", "id", activity.getPackageName());
+                }
+            }
+        }
+
+        private boolean isFullScreenAdShowing() {
+            resolveAdResourceIds();
+            if (rootContainerResId == 0) {
+                return false;
+            }
+
+            View rootContainer = activity.findViewById(rootContainerResId);
+            if (!isViewVisible(rootContainer)) {
+                return false;
+            }
+
+            // 优先判断 closeBtn 是否可见，避免误判普通容器
+            if (closeBtnResId != 0) {
+                View closeBtn = activity.findViewById(closeBtnResId);
+                if (isViewVisible(closeBtn)) {
+                    return true;
+                }
+            }
+
+            // 未找到 closeBtn 时，按 rootContainer 可见占比做兜底判定
+            return isLargeVisibleOverlay(rootContainer);
+        }
+
+        private boolean isViewVisible(View view) {
+            if (view == null) {
+                return false;
+            }
+            try {
+                if (view.getVisibility() != View.VISIBLE) {
+                    return false;
+                }
+                if (!view.isShown()) {
+                    return false;
+                }
+                if (view.getAlpha() <= 0.02f) {
+                    return false;
+                }
+            } catch (Throwable ignored) {
+                return false;
+            }
+            Rect rect = new Rect();
+            try {
+                if (!view.getGlobalVisibleRect(rect)) {
+                    return false;
+                }
+            } catch (Throwable ignored2) {
+                return false;
+            }
+            return rect.width() > 0 && rect.height() > 0;
+        }
+
+        private boolean isLargeVisibleOverlay(View view) {
+            if (view == null) {
+                return false;
+            }
+            Rect rect = new Rect();
+            try {
+                if (!view.getGlobalVisibleRect(rect)) {
+                    return false;
+                }
+            } catch (Throwable ignored) {
+                return false;
+            }
+            if (rect.width() <= 0 || rect.height() <= 0) {
+                return false;
+            }
+
+            int screenW = activity.getResources().getDisplayMetrics().widthPixels;
+            int screenH = activity.getResources().getDisplayMetrics().heightPixels;
+            if (screenW <= 0 || screenH <= 0) {
+                return false;
+            }
+
+            float widthRatio = ((float) rect.width()) / ((float) screenW);
+            float heightRatio = ((float) rect.height()) / ((float) screenH);
+            return widthRatio >= FULL_AD_MIN_WIDTH_RATIO && heightRatio >= FULL_AD_MIN_HEIGHT_RATIO;
+        }
+
+        /**
+         * 单次扫描主流程：
+         * - 在 chatVp 可见区域收集文本
+         * - 与上一帧做增量对比，再执行全局去重后输出
+         */
+        private void scanChatOnce() {
             View chatRoot = findChatRootView();
             if (chatRoot == null) {
                 chatRootMissStreak = chatRootMissStreak + 1;
@@ -574,11 +902,7 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
                 return;
             }
 
-            List<String> messages = new ArrayList<String>();
-            collectText(chatRoot, messages, true, chatRootVisibleRect);
-            if (messages.isEmpty()) {
-                collectText(chatRoot, messages, false, chatRootVisibleRect);
-            }
+            List<String> messages = collectVisibleChatTextsSinglePass(chatRoot, chatRootVisibleRect);
 
             if (messages.isEmpty()) {
                 return;
@@ -594,175 +918,54 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
             }
         }
 
-        private boolean isRoomTabActiveFast() {
-            long now = System.currentTimeMillis();
-            if (now - lastTabCheckAt < TAB_CHECK_INTERVAL_MS) {
-                return lastRoomTabActive;
-            }
-            lastTabCheckAt = now;
-            lastRoomTabActive = isRoomTabActive();
-            return lastRoomTabActive;
-        }
-
-        private boolean isRoomTabActive() {
-            TextView roomTab = findBottomTabTextView("房间");
-            TextView squareTab = findBottomTabTextView("广场");
-
-            if (roomTab == null && squareTab == null) {
-                return false;
-            }
-            if (roomTab != null && squareTab == null) {
-                return true;
-            }
-            if (roomTab == null) {
-                return false;
+        /**
+         * 单次遍历 chatVp 子树，仅收集“全局可见”的聊天文本：
+         * - 优先采集 id=content 的文本
+         * - 若本轮未命中 content，再降级到其它可见文本（仍只遍历一次）
+         */
+        private List<String> collectVisibleChatTextsSinglePass(View chatRoot, Rect chatRootVisibleRect) {
+            List<String> primary = new ArrayList<String>();
+            List<String> fallback = new ArrayList<String>();
+            if (chatRoot == null || chatRootVisibleRect == null) {
+                return primary;
             }
 
-            Boolean byState = resolveRoomTabByState(roomTab, squareTab);
-            if (byState != null) {
-                return byState.booleanValue();
-            }
+            List<View> stack = new ArrayList<View>();
+            stack.add(chatRoot);
 
-            Boolean byColor = resolveRoomTabByColor(roomTab, squareTab);
-            if (byColor != null) {
-                return byColor.booleanValue();
-            }
-
-            return false;
-        }
-
-        private Boolean resolveRoomTabByState(TextView roomTab, TextView squareTab) {
-            boolean roomActive = isViewActive(roomTab);
-            boolean squareActive = isViewActive(squareTab);
-            if (roomActive != squareActive) {
-                return roomActive;
-            }
-            return null;
-        }
-
-        private Boolean resolveRoomTabByColor(TextView roomTab, TextView squareTab) {
-            if (roomTab == null || squareTab == null) {
-                return null;
-            }
-            try {
-                int rc = roomTab.getCurrentTextColor();
-                int sc = squareTab.getCurrentTextColor();
-                double diff = colorLuma(rc) - colorLuma(sc);
-                if (Math.abs(diff) < 8.0d) {
-                    return null;
+            while (!stack.isEmpty()) {
+                int last = stack.size() - 1;
+                View node = stack.remove(last);
+                if (node == null) {
+                    continue;
                 }
-                return diff > 0 ? Boolean.TRUE : Boolean.FALSE;
-            } catch (Throwable ignored) {
-                return null;
-            }
-        }
 
-        private boolean isViewActive(View v) {
-            if (v == null) {
-                return false;
-            }
-            try {
-                if (v.isSelected()) {
-                    return true;
-                }
-            } catch (Throwable ignored) {
-            }
-            try {
-                if (v.isActivated()) {
-                    return true;
-                }
-            } catch (Throwable ignored2) {
-            }
-            try {
-                if (v.isPressed()) {
-                    return true;
-                }
-            } catch (Throwable ignored3) {
-            }
-            try {
-                if (v.isFocused()) {
-                    return true;
-                }
-            } catch (Throwable ignored4) {
-            }
-            return false;
-        }
-
-        private double colorLuma(int color) {
-            int r = Color.red(color);
-            int g = Color.green(color);
-            int b = Color.blue(color);
-            return 0.2126d * r + 0.7152d * g + 0.0722d * b;
-        }
-
-        private TextView findBottomTabTextView(String label) {
-            View root = activity.getWindow().getDecorView();
-            if (root == null) {
-                return null;
-            }
-            int screenHeight = 0;
-            try {
-                screenHeight = activity.getResources().getDisplayMetrics().heightPixels;
-            } catch (Throwable ignored) {
-                screenHeight = 0;
-            }
-            if (screenHeight <= 0) {
-                screenHeight = 2400;
-            }
-            TabCandidate best = new TabCandidate();
-            collectBottomTabTextView(root, label, screenHeight, best);
-            return best.view;
-        }
-
-        private void collectBottomTabTextView(View node, String label, int screenHeight, TabCandidate best) {
-            if (node == null) {
-                return;
-            }
-            if (node instanceof TextView) {
-                TextView tv = (TextView) node;
-                String text = normalize(String.valueOf(tv.getText()));
-                if (label.equals(text)) {
-                    int[] loc = new int[2];
-                    int h = 0;
-                    int w = 0;
-                    try {
-                        node.getLocationOnScreen(loc);
-                        h = node.getHeight();
-                        w = node.getWidth();
-                    } catch (Throwable ignored) {
-                        h = 0;
-                        w = 0;
-                    }
-                    if (h <= 0) {
-                        try { h = node.getMeasuredHeight(); } catch (Throwable ignored2) { h = 0; }
-                    }
-                    if (w <= 0) {
-                        try { w = node.getMeasuredWidth(); } catch (Throwable ignored3) { w = 0; }
-                    }
-                    int cy = loc[1] + Math.max(1, h) / 2;
-                    int cx = loc[0] + Math.max(1, w) / 2;
-                    if (cy >= (int) (screenHeight * 0.60f)) {
-                        if (best.view == null || cy > best.centerY || (cy == best.centerY && cx < best.centerX)) {
-                            best.view = tv;
-                            best.centerY = cy;
-                            best.centerX = cx;
+                if (node instanceof TextView) {
+                    TextView tv = (TextView) node;
+                    if (isTextViewVisiblyInChatRoot(tv, chatRootVisibleRect)) {
+                        String text = normalize(String.valueOf(tv.getText()));
+                        if (text != null) {
+                            if (contentId != 0 && tv.getId() == contentId) {
+                                primary.add(text);
+                            } else {
+                                fallback.add(text);
+                            }
                         }
                     }
                 }
-            }
-            if (node instanceof ViewGroup) {
-                ViewGroup group = (ViewGroup) node;
-                int count = group.getChildCount();
-                for (int i = 0; i < count; i++) {
-                    collectBottomTabTextView(group.getChildAt(i), label, screenHeight, best);
+
+                if (node instanceof ViewGroup) {
+                    ViewGroup group = (ViewGroup) node;
+                    int count = group.getChildCount();
+                    for (int i = count - 1; i >= 0; i--) {
+                        stack.add(group.getChildAt(i));
+                    }
                 }
             }
-        }
-
-        private static class TabCandidate {
-            private TextView view;
-            private int centerY = -1;
-            private int centerX = Integer.MAX_VALUE;
+            if (!primary.isEmpty()) {
+                return primary;
+            }
+            return fallback;
         }
 
         private List<String> uniqueOrdered(List<String> input) {
@@ -844,37 +1047,6 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
             return activity.findViewById(chatVpId);
         }
 
-        private void collectText(View node, List<String> out, boolean strictContentId, Rect chatRootVisibleRect) {
-            if (node == null) {
-                return;
-            }
-
-            if (node instanceof TextView) {
-                TextView tv = (TextView) node;
-                if (!isTextViewVisiblyInChatRoot(tv, chatRootVisibleRect)) {
-                    // 过滤掉不可见/被隐藏/不在chatVp可见区域内的文本（如“广场”隐藏节点）
-                    return;
-                }
-                CharSequence cs = tv.getText();
-                String text = normalize(cs == null ? null : cs.toString());
-                if (text != null) {
-                    if (!strictContentId) {
-                        out.add(text);
-                    } else if (contentId != 0 && tv.getId() == contentId) {
-                        out.add(text);
-                    }
-                }
-            }
-
-            if (node instanceof ViewGroup) {
-                ViewGroup group = (ViewGroup) node;
-                int count = group.getChildCount();
-                for (int i = 0; i < count; i++) {
-                    collectText(group.getChildAt(i), out, strictContentId, chatRootVisibleRect);
-                }
-            }
-        }
-
         private boolean isTextViewVisiblyInChatRoot(TextView tv, Rect chatRootVisibleRect) {
             if (tv == null || chatRootVisibleRect == null) {
                 return false;
@@ -933,6 +1105,7 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
             return t;
         }
 
+        // roomNo 可能包含前缀文本，统一提取数字作为房间 ID
         private String cleanRoomId(String raw) {
             String t = normalize(raw);
             if (t == null) {
@@ -956,17 +1129,45 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
             return value;
         }
 
+        private boolean isBlacklistedMessage(String msg) {
+            return blacklistFilter.isBlocked(msg);
+        }
+
+        /**
+         * 统一输出入口：黑名单过滤 -> 去重 -> 入队异步写 CSV。
+         */
         private void emitChatMessage(String msg) {
             long now = System.currentTimeMillis();
+            if (isBlacklistedMessage(msg)) {
+                totalFilteredBlacklist = totalFilteredBlacklist + 1;
+                maybeLogSummary(now);
+                return;
+            }
             if (!shouldEmit(msg, now)) {
+                totalDroppedByDedup = totalDroppedByDedup + 1;
+                maybeLogSummary(now);
                 return;
             }
 
             String nowStr = nowTime(now);
-            XposedBridge.log(TAG + " [ui] " + msg);
             appendCsv(nowStr, msg);
+            totalCaptured = totalCaptured + 1;
+            maybeLogSummary(now);
         }
 
+        private void maybeLogSummary(long nowMs) {
+            if (nowMs - lastSummaryLogAt < SUMMARY_LOG_INTERVAL_MS) {
+                return;
+            }
+            lastSummaryLogAt = nowMs;
+            int pending = csvWriter.pendingSize();
+            XposedBridge.log(TAG + " stats captured=" + totalCaptured
+                    + " filtered=" + totalFilteredBlacklist
+                    + " dedup=" + totalDroppedByDedup
+                    + " pending=" + pending);
+        }
+
+        // 近窗去重：同一文本在 DEDUP_WINDOW_MS 内仅输出一次
         private boolean shouldEmit(String msg, long nowMs) {
             synchronized (STATE_LOCK) {
                 Long lastMs = RECENT_MESSAGES.get(msg);
@@ -983,39 +1184,28 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
             }
         }
 
+        /**
+         * 追加写入 CSV（异步批量写盘）：
+         * - UI线程仅入队，避免每条消息同步 IO
+         * - 由单线程执行器合并批量落盘
+         */
         private void appendCsv(String timeStr, String msg) {
-            if (!ensureCsvReady()) {
+            ensureOutputCsvFile();
+            if (outputCsvFile == null) {
                 return;
             }
 
             String line = csvEscape(timeStr) + "," + csvEscape(msg) + "\n";
-            synchronized (FILE_LOCK) {
-                try {
-                    File dir = outputCsvFile.getParentFile();
-                    if (dir == null) {
-                        return;
-                    }
-                    if (!dir.exists() && !dir.mkdirs()) {
-                        XposedBridge.log(TAG + " mkdir failed: " + dir.getAbsolutePath());
-                        return;
-                    }
-
-                    boolean needHeader = !outputCsvFile.exists() || outputCsvFile.length() == 0;
-                    FileOutputStream fos = new FileOutputStream(outputCsvFile, true);
-                    try {
-                        if (needHeader) {
-                            fos.write(new byte[] {(byte) 0xEF, (byte) 0xBB, (byte) 0xBF});
-                            fos.write("时间,聊天记录\n".getBytes(StandardCharsets.UTF_8));
-                        }
-                        fos.write(line.getBytes(StandardCharsets.UTF_8));
-                        XposedBridge.log(TAG + " csv append ok: " + outputCsvFile.getAbsolutePath() + " msg=" + msg);
-                    } finally {
-                        fos.close();
-                    }
-                } catch (IOException e) {
-                    XposedBridge.log(TAG + " write csv error: " + e);
-                }
+            csvWriter.enqueue(outputCsvFile, line);
+            if (!csvFlushScheduled) {
+                csvFlushScheduled = true;
+                handler.postDelayed(csvFlushTask, CSV_FLUSH_INTERVAL_MS);
             }
+        }
+
+        private void flushPendingCsvAsync() {
+            csvFlushScheduled = false;
+            csvWriter.flushAsync();
         }
 
         private boolean ensureCsvReady() {
@@ -1058,33 +1248,35 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
             }
         }
 
+        // 生成输出文件名：房间ID_日期.csv（同房间同日期复用同一文件，跨天自动切换）
         private void ensureOutputCsvFile() {
-            if (outputCsvFile != null) {
-                return;
-            }
-
             String idPart = sanitizeFileNamePart(safe(roomId, "unknownRoomId"));
             String datePart = dayStamp();
+            String fileName = idPart + "_" + datePart + ".csv";
+
+            if (outputCsvFile != null) {
+                File currentFile = outputCsvFile;
+                String currentName = currentFile.getName();
+                if (fileName.equals(currentName)) {
+                    return;
+                }
+                XposedBridge.log(TAG + " csv rotate: " + currentName + " -> " + fileName);
+                outputCsvFile = null;
+            }
 
             File baseDir = resolveBaseOutputDir();
             if (baseDir == null) {
                 XposedBridge.log(TAG + " no writable output directory");
                 return;
             }
-            for (int idx = 1; idx <= 9999; idx++) {
-                String fileName = idPart + "_" + datePart + "_" + pad3(idx) + ".csv";
-                File f = new File(baseDir, fileName);
-                if (!f.exists()) {
-                    outputCsvFile = f;
-                    XposedBridge.log(TAG + " csv target=" + outputCsvFile.getAbsolutePath());
-                    return;
-                }
-            }
-
-            outputCsvFile = new File(baseDir, idPart + "_" + datePart + "_" + nowStamp() + ".csv");
+            outputCsvFile = new File(baseDir, fileName);
             XposedBridge.log(TAG + " csv target=" + outputCsvFile.getAbsolutePath());
         }
 
+        /**
+         * 输出目录探测：
+         * 优先 /storage/emulated/0/LiveRoomData，不可写时自动回落到其他可写目录。
+         */
         private File resolveBaseOutputDir() {
             if (baseOutputDir != null) {
                 return baseOutputDir;

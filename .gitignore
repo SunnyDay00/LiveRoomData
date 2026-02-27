@@ -28,3 +28,12 @@ LSPosedChatUiCollector/local.properties
 LSPosedChatUiCollector/.idea/
 LSPosedChatUiCollector/**/*.iml
 LSPosedChatUiCollector/captures/
+
+# ===== LSPosedNetMsgProbe (Android/Gradle) =====
+LSPosedNetMsgProbe/.gradle/
+LSPosedNetMsgProbe/**/build/
+LSPosedNetMsgProbe/local.properties
+LSPosedNetMsgProbe/.idea/
+LSPosedNetMsgProbe/**/*.iml
+LSPosedNetMsgProbe/captures/
+LSPosedNetMsgProbe

@@ -28,6 +28,14 @@ android {
         sourceCompatibility JavaVersion.VERSION_11
         targetCompatibility JavaVersion.VERSION_11
     }
+
+    sourceSets {
+        main {
+            // 将 src/main/java 下的黑名单文本作为 Java 资源一并打包进 APK
+            resources.srcDirs += ['src/main/java']
+            resources.includes += ['com/oodbye/lsposedchathook/chat_blacklist.txt']
+        }
+    }
 }
 
 dependencies {
