@@ -2,6 +2,7 @@ package com.oodbye.lsposedchathook;
 
 import android.app.Activity;
 import android.graphics.Color;
+import android.provider.Settings;
 import android.graphics.Rect;
 import android.os.Handler;
 import android.os.Looper;
@@ -13,12 +14,8 @@ import android.widget.FrameLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
 import java.lang.reflect.Field;
-import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -28,6 +25,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.TimeZone;
 import java.util.WeakHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -43,11 +42,11 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
  * 2) 页面上注入悬浮按钮，默认“关闭”，点击后先读取 roomNo（房间 ID），成功后开启采集。
  * 3) 采集来源是 UI 组件树：chatVp 容器下全局可见的文本节点（优先 content id）。
  * 4) 对可见帧文本做增量对比 + 时间窗去重，避免重复刷屏。
- * 5) 聊天落盘为 UTF-8 BOM CSV：列为“时间,聊天记录,送礼人,收礼人,礼物名称,礼物数量,音符价格”。
+ * 5) 聊天上传到远程数据库（经 Cloudflare Worker 中间层），本地 CSV 默认禁用。
  *
  * 说明：
  * - 当前版本是 UI 组件采集方案，不依赖网络层解包。
- * - 为保证兼容性，目录会自动从多个候选路径中选择可写目录。
+ * - 价格表与黑名单由云端下发：首次全量拉取，后续只做版本检测，变更才拉全量。
  */
 public class ChatHookEntry implements IXposedHookLoadPackage {
     // 目标 App 与页面识别
@@ -56,7 +55,7 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
     private static final String TAG = "[LOOKChatHook]";
     private static final String FLOAT_TAG = "LOOK_CHAT_HOOK_FLOAT_BTN";
     private static final String FLOAT_AD_TAG = "LOOK_CHAT_HOOK_AD_BTN";
-    private static final String MODULE_VERSION = "2026.02.28-r11";
+    private static final String MODULE_VERSION = "2026.02.28-r12";
     private static final String CSV_TIMEZONE_ID = "GMT+08:00";
 
     // 采集与去重参数（实时优先）
@@ -65,7 +64,7 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
     private static final int DEDUP_MAX_SIZE = 1200;
     private static final long CSV_FLUSH_INTERVAL_MS = 300L;
     private static final long SUMMARY_LOG_INTERVAL_MS = 5000L;
-    private static final long BLACKLIST_RELOAD_INTERVAL_MS = 5000L;
+    private static final long REMOTE_CONFIG_VERSION_CHECK_INTERVAL_MS = 30000L;
 
     // 房间信息读取与容错参数
     private static final long ROOM_INFO_POLL_INTERVAL_MS = 250L;
@@ -81,18 +80,21 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
     private static final long FULL_AD_BACK_INTERVAL_MS = 800L;
     private static final float FULL_AD_MIN_WIDTH_RATIO = 0.55f;
     private static final float FULL_AD_MIN_HEIGHT_RATIO = 0.45f;
-    private static final long AD_DETECT_DEBUG_LOG_INTERVAL_MS = 3000L;
     private static final String AD_SLIDING_FULL_RES_NAME = "com.netease.play:id/slidingContainer";
-    private static final String CSV_HEADER = "时间,聊天记录,送礼人,收礼人,礼物名称,礼物数量,音符价格\n";
 
-    // 全局共享锁：文件写入与会话状态
-    private static final Object FILE_LOCK = new Object();
+    // 全局共享锁：会话与远程配置状态
     private static final Object STATE_LOCK = new Object();
+    private static final Object REMOTE_CONFIG_LOCK = new Object();
 
     private static volatile boolean sHooksInstalled = false;
 
     private static final Map<Activity, UiSession> SESSIONS = new WeakHashMap<Activity, UiSession>();
     private static final LinkedHashMap<String, Long> RECENT_MESSAGES = new LinkedHashMap<String, Long>(256, 0.75f, true);
+    private static boolean sRemoteConfigLoaded = false;
+    private static long sRemoteConfigLastCheckAt = 0L;
+    private static String sRemoteConfigVersion = "";
+    private static Map<String, Long> sRemoteGiftPrices = new LinkedHashMap<String, Long>();
+    private static List<String> sRemoteBlacklistRules = new ArrayList<String>();
 
     @Override
     /**
@@ -221,7 +223,7 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
      * 单个直播页会话：
      * - 管理悬浮按钮与“开/关”状态
      * - 周期扫描 chatVp
-     * - 将增量聊天写入 CSV
+     * - 将增量聊天批量上传到远程数据库
      */
     private static class UiSession {
         private final Activity activity;
@@ -229,6 +231,7 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
         private final Runnable scanTask;
         private final Runnable roomInfoPollTask;
         private final Runnable csvFlushTask;
+        private final ExecutorService remoteExecutor;
         private boolean liveActivity;
 
         private TextView floatButton;
@@ -263,7 +266,6 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
         private long lastFullAdLogAt;
         private long lastFullAdDetectedToastAt;
         private long lastFullAdToastAt;
-        private long lastAdDetectDebugLogAt;
         private long lastNewMsgClickAt;
         private long lastNewMsgLogAt;
         private long lastNewMsgToastAt;
@@ -274,22 +276,27 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
         private long totalDroppedByDedup;
 
         private String roomId = "";
-        private File outputCsvFile;
-        private File baseOutputDir;
+        private String deviceId = "";
 
         private List<String> lastFrameMessages = new ArrayList<String>();
         private boolean csvFlushScheduled;
-        private final CsvAsyncBatchWriter csvWriter;
+        private boolean remoteConfigSyncing;
         private final ChatBlacklistFilter blacklistFilter;
         private final GiftPriceCatalog giftPriceCatalog;
+        private final RemoteApiClient remoteApiClient;
+        private final RemoteBatchUploader remoteBatchUploader;
 
         UiSession(Activity activity, boolean liveActivity) {
             this.activity = activity;
             this.liveActivity = liveActivity;
             this.handler = new Handler(Looper.getMainLooper());
-            this.csvWriter = new CsvAsyncBatchWriter(TAG);
-            this.blacklistFilter = new ChatBlacklistFilter(TAG, BLACKLIST_RELOAD_INTERVAL_MS);
+            this.remoteExecutor = Executors.newSingleThreadExecutor();
+            this.blacklistFilter = new ChatBlacklistFilter(TAG);
             this.giftPriceCatalog = new GiftPriceCatalog(TAG);
+            this.remoteApiClient = new RemoteApiClient(activity, TAG);
+            this.remoteBatchUploader = new RemoteBatchUploader(TAG, remoteApiClient);
+            this.deviceId = resolveDeviceId();
+            applyCachedRemoteConfigFromMemory();
             this.adAutoHandleEnabled = ModuleSettings.isAutoHandleFullscreenAdEnabled();
 
             this.scanTask = new Runnable() {
@@ -316,6 +323,7 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
                     }
 
                     if (liveActivity && captureEnabled && !resolvingRoomInfo) {
+                        maybeRefreshRemoteConfigAsync();
                         scanChatOnce();
                     }
                     if (liveActivity) {
@@ -396,6 +404,10 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
 
         void destroy() {
             pause();
+            try {
+                remoteExecutor.shutdownNow();
+            } catch (Throwable ignored0) {
+            }
             if (floatButton != null) {
                 try {
                     ViewGroup parent = (ViewGroup) floatButton.getParent();
@@ -546,14 +558,12 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
 
         /**
          * 开启采集流程：
-         * 1) 重置上一轮房间信息与文件状态
+         * 1) 重置上一轮房间信息状态
          * 2) 从直播页 roomNo 直接读取房间 ID
-         * 3) 成功后初始化 CSV 并切换为开启状态
+         * 3) 先检测远程数据库连通并拉取配置，再切换为开启状态
          */
         private void startEnableCaptureFlow() {
             resolveRoomResourceIds();
-            outputCsvFile = null;
-            baseOutputDir = null;
             roomId = "";
             roomInfoRetryCount = 0;
             roomInfoEnterAttempt = 0;
@@ -581,20 +591,62 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
                 failEnableCapture("未读取到房间ID(roomNo)");
                 return;
             }
-            captureEnabled = true;
-            lastFrameMessages.clear();
-            chatRootMissStreak = 0;
-            if (!ensureCsvReady()) {
-                failEnableCapture("CSV文件创建失败");
+            if (!remoteApiClient.isWriteConfigured()) {
+                failEnableCapture(remoteApiClient.missingConfigReasonForWrite());
                 return;
             }
-            blacklistFilter.reloadNow();
-            refreshButtonStyle();
 
-            String info = "ID:" + safe(roomId, "unknown");
-            Toast.makeText(activity, "聊天抓取已开启\n" + info + "\n" + buildPathHint(), Toast.LENGTH_SHORT).show();
-            XposedBridge.log(TAG + " captureEnabled=true roomId=" + roomId
-                    + " csv=" + (outputCsvFile == null ? "" : outputCsvFile.getAbsolutePath()));
+            resolvingRoomInfo = true;
+            refreshButtonStyle();
+            Toast.makeText(activity, "检测远程数据库...", Toast.LENGTH_SHORT).show();
+
+            remoteExecutor.execute(new Runnable() {
+                @Override
+                public void run() {
+                    boolean healthOk = remoteApiClient.healthCheck();
+                    if (!healthOk) {
+                        final String detail = remoteApiClient.getLastRequestError();
+                        activity.runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                String reason = "远程数据库不可用，请检查API地址/密钥";
+                                if (!isEmpty(detail)) {
+                                    reason = reason + "（" + detail + "）";
+                                }
+                                failEnableCapture(reason);
+                            }
+                        });
+                        return;
+                    }
+
+                    boolean configOk = syncRemoteConfigBlocking(false, true);
+                    if (!configOk) {
+                        activity.runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                failEnableCapture("拉取云端配置失败");
+                            }
+                        });
+                        return;
+                    }
+
+                    activity.runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            resolvingRoomInfo = false;
+                            captureEnabled = true;
+                            lastFrameMessages.clear();
+                            chatRootMissStreak = 0;
+                            refreshButtonStyle();
+
+                            String info = "ID:" + safe(roomId, "unknown");
+                            Toast.makeText(activity, "聊天抓取已开启\n" + info + "\n" + buildPathHint(), Toast.LENGTH_SHORT).show();
+                            XposedBridge.log(TAG + " captureEnabled=true roomId=" + roomId
+                                    + " remote=" + remoteApiClient.getBaseUrl());
+                        }
+                    });
+                }
+            });
         }
 
         private void failEnableCapture(String reason) {
@@ -606,6 +658,134 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
             refreshButtonStyle();
             Toast.makeText(activity, "开启失败: " + reason, Toast.LENGTH_SHORT).show();
             XposedBridge.log(TAG + " enable capture failed: " + reason);
+        }
+
+        private void maybeRefreshRemoteConfigAsync() {
+            long now = System.currentTimeMillis();
+            if (remoteConfigSyncing) {
+                return;
+            }
+            synchronized (REMOTE_CONFIG_LOCK) {
+                if (now - sRemoteConfigLastCheckAt < REMOTE_CONFIG_VERSION_CHECK_INTERVAL_MS) {
+                    return;
+                }
+                sRemoteConfigLastCheckAt = now;
+            }
+            remoteConfigSyncing = true;
+            remoteExecutor.execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        syncRemoteConfigBlocking(false, false);
+                    } finally {
+                        remoteConfigSyncing = false;
+                    }
+                }
+            });
+        }
+
+        private boolean syncRemoteConfigBlocking(boolean forceFull, boolean strictFail) {
+            if (!remoteApiClient.isReadConfigured()) {
+                XposedBridge.log(TAG + " remote config read not configured");
+                return !strictFail;
+            }
+
+            if (!forceFull && applyCachedRemoteConfigFromMemory()) {
+                RemoteApiClient.ConfigVersion version = remoteApiClient.fetchConfigVersion();
+                if (!version.ok || isEmpty(version.version)) {
+                    return !strictFail;
+                }
+                String currentVersion;
+                synchronized (REMOTE_CONFIG_LOCK) {
+                    currentVersion = sRemoteConfigVersion;
+                }
+                if (version.version.equals(currentVersion)) {
+                    return true;
+                }
+            }
+
+            RemoteApiClient.ConfigSnapshot snapshot = remoteApiClient.fetchConfigSnapshot();
+            if (snapshot == null) {
+                return !strictFail;
+            }
+
+            Map<String, Long> latestGift = copyGiftMap(snapshot.giftPrices);
+            List<String> latestBlacklist = copyBlacklist(snapshot.blacklistRules);
+            String latestVersion = safe(snapshot.version, "");
+
+            giftPriceCatalog.replaceAll(latestGift);
+            blacklistFilter.replaceRules(latestBlacklist);
+            long now = System.currentTimeMillis();
+            synchronized (REMOTE_CONFIG_LOCK) {
+                sRemoteGiftPrices = latestGift;
+                sRemoteBlacklistRules = latestBlacklist;
+                sRemoteConfigVersion = latestVersion;
+                sRemoteConfigLoaded = true;
+                sRemoteConfigLastCheckAt = now;
+            }
+            XposedBridge.log(TAG + " remote config synced version=" + latestVersion
+                    + " gift=" + giftPriceCatalog.size()
+                    + " blacklist=" + blacklistFilter.size());
+            return true;
+        }
+
+        private boolean applyCachedRemoteConfigFromMemory() {
+            Map<String, Long> giftCopy = null;
+            List<String> blacklistCopy = null;
+            String versionCopy = "";
+            synchronized (REMOTE_CONFIG_LOCK) {
+                if (!sRemoteConfigLoaded) {
+                    return false;
+                }
+                giftCopy = copyGiftMap(sRemoteGiftPrices);
+                blacklistCopy = copyBlacklist(sRemoteBlacklistRules);
+                versionCopy = sRemoteConfigVersion;
+            }
+            giftPriceCatalog.replaceAll(giftCopy);
+            blacklistFilter.replaceRules(blacklistCopy);
+            if (!isEmpty(versionCopy)) {
+                XposedBridge.log(TAG + " remote config cache hit version=" + versionCopy
+                        + " gift=" + giftPriceCatalog.size()
+                        + " blacklist=" + blacklistFilter.size());
+            }
+            return true;
+        }
+
+        private Map<String, Long> copyGiftMap(Map<String, Long> src) {
+            Map<String, Long> out = new LinkedHashMap<String, Long>();
+            if (src == null || src.isEmpty()) {
+                return out;
+            }
+            for (Map.Entry<String, Long> it : src.entrySet()) {
+                String key = it.getKey() == null ? "" : it.getKey().trim();
+                if (key.length() == 0) {
+                    continue;
+                }
+                long value = it.getValue() == null ? 0L : it.getValue().longValue();
+                if (value < 0L) {
+                    value = 0L;
+                }
+                out.put(key, value);
+            }
+            return out;
+        }
+
+        private List<String> copyBlacklist(List<String> src) {
+            List<String> out = new ArrayList<String>();
+            if (src == null || src.isEmpty()) {
+                return out;
+            }
+            for (int i = 0; i < src.size(); i++) {
+                String item = src.get(i);
+                if (item == null) {
+                    continue;
+                }
+                String v = item.trim();
+                if (v.length() > 0) {
+                    out.add(v);
+                }
+            }
+            return out;
         }
 
         private boolean enterDetailFromLiveByHostEntry() {
@@ -946,18 +1126,10 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
 
         private boolean isFullScreenAdShowing() {
             resolveAdResourceIds();
-            long now = System.currentTimeMillis();
 
             // 优先按完整 resource-id 强匹配，覆盖用户反馈场景：
             // text="" resource-id="com.netease.play:id/slidingContainer" class="android.widget.FrameLayout"
             View slidingByFullRes = findViewByFullResNameAcrossWindows(AD_SLIDING_FULL_RES_NAME);
-            if (now - lastAdDetectDebugLogAt > AD_DETECT_DEBUG_LOG_INTERVAL_MS) {
-                lastAdDetectDebugLogAt = now;
-                String actName = activity.getClass().getName();
-                XposedBridge.log(TAG + " ad detect activity=" + actName
-                        + " fullRes=" + AD_SLIDING_FULL_RES_NAME
-                        + " found=" + (slidingByFullRes != null));
-            }
             if (slidingByFullRes != null && (isViewVisible(slidingByFullRes) || isViewLikelyVisibleRelaxed(slidingByFullRes))) {
                 return true;
             }
@@ -1548,7 +1720,7 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
         }
 
         /**
-         * 统一输出入口：黑名单过滤 -> 去重 -> 入队异步写 CSV。
+         * 统一输出入口：黑名单过滤 -> 去重 -> 入队异步远程上传。
          */
         private void emitChatMessage(String msg) {
             long now = System.currentTimeMillis();
@@ -1574,11 +1746,11 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
                 return;
             }
             lastSummaryLogAt = nowMs;
-            int pending = csvWriter.pendingSize();
+            int pending = remoteBatchUploader.pendingSize();
             XposedBridge.log(TAG + " stats captured=" + totalCaptured
                     + " filtered=" + totalFilteredBlacklist
                     + " dedup=" + totalDroppedByDedup
-                    + " pending=" + pending);
+                    + " pendingRemote=" + pending);
         }
 
         // 近窗去重：同一文本在 DEDUP_WINDOW_MS 内仅输出一次
@@ -1598,317 +1770,80 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
             }
         }
 
-        /**
-         * 追加写入 CSV（异步批量写盘）：
-         * - UI线程仅入队，避免每条消息同步 IO
-         * - 由单线程执行器合并批量落盘
-         */
+        // 历史方法名保留：当前实现改为“远程入队上传”
         private void appendCsv(String timeStr, String msg) {
-            ensureOutputCsvFile();
-            if (outputCsvFile == null) {
-                return;
-            }
-
             String cleanedChat = ChatMessageParser.stripIconPrefix(msg);
             boolean parseEnabled = ModuleSettings.isChatParseEnabled();
             if (!parseEnabled) {
-                csvWriter.enqueue(outputCsvFile, buildCsvLine(
-                        timeStr, cleanedChat, "", "", "", "", ""));
-                if (!csvFlushScheduled) {
-                    csvFlushScheduled = true;
-                    handler.postDelayed(csvFlushTask, CSV_FLUSH_INTERVAL_MS);
-                }
+                enqueueRemoteRecord(timeStr, cleanedChat, "", "", "", null, "");
+                scheduleRemoteFlush();
                 return;
             }
 
             ChatMessageParser.GiftParseResult gift = ChatMessageParser.parseGift(cleanedChat, giftPriceCatalog);
             if (!gift.isGift) {
-                csvWriter.enqueue(outputCsvFile, buildCsvLine(
-                        timeStr, cleanedChat, "", "", "", "", ""));
+                enqueueRemoteRecord(timeStr, cleanedChat, "", "", "", null, "");
             } else {
-                String quantityText = String.valueOf(gift.quantityEach);
+                Integer quantity = Integer.valueOf(gift.quantityEach);
                 String priceText = gift.totalPriceEachReceiver > 0
                         ? String.valueOf(gift.totalPriceEachReceiver)
                         : "未知";
                 for (int i = 0; i < gift.receivers.size(); i++) {
                     String receiver = gift.receivers.get(i);
-                    String rowTime = i == 0 ? timeStr : "";
-                    String rowChat = i == 0 ? cleanedChat : "";
-                    csvWriter.enqueue(outputCsvFile, buildCsvLine(
-                            rowTime,
-                            rowChat,
-                            gift.sender,
-                            receiver,
-                            gift.giftName,
-                            quantityText,
-                            priceText
-                    ));
+                    enqueueRemoteRecord(timeStr, cleanedChat, gift.sender, receiver, gift.giftName, quantity, priceText);
                 }
             }
-            if (!csvFlushScheduled) {
-                csvFlushScheduled = true;
-                handler.postDelayed(csvFlushTask, CSV_FLUSH_INTERVAL_MS);
+            scheduleRemoteFlush();
+        }
+
+        private void enqueueRemoteRecord(String eventTime,
+                                         String chatText,
+                                         String sender,
+                                         String receiver,
+                                         String giftName,
+                                         Integer giftQty,
+                                         String notePrice) {
+            RemoteApiClient.ChatRecord rec = new RemoteApiClient.ChatRecord();
+            rec.deviceId = safe(deviceId, "unknown_device");
+            rec.roomId = safe(roomId, "");
+            rec.eventTime = safe(eventTime, nowTime(System.currentTimeMillis()));
+            rec.chatText = safe(chatText, "");
+            rec.sender = safe(sender, "");
+            rec.receiver = safe(receiver, "");
+            rec.giftName = safe(giftName, "");
+            rec.giftQty = giftQty;
+            rec.notePrice = safe(notePrice, "");
+            rec.msgHash = buildMsgHash(
+                    rec.deviceId + "|" + rec.roomId + "|" + rec.eventTime + "|"
+                            + rec.chatText + "|" + rec.sender + "|" + rec.receiver + "|"
+                            + rec.giftName + "|" + (rec.giftQty == null ? "" : String.valueOf(rec.giftQty))
+            );
+            remoteBatchUploader.enqueue(rec);
+        }
+
+        private void scheduleRemoteFlush() {
+            if (csvFlushScheduled) {
+                return;
             }
+            csvFlushScheduled = true;
+            handler.postDelayed(csvFlushTask, CSV_FLUSH_INTERVAL_MS);
         }
 
         private void flushPendingCsvAsync() {
             csvFlushScheduled = false;
-            csvWriter.flushAsync();
-        }
-
-        private boolean ensureCsvReady() {
-            ensureOutputCsvFile();
-            if (outputCsvFile == null) {
-                return false;
-            }
-            return ensureCsvHeader(outputCsvFile);
-        }
-
-        private boolean ensureCsvHeader(File file) {
-            if (file == null) {
-                return false;
-            }
-            synchronized (FILE_LOCK) {
-                try {
-                    File dir = file.getParentFile();
-                    if (dir == null) {
-                        return false;
-                    }
-                    if (!dir.exists() && !dir.mkdirs()) {
-                        XposedBridge.log(TAG + " mkdir failed: " + dir.getAbsolutePath());
-                        return false;
-                    }
-
-                    if (file.exists() && file.length() > 0 && !hasExpectedHeader(file)) {
-                        File bak = new File(dir, file.getName() + ".bak_" + System.currentTimeMillis());
-                        boolean renamed = false;
-                        try {
-                            renamed = file.renameTo(bak);
-                        } catch (Throwable ignored) {
-                            renamed = false;
-                        }
-                        if (!renamed) {
-                            FileOutputStream truncate = new FileOutputStream(file, false);
-                            try {
-                                // clear old content if rename failed
-                            } finally {
-                                truncate.close();
-                            }
-                        }
-                        XposedBridge.log(TAG + " csv header mismatch, rotate old file: " + file.getName());
-                    }
-
-                    boolean needHeader = !file.exists() || file.length() == 0;
-                    FileOutputStream fos = new FileOutputStream(file, true);
-                    try {
-                        if (needHeader) {
-                            fos.write(new byte[] {(byte) 0xEF, (byte) 0xBB, (byte) 0xBF});
-                            fos.write(CSV_HEADER.getBytes(StandardCharsets.UTF_8));
-                        }
-                    } finally {
-                        fos.close();
-                    }
-                    return true;
-                } catch (IOException e) {
-                    XposedBridge.log(TAG + " ensure csv header error: " + e);
-                    return false;
-                }
-            }
-        }
-
-        private boolean hasExpectedHeader(File file) {
-            if (file == null || !file.exists() || file.length() <= 0) {
-                return false;
-            }
-            FileInputStream fis = null;
-            try {
-                fis = new FileInputStream(file);
-                byte[] buf = new byte[1024];
-                int n = fis.read(buf);
-                if (n <= 0) {
-                    return false;
-                }
-                String head = new String(buf, 0, n, StandardCharsets.UTF_8);
-                if (head.startsWith("\uFEFF")) {
-                    head = head.substring(1);
-                }
-                int nl = head.indexOf('\n');
-                String firstLine = nl >= 0 ? head.substring(0, nl) : head;
-                firstLine = firstLine.replace("\r", "");
-                String expected = CSV_HEADER.replace("\n", "");
-                return expected.equals(firstLine);
-            } catch (Throwable e) {
-                XposedBridge.log(TAG + " read csv header error: " + e);
-                return false;
-            } finally {
-                try {
-                    if (fis != null) {
-                        fis.close();
-                    }
-                } catch (Throwable ignored) {
-                }
-            }
-        }
-
-        // 生成输出文件名：房间ID_日期.csv（同房间同日期复用同一文件，跨天自动切换）
-        private void ensureOutputCsvFile() {
-            String idPart = sanitizeFileNamePart(safe(roomId, "unknownRoomId"));
-            String datePart = dayStamp();
-            String fileName = idPart + "_" + datePart + ".csv";
-
-            if (outputCsvFile != null) {
-                File currentFile = outputCsvFile;
-                String currentName = currentFile.getName();
-                if (fileName.equals(currentName)) {
-                    return;
-                }
-                XposedBridge.log(TAG + " csv rotate: " + currentName + " -> " + fileName);
-                outputCsvFile = null;
-            }
-
-            File baseDir = resolveBaseOutputDir();
-            if (baseDir == null) {
-                XposedBridge.log(TAG + " no writable output directory");
-                return;
-            }
-            outputCsvFile = new File(baseDir, fileName);
-            XposedBridge.log(TAG + " csv target=" + outputCsvFile.getAbsolutePath());
-        }
-
-        /**
-         * 输出目录探测：
-         * 优先 /storage/emulated/0/LiveRoomData，不可写时自动回落到其他可写目录。
-         */
-        private File resolveBaseOutputDir() {
-            if (baseOutputDir != null) {
-                return baseOutputDir;
-            }
-
-            List<File> candidates = new ArrayList<File>();
-            candidates.add(new File("/storage/emulated/0/LiveRoomData"));
-            candidates.add(new File("/sdcard/LiveRoomData"));
-
-            try {
-                File ext = activity.getExternalFilesDir(null);
-                if (ext != null) {
-                    candidates.add(new File(ext, "LiveRoomData"));
-                }
-            } catch (Throwable ignored) {
-            }
-
-            try {
-                File internal = activity.getFilesDir();
-                if (internal != null) {
-                    candidates.add(new File(internal, "LiveRoomData"));
-                }
-            } catch (Throwable ignored2) {
-            }
-
-            for (int i = 0; i < candidates.size(); i++) {
-                File dir = candidates.get(i);
-                if (dir == null) {
-                    continue;
-                }
-                try {
-                    if (!dir.exists() && !dir.mkdirs()) {
-                        continue;
-                    }
-                    if (dir.exists() && dir.isDirectory() && canWriteProbe(dir)) {
-                        baseOutputDir = dir;
-                        XposedBridge.log(TAG + " output dir=" + baseOutputDir.getAbsolutePath());
-                        return baseOutputDir;
-                    }
-                } catch (Throwable ignored3) {
-                }
-            }
-            return null;
-        }
-
-        private boolean canWriteProbe(File dir) {
-            if (dir == null) {
-                return false;
-            }
-            String probeName = ".probe_" + nowStamp() + "_" + System.currentTimeMillis();
-            File probe = new File(dir, probeName);
-            FileOutputStream fos = null;
-            try {
-                fos = new FileOutputStream(probe, false);
-                fos.write("ok".getBytes(StandardCharsets.UTF_8));
-                fos.flush();
-                return true;
-            } catch (Throwable ignored) {
-                return false;
-            } finally {
-                try {
-                    if (fos != null) {
-                        fos.close();
-                    }
-                } catch (Throwable ignored2) {
-                }
-                try {
-                    if (probe.exists()) {
-                        probe.delete();
-                    }
-                } catch (Throwable ignored3) {
-                }
-            }
-        }
-
-        private String pad3(int value) {
-            if (value < 10) {
-                return "00" + value;
-            }
-            if (value < 100) {
-                return "0" + value;
-            }
-            return String.valueOf(value);
-        }
-
-        private String sanitizeFileNamePart(String value) {
-            String v = value;
-            if (v == null) {
-                v = "";
-            }
-            v = v.replaceAll("[\\\\/:*?\"<>|\\s]+", "_");
-            while (v.contains("__")) {
-                v = v.replace("__", "_");
-            }
-            if (v.startsWith("_")) {
-                v = v.substring(1);
-            }
-            if (v.endsWith("_")) {
-                v = v.substring(0, v.length() - 1);
-            }
-            if (v.length() == 0) {
-                return "unknown";
-            }
-            if (v.length() > 60) {
-                return v.substring(0, 60);
-            }
-            return v;
+            remoteBatchUploader.flushAsync();
         }
 
         private String buildPathHint() {
-            if (outputCsvFile != null) {
-                return "CSV: " + outputCsvFile.getAbsolutePath();
+            String baseUrl = remoteApiClient.getBaseUrl();
+            if (isEmpty(baseUrl)) {
+                return "远程API未配置";
             }
-            File dir = resolveBaseOutputDir();
-            if (dir != null) {
-                return "目录: " + dir.getAbsolutePath();
-            }
-            return "CSV路径不可用";
+            return "远程: " + baseUrl;
         }
 
         private String nowTime(long ms) {
             return formatInCsvTimezone("yyyy-MM-dd HH:mm:ss.SSS", ms);
-        }
-
-        private String dayStamp() {
-            return formatInCsvTimezone("yyyyMMdd", System.currentTimeMillis());
-        }
-
-        private String nowStamp() {
-            return formatInCsvTimezone("HHmmss", System.currentTimeMillis());
         }
 
         private String formatInCsvTimezone(String pattern, long ms) {
@@ -1917,32 +1852,35 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
             return sdf.format(new Date(ms));
         }
 
-        private String csvEscape(String s) {
-            if (s == null) {
-                return "\"\"";
+        private String resolveDeviceId() {
+            try {
+                String id = Settings.Secure.getString(activity.getContentResolver(), Settings.Secure.ANDROID_ID);
+                if (!isEmpty(id)) {
+                    return id;
+                }
+            } catch (Throwable ignored) {
             }
-            return "\"" + s.replace("\"", "\"\"") + "\"";
+            String fallback = activity.getPackageName() + "|" + android.os.Process.myPid();
+            return buildMsgHash(fallback);
         }
 
-        private String buildCsvLine(String time,
-                                    String rawChat,
-                                    String sender,
-                                    String receiver,
-                                    String giftName,
-                                    String giftCount,
-                                    String giftPrice) {
-            return csvEscape(safeCsvCell(time))
-                    + "," + csvEscape(safeCsvCell(rawChat))
-                    + "," + csvEscape(safeCsvCell(sender))
-                    + "," + csvEscape(safeCsvCell(receiver))
-                    + "," + csvEscape(safeCsvCell(giftName))
-                    + "," + csvEscape(safeCsvCell(giftCount))
-                    + "," + csvEscape(safeCsvCell(giftPrice))
-                    + "\n";
-        }
-
-        private String safeCsvCell(String s) {
-            return s == null ? "" : s.trim();
+        private String buildMsgHash(String raw) {
+            String input = raw == null ? "" : raw;
+            try {
+                MessageDigest md = MessageDigest.getInstance("SHA-256");
+                byte[] bytes = md.digest(input.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                StringBuilder sb = new StringBuilder(bytes.length * 2);
+                for (int i = 0; i < bytes.length; i++) {
+                    int v = bytes[i] & 0xff;
+                    if (v < 0x10) {
+                        sb.append('0');
+                    }
+                    sb.append(Integer.toHexString(v));
+                }
+                return sb.toString();
+            } catch (Throwable ignored) {
+                return String.valueOf(input.hashCode());
+            }
         }
     }
 }

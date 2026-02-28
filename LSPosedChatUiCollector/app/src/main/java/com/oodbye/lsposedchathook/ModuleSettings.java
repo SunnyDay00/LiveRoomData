@@ -15,6 +15,10 @@ final class ModuleSettings {
     static final String KEY_AUTO_HANDLE_FULLSCREEN_AD = "auto_handle_fullscreen_ad";
     static final String KEY_CHAT_PARSE_ENABLED = "chat_parse_enabled";
     static final String KEY_BLOCK_BLACKLIST_ENABLED = "block_blacklist_enabled";
+    // 远程 API 配置固定写死（不走设置页面）
+    private static final String FIXED_REMOTE_API_BASE_URL = "https://lsposed-chat-ui-collector-api.sssr.edu.kg/";
+    private static final String FIXED_REMOTE_WRITE_API_KEY = "dfgf76878oipopWEREWR";
+    private static final String FIXED_REMOTE_READ_API_KEY = "fddg54656767DFGDFGFH";
 
     static final boolean DEFAULT_CAPTURE_ENABLED = false;
     static final boolean DEFAULT_AUTO_HANDLE_FULLSCREEN_AD = true;
@@ -83,6 +87,18 @@ final class ModuleSettings {
         return xsp.getBoolean(KEY_BLOCK_BLACKLIST_ENABLED, DEFAULT_BLOCK_BLACKLIST_ENABLED);
     }
 
+    static synchronized String getRemoteApiBaseUrl() {
+        return FIXED_REMOTE_API_BASE_URL;
+    }
+
+    static synchronized String getRemoteWriteApiKey() {
+        return FIXED_REMOTE_WRITE_API_KEY;
+    }
+
+    static synchronized String getRemoteReadApiKey() {
+        return FIXED_REMOTE_READ_API_KEY;
+    }
+
     private static XSharedPreferences getXsp() {
         long now = System.currentTimeMillis();
         if (sXsp == null) {
@@ -95,5 +111,12 @@ final class ModuleSettings {
             sLastReloadAt = now;
         }
         return sXsp;
+    }
+
+    private static String safeTrim(String s) {
+        if (s == null) {
+            return "";
+        }
+        return s.trim();
     }
 }

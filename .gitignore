@@ -8,7 +8,7 @@ convert_html_to_skill.py
 use-codex
 错误日志.txt
 node_modules
-cloudflare-worker
+/cloudflare-worker
 web-viewer
 远程数据库.md
 TestAdbSwipe.js
@@ -28,6 +28,8 @@ LSPosedChatUiCollector/local.properties
 LSPosedChatUiCollector/.idea/
 LSPosedChatUiCollector/**/*.iml
 LSPosedChatUiCollector/captures/
+LSPosedChatUiCollector/cloudflare-worker/.wrangler/
+LSPosedChatUiCollector/cloudflare-worker/node_modules/
 
 # ===== LSPosedNetMsgProbe (Android/Gradle) =====
 LSPosedNetMsgProbe/.gradle/

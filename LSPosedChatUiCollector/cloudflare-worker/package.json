@@ -1,0 +1,16 @@
+{
+  "name": "lsposed-chat-ui-collector-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@tidbcloud/serverless": "^0.2.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.69.0"
+  }
+}

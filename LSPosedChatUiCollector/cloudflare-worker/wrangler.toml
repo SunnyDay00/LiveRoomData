@@ -1,0 +1,11 @@
+name = "lsposed-chat-ui-collector-api"
+main = "index.js"
+compatibility_date = "2026-02-28"
+
+[vars]
+# 只读 key，可与写 key 不同；不设置则默认与写 key 一致
+# API_KEY_READ = ""
+# 写入 key（读取也可复用）
+# API_KEY_WRITE = ""
+# TiDB Cloud 连接串（必须）
+# TIDB_DATABASE_URL = "mysql://user:pass@host:4000/live_room?ssl={\"rejectUnauthorized\":true}"

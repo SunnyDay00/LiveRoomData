@@ -191,7 +191,7 @@ public class ModuleSettingsActivity extends Activity {
         container.addView(blacklistSwitch);
 
         TextView s4Hint = new TextView(this);
-        s4Hint.setText("开启：命中 chat_blacklist.txt 的记录不写入 CSV\n关闭：不过滤黑名单");
+        s4Hint.setText("开启：命中黑名单的记录不上传远程数据库\n关闭：不过滤黑名单");
         s4Hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         LinearLayout.LayoutParams s4HintLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -200,6 +200,17 @@ public class ModuleSettingsActivity extends Activity {
         s4HintLp.topMargin = dp(6);
         s4Hint.setLayoutParams(s4HintLp);
         container.addView(s4Hint);
+
+        TextView apiHint = new TextView(this);
+        apiHint.setText("远程API/密钥已内置到模块中。\n将用于：数据库连通性检测、拉取礼物价格/黑名单、批量上传聊天记录。");
+        apiHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        LinearLayout.LayoutParams apiHintLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        apiHintLp.topMargin = dp(20);
+        apiHint.setLayoutParams(apiHintLp);
+        container.addView(apiHint);
 
         setContentView(scrollView);
     }
