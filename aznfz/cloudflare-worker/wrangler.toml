@@ -1,0 +1,8 @@
+name = "liveroom-data-worker"
+main = "index.js"
+compatibility_date = "2024-01-01"
+
+[vars]
+# This will be set via wrangler secret put later
+# CLIENT_API_KEY = "will_be_set_as_secret"
+# DATABASE_URL = "will_be_set_as_secret"
