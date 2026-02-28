@@ -18,6 +18,7 @@ import de.robv.android.xposed.XposedBridge;
  */
 class CsvAsyncBatchWriter {
     private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor();
+    private static final String CSV_HEADER = "时间,聊天记录,送礼人,收礼人,礼物名称,礼物数量,音符价格\n";
 
     private final Object lock = new Object();
     private final String tag;
@@ -104,7 +105,7 @@ class CsvAsyncBatchWriter {
                 try {
                     if (needHeader) {
                         fos.write(new byte[] {(byte) 0xEF, (byte) 0xBB, (byte) 0xBF});
-                        fos.write("时间,聊天记录\n".getBytes(StandardCharsets.UTF_8));
+                        fos.write(CSV_HEADER.getBytes(StandardCharsets.UTF_8));
                     }
                     fos.write(sb.toString().getBytes(StandardCharsets.UTF_8));
                 } finally {

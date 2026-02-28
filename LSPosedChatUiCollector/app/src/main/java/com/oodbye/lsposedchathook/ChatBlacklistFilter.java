@@ -21,6 +21,7 @@ class ChatBlacklistFilter {
 
     private long lastLoadAt;
     private final Set<String> exactRules = new HashSet<String>();
+    private final Set<String> canonicalRules = new HashSet<String>();
 
     ChatBlacklistFilter(String tag, long reloadIntervalMs) {
         this.tag = tag;
@@ -41,6 +42,18 @@ class ChatBlacklistFilter {
         reloadIfNeeded();
         if (exactRules.contains(t)) {
             return true;
+        }
+        String canonical = canonicalize(t);
+        if (canonical != null && canonicalRules.contains(canonical)) {
+            return true;
+        }
+        // 兼容消息中存在额外前后缀、标点差异的场景：采用标准化后包含匹配。
+        if (canonical != null) {
+            for (String rule : canonicalRules) {
+                if (rule != null && rule.length() > 0 && canonical.contains(rule)) {
+                    return true;
+                }
+            }
         }
         return false;
     }
@@ -66,6 +79,7 @@ class ChatBlacklistFilter {
             }
 
             Set<String> newExact = new HashSet<String>();
+            Set<String> newCanonical = new HashSet<String>();
             reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
             String line;
             while ((line = reader.readLine()) != null) {
@@ -79,10 +93,18 @@ class ChatBlacklistFilter {
                 String v = normalize(t);
                 if (v != null && v.length() > 0) {
                     newExact.add(v);
+                    String canonical = canonicalize(v);
+                    if (canonical != null && canonical.length() > 0) {
+                        newCanonical.add(canonical);
+                    }
                 }
             }
             exactRules.clear();
             exactRules.addAll(newExact);
+            canonicalRules.clear();
+            canonicalRules.addAll(newCanonical);
+            XposedBridge.log(tag + " blacklist loaded exact=" + exactRules.size()
+                    + " canonical=" + canonicalRules.size());
         } catch (Throwable e) {
             XposedBridge.log(tag + " load blacklist error: " + e);
         } finally {
@@ -106,6 +128,29 @@ class ChatBlacklistFilter {
             return null;
         }
         String t = text.replace('\n', ' ').replace('\r', ' ').trim();
+        if (t.length() == 0) {
+            return null;
+        }
+        if (t.length() > 400) {
+            t = t.substring(0, 400);
+        }
+        return t;
+    }
+
+    private String canonicalize(String text) {
+        if (text == null) {
+            return null;
+        }
+        String t = text;
+        t = t.replace('\uFEFF', ' ');
+        t = t.replace('\u200B', ' ');
+        t = t.replace('\u200C', ' ');
+        t = t.replace('\u200D', ' ');
+        t = t.replace('\u3000', ' ');
+        t = t.replaceAll("\\s+", "");
+        // 去标点后再匹配，避免“，。”“.”等差异导致漏拦截。
+        t = t.replaceAll("[，。！？；：、“”‘’（）()【】《》<>·…—\\-_,.:;!?'\"`~]", "");
+        t = t.trim();
         if (t.length() == 0) {
             return null;
         }

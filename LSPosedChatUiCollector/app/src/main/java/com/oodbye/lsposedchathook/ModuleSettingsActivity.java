@@ -123,6 +123,84 @@ public class ModuleSettingsActivity extends Activity {
         s2Hint.setLayoutParams(s2HintLp);
         container.addView(s2Hint);
 
+        final Switch parseSwitch = new Switch(this);
+        parseSwitch.setText("聊天记录解析");
+        parseSwitch.setChecked(
+                prefs.getBoolean(
+                        ModuleSettings.KEY_CHAT_PARSE_ENABLED,
+                        ModuleSettings.DEFAULT_CHAT_PARSE_ENABLED
+                )
+        );
+        LinearLayout.LayoutParams s3Lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        s3Lp.topMargin = dp(20);
+        parseSwitch.setLayoutParams(s3Lp);
+        parseSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                prefs.edit().putBoolean(ModuleSettings.KEY_CHAT_PARSE_ENABLED, isChecked).commit();
+                ModuleSettings.ensurePrefsReadable(ModuleSettingsActivity.this);
+                if (isChecked) {
+                    Toast.makeText(ModuleSettingsActivity.this, "已开启聊天记录解析", Toast.LENGTH_SHORT).show();
+                } else {
+                    Toast.makeText(ModuleSettingsActivity.this, "已关闭聊天记录解析", Toast.LENGTH_SHORT).show();
+                }
+            }
+        });
+        container.addView(parseSwitch);
+
+        TextView s3Hint = new TextView(this);
+        s3Hint.setText("开启：按送礼规则解析并填充送礼字段\n关闭：仅保存时间与聊天记录，送礼字段留空");
+        s3Hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        LinearLayout.LayoutParams s3HintLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        s3HintLp.topMargin = dp(6);
+        s3Hint.setLayoutParams(s3HintLp);
+        container.addView(s3Hint);
+
+        final Switch blacklistSwitch = new Switch(this);
+        blacklistSwitch.setText("屏蔽黑名单聊天记录");
+        blacklistSwitch.setChecked(
+                prefs.getBoolean(
+                        ModuleSettings.KEY_BLOCK_BLACKLIST_ENABLED,
+                        ModuleSettings.DEFAULT_BLOCK_BLACKLIST_ENABLED
+                )
+        );
+        LinearLayout.LayoutParams s4Lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        s4Lp.topMargin = dp(20);
+        blacklistSwitch.setLayoutParams(s4Lp);
+        blacklistSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                prefs.edit().putBoolean(ModuleSettings.KEY_BLOCK_BLACKLIST_ENABLED, isChecked).commit();
+                ModuleSettings.ensurePrefsReadable(ModuleSettingsActivity.this);
+                if (isChecked) {
+                    Toast.makeText(ModuleSettingsActivity.this, "已开启黑名单屏蔽", Toast.LENGTH_SHORT).show();
+                } else {
+                    Toast.makeText(ModuleSettingsActivity.this, "已关闭黑名单屏蔽", Toast.LENGTH_SHORT).show();
+                }
+            }
+        });
+        container.addView(blacklistSwitch);
+
+        TextView s4Hint = new TextView(this);
+        s4Hint.setText("开启：命中 chat_blacklist.txt 的记录不写入 CSV\n关闭：不过滤黑名单");
+        s4Hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        LinearLayout.LayoutParams s4HintLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        s4HintLp.topMargin = dp(6);
+        s4Hint.setLayoutParams(s4HintLp);
+        container.addView(s4Hint);
+
         setContentView(scrollView);
     }
 

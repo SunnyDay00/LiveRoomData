@@ -14,6 +14,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Field;
@@ -42,7 +43,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
  * 2) 页面上注入悬浮按钮，默认“关闭”，点击后先读取 roomNo（房间 ID），成功后开启采集。
  * 3) 采集来源是 UI 组件树：chatVp 容器下全局可见的文本节点（优先 content id）。
  * 4) 对可见帧文本做增量对比 + 时间窗去重，避免重复刷屏。
- * 5) 聊天落盘为 UTF-8 BOM CSV：列为“时间,聊天记录”。
+ * 5) 聊天落盘为 UTF-8 BOM CSV：列为“时间,聊天记录,送礼人,收礼人,礼物名称,礼物数量,音符价格”。
  *
  * 说明：
  * - 当前版本是 UI 组件采集方案，不依赖网络层解包。
@@ -54,7 +55,8 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
     private static final String LIVE_ACTIVITY_KEYWORD = "LiveViewerActivity";
     private static final String TAG = "[LOOKChatHook]";
     private static final String FLOAT_TAG = "LOOK_CHAT_HOOK_FLOAT_BTN";
-    private static final String MODULE_VERSION = "2026.02.28-r10";
+    private static final String FLOAT_AD_TAG = "LOOK_CHAT_HOOK_AD_BTN";
+    private static final String MODULE_VERSION = "2026.02.28-r11";
     private static final String CSV_TIMEZONE_ID = "GMT+08:00";
 
     // 采集与去重参数（实时优先）
@@ -81,6 +83,7 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
     private static final float FULL_AD_MIN_HEIGHT_RATIO = 0.45f;
     private static final long AD_DETECT_DEBUG_LOG_INTERVAL_MS = 3000L;
     private static final String AD_SLIDING_FULL_RES_NAME = "com.netease.play:id/slidingContainer";
+    private static final String CSV_HEADER = "时间,聊天记录,送礼人,收礼人,礼物名称,礼物数量,音符价格\n";
 
     // 全局共享锁：文件写入与会话状态
     private static final Object FILE_LOCK = new Object();
@@ -229,10 +232,12 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
         private boolean liveActivity;
 
         private TextView floatButton;
+        private TextView adToggleButton;
         private boolean running;
         private boolean resolvingRoomInfo;
         private boolean openedDetailFromAvatar;
         private boolean captureEnabled;
+        private boolean adAutoHandleEnabled;
         private boolean startupHintShown;
         private boolean defaultModeApplied;
 
@@ -276,6 +281,7 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
         private boolean csvFlushScheduled;
         private final CsvAsyncBatchWriter csvWriter;
         private final ChatBlacklistFilter blacklistFilter;
+        private final GiftPriceCatalog giftPriceCatalog;
 
         UiSession(Activity activity, boolean liveActivity) {
             this.activity = activity;
@@ -283,6 +289,8 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
             this.handler = new Handler(Looper.getMainLooper());
             this.csvWriter = new CsvAsyncBatchWriter(TAG);
             this.blacklistFilter = new ChatBlacklistFilter(TAG, BLACKLIST_RELOAD_INTERVAL_MS);
+            this.giftPriceCatalog = new GiftPriceCatalog(TAG);
+            this.adAutoHandleEnabled = ModuleSettings.isAutoHandleFullscreenAdEnabled();
 
             this.scanTask = new Runnable() {
                 @Override
@@ -291,7 +299,7 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
                         return;
                     }
 
-                    if (ModuleSettings.isAutoHandleFullscreenAdEnabled()) {
+                    if (adAutoHandleEnabled) {
                         maybeHandleFullScreenAd();
                         if (handlingFullScreenAd) {
                             refreshButtonStyle();
@@ -398,6 +406,16 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
                 }
                 floatButton = null;
             }
+            if (adToggleButton != null) {
+                try {
+                    ViewGroup parent = (ViewGroup) adToggleButton.getParent();
+                    if (parent != null) {
+                        parent.removeView(adToggleButton);
+                    }
+                } catch (Throwable ignored) {
+                }
+                adToggleButton = null;
+            }
         }
 
         /**
@@ -411,45 +429,72 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
                 View existing = decor.findViewWithTag(FLOAT_TAG);
                 if (existing instanceof TextView) {
                     floatButton = (TextView) existing;
-                    refreshButtonStyle();
-                    maybeShowStartupHint();
-                    return;
                 }
-
-                TextView btn = new TextView(activity);
-                btn.setTag(FLOAT_TAG);
-                btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-                btn.setPadding(dp(10), dp(6), dp(10), dp(6));
-                btn.setGravity(Gravity.CENTER);
-                btn.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        onFloatingButtonClick();
-                    }
-                });
-                btn.setOnLongClickListener(new View.OnLongClickListener() {
-                    @Override
-                    public boolean onLongClick(View v) {
-                        if (captureEnabled) {
-                            scanChatOnce();
-                            Toast.makeText(activity, "已手动扫描一次\n" + buildPathHint(), Toast.LENGTH_SHORT).show();
+                if (floatButton == null) {
+                    TextView btn = new TextView(activity);
+                    btn.setTag(FLOAT_TAG);
+                    btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+                    btn.setPadding(dp(10), dp(6), dp(10), dp(6));
+                    btn.setGravity(Gravity.CENTER);
+                    btn.setOnClickListener(new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            onFloatingButtonClick();
+                        }
+                    });
+                    btn.setOnLongClickListener(new View.OnLongClickListener() {
+                        @Override
+                        public boolean onLongClick(View v) {
+                            if (captureEnabled) {
+                                scanChatOnce();
+                                Toast.makeText(activity, "已手动扫描一次\n" + buildPathHint(), Toast.LENGTH_SHORT).show();
+                                return true;
+                            }
+                            Toast.makeText(activity, "当前抓取已关闭，点击按钮可开启\n" + buildPathHint(), Toast.LENGTH_SHORT).show();
                             return true;
                         }
-                        Toast.makeText(activity, "当前抓取已关闭，点击按钮可开启\n" + buildPathHint(), Toast.LENGTH_SHORT).show();
-                        return true;
-                    }
-                });
+                    });
 
-                FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT
-                );
-                lp.gravity = Gravity.END | Gravity.CENTER_VERTICAL;
-                lp.rightMargin = dp(12);
-                lp.topMargin = dp(80);
+                    FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT
+                    );
+                    lp.gravity = Gravity.END | Gravity.CENTER_VERTICAL;
+                    lp.rightMargin = dp(12);
+                    lp.topMargin = dp(80);
 
-                decor.addView(btn, lp);
-                floatButton = btn;
+                    decor.addView(btn, lp);
+                    floatButton = btn;
+                }
+
+                View existingAd = decor.findViewWithTag(FLOAT_AD_TAG);
+                if (existingAd instanceof TextView) {
+                    adToggleButton = (TextView) existingAd;
+                }
+                if (adToggleButton == null) {
+                    TextView adBtn = new TextView(activity);
+                    adBtn.setTag(FLOAT_AD_TAG);
+                    adBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+                    adBtn.setPadding(dp(10), dp(6), dp(10), dp(6));
+                    adBtn.setGravity(Gravity.CENTER);
+                    adBtn.setOnClickListener(new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            onAdToggleButtonClick();
+                        }
+                    });
+
+                    FrameLayout.LayoutParams adLp = new FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT
+                    );
+                    adLp.gravity = Gravity.END | Gravity.CENTER_VERTICAL;
+                    adLp.rightMargin = dp(12);
+                    adLp.topMargin = dp(132);
+
+                    decor.addView(adBtn, adLp);
+                    adToggleButton = adBtn;
+                }
                 refreshButtonStyle();
                 maybeShowStartupHint();
             } catch (Throwable e) {
@@ -484,6 +529,19 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
             }
 
             startEnableCaptureFlow();
+        }
+
+        private void onAdToggleButtonClick() {
+            adAutoHandleEnabled = !adAutoHandleEnabled;
+            if (!adAutoHandleEnabled) {
+                handlingFullScreenAd = false;
+                Toast.makeText(activity, "广告自动关闭:关", Toast.LENGTH_SHORT).show();
+                XposedBridge.log(TAG + " ad auto handle=OFF (floating toggle)");
+            } else {
+                Toast.makeText(activity, "广告自动关闭:开", Toast.LENGTH_SHORT).show();
+                XposedBridge.log(TAG + " ad auto handle=ON (floating toggle)");
+            }
+            refreshButtonStyle();
         }
 
         /**
@@ -660,36 +718,48 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
         }
 
         private void refreshButtonStyle() {
-            if (floatButton == null) {
-                return;
+            if (floatButton != null) {
+                if (resolvingRoomInfo) {
+                    floatButton.setText("读取房间中");
+                    floatButton.setTextColor(Color.WHITE);
+                    floatButton.setBackgroundColor(Color.parseColor("#E65100"));
+                    floatButton.setAlpha(0.9f);
+                } else if (handlingFullScreenAd) {
+                    floatButton.setText("广告处理中");
+                    floatButton.setTextColor(Color.WHITE);
+                    floatButton.setBackgroundColor(Color.parseColor("#6A1B9A"));
+                    floatButton.setAlpha(0.9f);
+                } else if (captureEnabled) {
+                    floatButton.setText("聊天抓取:开");
+                    floatButton.setTextColor(Color.WHITE);
+                    floatButton.setBackgroundColor(Color.parseColor("#2E7D32"));
+                    floatButton.setAlpha(0.88f);
+                } else {
+                    floatButton.setText("聊天抓取:关");
+                    floatButton.setTextColor(Color.WHITE);
+                    floatButton.setBackgroundColor(Color.parseColor("#B71C1C"));
+                    floatButton.setAlpha(0.88f);
+                }
             }
 
-            if (resolvingRoomInfo) {
-                floatButton.setText("读取房间中");
-                floatButton.setTextColor(Color.WHITE);
-                floatButton.setBackgroundColor(Color.parseColor("#E65100"));
-                floatButton.setAlpha(0.9f);
-                return;
+            if (adToggleButton != null) {
+                if (handlingFullScreenAd && adAutoHandleEnabled) {
+                    adToggleButton.setText("广告处理:中");
+                    adToggleButton.setTextColor(Color.WHITE);
+                    adToggleButton.setBackgroundColor(Color.parseColor("#6A1B9A"));
+                    adToggleButton.setAlpha(0.9f);
+                } else if (adAutoHandleEnabled) {
+                    adToggleButton.setText("广告处理:开");
+                    adToggleButton.setTextColor(Color.WHITE);
+                    adToggleButton.setBackgroundColor(Color.parseColor("#1565C0"));
+                    adToggleButton.setAlpha(0.88f);
+                } else {
+                    adToggleButton.setText("广告处理:关");
+                    adToggleButton.setTextColor(Color.WHITE);
+                    adToggleButton.setBackgroundColor(Color.parseColor("#757575"));
+                    adToggleButton.setAlpha(0.88f);
+                }
             }
-
-            if (handlingFullScreenAd) {
-                floatButton.setText("广告处理中");
-                floatButton.setTextColor(Color.WHITE);
-                floatButton.setBackgroundColor(Color.parseColor("#6A1B9A"));
-                floatButton.setAlpha(0.9f);
-                return;
-            }
-
-            if (captureEnabled) {
-                floatButton.setText("聊天抓取:开");
-                floatButton.setTextColor(Color.WHITE);
-                floatButton.setBackgroundColor(Color.parseColor("#2E7D32"));
-            } else {
-                floatButton.setText("聊天抓取:关");
-                floatButton.setTextColor(Color.WHITE);
-                floatButton.setBackgroundColor(Color.parseColor("#B71C1C"));
-            }
-            floatButton.setAlpha(0.88f);
         }
 
         /**
@@ -883,8 +953,10 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
             View slidingByFullRes = findViewByFullResNameAcrossWindows(AD_SLIDING_FULL_RES_NAME);
             if (now - lastAdDetectDebugLogAt > AD_DETECT_DEBUG_LOG_INTERVAL_MS) {
                 lastAdDetectDebugLogAt = now;
-                XposedBridge.log(TAG + " ad detect(fullRes=" + AD_SLIDING_FULL_RES_NAME + ")="
-                        + (slidingByFullRes != null));
+                String actName = activity.getClass().getName();
+                XposedBridge.log(TAG + " ad detect activity=" + actName
+                        + " fullRes=" + AD_SLIDING_FULL_RES_NAME
+                        + " found=" + (slidingByFullRes != null));
             }
             if (slidingByFullRes != null && (isViewVisible(slidingByFullRes) || isViewLikelyVisibleRelaxed(slidingByFullRes))) {
                 return true;
@@ -1465,7 +1537,14 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
         }
 
         private boolean isBlacklistedMessage(String msg) {
-            return blacklistFilter.isBlocked(msg);
+            if (!ModuleSettings.isBlockBlacklistEnabled()) {
+                return false;
+            }
+            if (blacklistFilter.isBlocked(msg)) {
+                return true;
+            }
+            String stripped = ChatMessageParser.stripIconPrefix(msg);
+            return blacklistFilter.isBlocked(stripped);
         }
 
         /**
@@ -1530,8 +1609,42 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
                 return;
             }
 
-            String line = csvEscape(timeStr) + "," + csvEscape(msg) + "\n";
-            csvWriter.enqueue(outputCsvFile, line);
+            String cleanedChat = ChatMessageParser.stripIconPrefix(msg);
+            boolean parseEnabled = ModuleSettings.isChatParseEnabled();
+            if (!parseEnabled) {
+                csvWriter.enqueue(outputCsvFile, buildCsvLine(
+                        timeStr, cleanedChat, "", "", "", "", ""));
+                if (!csvFlushScheduled) {
+                    csvFlushScheduled = true;
+                    handler.postDelayed(csvFlushTask, CSV_FLUSH_INTERVAL_MS);
+                }
+                return;
+            }
+
+            ChatMessageParser.GiftParseResult gift = ChatMessageParser.parseGift(cleanedChat, giftPriceCatalog);
+            if (!gift.isGift) {
+                csvWriter.enqueue(outputCsvFile, buildCsvLine(
+                        timeStr, cleanedChat, "", "", "", "", ""));
+            } else {
+                String quantityText = String.valueOf(gift.quantityEach);
+                String priceText = gift.totalPriceEachReceiver > 0
+                        ? String.valueOf(gift.totalPriceEachReceiver)
+                        : "未知";
+                for (int i = 0; i < gift.receivers.size(); i++) {
+                    String receiver = gift.receivers.get(i);
+                    String rowTime = i == 0 ? timeStr : "";
+                    String rowChat = i == 0 ? cleanedChat : "";
+                    csvWriter.enqueue(outputCsvFile, buildCsvLine(
+                            rowTime,
+                            rowChat,
+                            gift.sender,
+                            receiver,
+                            gift.giftName,
+                            quantityText,
+                            priceText
+                    ));
+                }
+            }
             if (!csvFlushScheduled) {
                 csvFlushScheduled = true;
                 handler.postDelayed(csvFlushTask, CSV_FLUSH_INTERVAL_MS);
@@ -1565,12 +1678,32 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
                         XposedBridge.log(TAG + " mkdir failed: " + dir.getAbsolutePath());
                         return false;
                     }
+
+                    if (file.exists() && file.length() > 0 && !hasExpectedHeader(file)) {
+                        File bak = new File(dir, file.getName() + ".bak_" + System.currentTimeMillis());
+                        boolean renamed = false;
+                        try {
+                            renamed = file.renameTo(bak);
+                        } catch (Throwable ignored) {
+                            renamed = false;
+                        }
+                        if (!renamed) {
+                            FileOutputStream truncate = new FileOutputStream(file, false);
+                            try {
+                                // clear old content if rename failed
+                            } finally {
+                                truncate.close();
+                            }
+                        }
+                        XposedBridge.log(TAG + " csv header mismatch, rotate old file: " + file.getName());
+                    }
+
                     boolean needHeader = !file.exists() || file.length() == 0;
                     FileOutputStream fos = new FileOutputStream(file, true);
                     try {
                         if (needHeader) {
                             fos.write(new byte[] {(byte) 0xEF, (byte) 0xBB, (byte) 0xBF});
-                            fos.write("时间,聊天记录\n".getBytes(StandardCharsets.UTF_8));
+                            fos.write(CSV_HEADER.getBytes(StandardCharsets.UTF_8));
                         }
                     } finally {
                         fos.close();
@@ -1579,6 +1712,40 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
                 } catch (IOException e) {
                     XposedBridge.log(TAG + " ensure csv header error: " + e);
                     return false;
+                }
+            }
+        }
+
+        private boolean hasExpectedHeader(File file) {
+            if (file == null || !file.exists() || file.length() <= 0) {
+                return false;
+            }
+            FileInputStream fis = null;
+            try {
+                fis = new FileInputStream(file);
+                byte[] buf = new byte[1024];
+                int n = fis.read(buf);
+                if (n <= 0) {
+                    return false;
+                }
+                String head = new String(buf, 0, n, StandardCharsets.UTF_8);
+                if (head.startsWith("\uFEFF")) {
+                    head = head.substring(1);
+                }
+                int nl = head.indexOf('\n');
+                String firstLine = nl >= 0 ? head.substring(0, nl) : head;
+                firstLine = firstLine.replace("\r", "");
+                String expected = CSV_HEADER.replace("\n", "");
+                return expected.equals(firstLine);
+            } catch (Throwable e) {
+                XposedBridge.log(TAG + " read csv header error: " + e);
+                return false;
+            } finally {
+                try {
+                    if (fis != null) {
+                        fis.close();
+                    }
+                } catch (Throwable ignored) {
                 }
             }
         }
@@ -1755,6 +1922,27 @@ public class ChatHookEntry implements IXposedHookLoadPackage {
                 return "\"\"";
             }
             return "\"" + s.replace("\"", "\"\"") + "\"";
+        }
+
+        private String buildCsvLine(String time,
+                                    String rawChat,
+                                    String sender,
+                                    String receiver,
+                                    String giftName,
+                                    String giftCount,
+                                    String giftPrice) {
+            return csvEscape(safeCsvCell(time))
+                    + "," + csvEscape(safeCsvCell(rawChat))
+                    + "," + csvEscape(safeCsvCell(sender))
+                    + "," + csvEscape(safeCsvCell(receiver))
+                    + "," + csvEscape(safeCsvCell(giftName))
+                    + "," + csvEscape(safeCsvCell(giftCount))
+                    + "," + csvEscape(safeCsvCell(giftPrice))
+                    + "\n";
+        }
+
+        private String safeCsvCell(String s) {
+            return s == null ? "" : s.trim();
         }
     }
 }

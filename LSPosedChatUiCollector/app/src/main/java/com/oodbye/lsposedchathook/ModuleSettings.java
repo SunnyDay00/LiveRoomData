@@ -13,9 +13,13 @@ final class ModuleSettings {
 
     static final String KEY_DEFAULT_CAPTURE_ENABLED = "default_capture_enabled";
     static final String KEY_AUTO_HANDLE_FULLSCREEN_AD = "auto_handle_fullscreen_ad";
+    static final String KEY_CHAT_PARSE_ENABLED = "chat_parse_enabled";
+    static final String KEY_BLOCK_BLACKLIST_ENABLED = "block_blacklist_enabled";
 
     static final boolean DEFAULT_CAPTURE_ENABLED = false;
     static final boolean DEFAULT_AUTO_HANDLE_FULLSCREEN_AD = true;
+    static final boolean DEFAULT_CHAT_PARSE_ENABLED = true;
+    static final boolean DEFAULT_BLOCK_BLACKLIST_ENABLED = true;
 
     private static final long XSP_RELOAD_INTERVAL_MS = 1000L;
 
@@ -61,6 +65,22 @@ final class ModuleSettings {
             return DEFAULT_AUTO_HANDLE_FULLSCREEN_AD;
         }
         return xsp.getBoolean(KEY_AUTO_HANDLE_FULLSCREEN_AD, DEFAULT_AUTO_HANDLE_FULLSCREEN_AD);
+    }
+
+    static synchronized boolean isChatParseEnabled() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return DEFAULT_CHAT_PARSE_ENABLED;
+        }
+        return xsp.getBoolean(KEY_CHAT_PARSE_ENABLED, DEFAULT_CHAT_PARSE_ENABLED);
+    }
+
+    static synchronized boolean isBlockBlacklistEnabled() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return DEFAULT_BLOCK_BLACKLIST_ENABLED;
+        }
+        return xsp.getBoolean(KEY_BLOCK_BLACKLIST_ENABLED, DEFAULT_BLOCK_BLACKLIST_ENABLED);
     }
 
     private static XSharedPreferences getXsp() {
