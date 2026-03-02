@@ -85,7 +85,7 @@ public class ModuleSettingsActivity extends Activity {
         container.addView(floatSwitch);
 
         TextView floatHint = new TextView(this);
-        floatHint.setText("开启后会全局显示悬浮按钮，点击可选择“运行/暂停/停止”模块。");
+        floatHint.setText("开启后会全局显示悬浮按钮，点击可选择“运行/停止”模块。");
         floatHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         LinearLayout.LayoutParams floatHintLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -235,6 +235,39 @@ public class ModuleSettingsActivity extends Activity {
         autoRunHintLp.topMargin = dp(6);
         autoRunHint.setLayoutParams(autoRunHintLp);
         container.addView(autoRunHint);
+
+        final Switch viewTreeDumpSwitch = new Switch(this);
+        viewTreeDumpSwitch.setText("View树调试输出（仅调试）");
+        viewTreeDumpSwitch.setChecked(ModuleSettings.getViewTreeDumpDebugEnabled(prefs));
+        LinearLayout.LayoutParams viewTreeDumpLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        viewTreeDumpLp.topMargin = dp(20);
+        viewTreeDumpSwitch.setLayoutParams(viewTreeDumpLp);
+        viewTreeDumpSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                ModuleSettings.setViewTreeDumpDebugEnabled(ModuleSettingsActivity.this, isChecked);
+                Toast.makeText(
+                        ModuleSettingsActivity.this,
+                        isChecked ? "已开启View树调试输出" : "已关闭View树调试输出",
+                        Toast.LENGTH_SHORT
+                ).show();
+            }
+        });
+        container.addView(viewTreeDumpSwitch);
+
+        TextView viewTreeDumpHint = new TextView(this);
+        viewTreeDumpHint.setText("仅用于排查直播间界面识别问题；开启后会在运行日志输出Activity View树结构。");
+        viewTreeDumpHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        LinearLayout.LayoutParams viewTreeDumpHintLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        viewTreeDumpHintLp.topMargin = dp(6);
+        viewTreeDumpHint.setLayoutParams(viewTreeDumpHintLp);
+        container.addView(viewTreeDumpHint);
 
         TextView cycleLimitTitle = new TextView(this);
         cycleLimitTitle.setText("一起聊直播间循环点击次数");

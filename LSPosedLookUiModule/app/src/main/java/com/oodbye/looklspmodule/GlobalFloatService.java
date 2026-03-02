@@ -6,6 +6,7 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
 import android.hardware.display.DisplayManager;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -42,6 +43,7 @@ public class GlobalFloatService extends Service {
     private static final int NOTIFICATION_ID = 2026030101;
     private static final long DISPLAY_REFRESH_INTERVAL_MS = 2000L;
     private static final long PERMISSION_TOAST_MIN_INTERVAL_MS = 6000L;
+    private static final long ACCESSIBILITY_PROMPT_MIN_INTERVAL_MS = 6000L;
     private static final long CYCLE_NOTICE_SHOW_MS = 6000L;
     private static final int GLOBAL_DISPLAY_ID = 0;
 
@@ -53,6 +55,7 @@ public class GlobalFloatService extends Service {
     private LinearLayout rootLayout;
     private LinearLayout actionPanel;
     private TextView mainButton;
+    private TextView exportViewTreeButton;
     private TextView infoWindow;
     private TextView cycleNoticeWindow;
     private LinearLayout cycleLimitDialogWindow;
@@ -61,12 +64,14 @@ public class GlobalFloatService extends Service {
     private LinearLayout mirrorRootLayout;
     private LinearLayout mirrorActionPanel;
     private TextView mirrorMainButton;
+    private TextView mirrorExportViewTreeButton;
     private TextView mirrorInfoWindow;
     private TextView mirrorCycleNoticeWindow;
     private LinearLayout mirrorCycleLimitDialogWindow;
     private boolean mirrorOverlayAdded;
     private final Map<Integer, ExtraOverlay> extraOverlays = new HashMap<Integer, ExtraOverlay>();
     private long lastPermissionToastAt;
+    private long lastAccessibilityPromptAt;
     private int preferredDisplayId = -1;
     private int attachedDisplayId = -1;
     private int mirrorAttachedDisplayId = -1;
@@ -80,6 +85,7 @@ public class GlobalFloatService extends Service {
         LinearLayout rootLayout;
         LinearLayout actionPanel;
         TextView mainButton;
+        TextView exportViewTreeButton;
         TextView infoWindow;
         TextView cycleNoticeWindow;
         LinearLayout cycleLimitDialogWindow;
@@ -203,6 +209,7 @@ public class GlobalFloatService extends Service {
         overlayAdded = false;
         mirrorOverlayAdded = false;
         lastPermissionToastAt = 0L;
+        lastAccessibilityPromptAt = 0L;
         startForegroundInternal();
         refreshOverlayState();
         handler.postDelayed(refreshTask, DISPLAY_REFRESH_INTERVAL_MS);
@@ -280,7 +287,9 @@ public class GlobalFloatService extends Service {
         actionPanel = null;
         mirrorActionPanel = null;
         mainButton = null;
+        exportViewTreeButton = null;
         mirrorMainButton = null;
+        mirrorExportViewTreeButton = null;
         infoWindow = null;
         mirrorInfoWindow = null;
         cycleNoticeWindow = null;
@@ -315,10 +324,16 @@ public class GlobalFloatService extends Service {
             removeExtraOverlays();
             return;
         }
+        if (ModuleSettings.getEngineStatus(prefs) == ModuleSettings.EngineStatus.RUNNING
+                && !isAccessibilityServiceEnabledCompat()) {
+            forceStopForMissingAccessibility("running_guard");
+            promptEnableAccessibility(false);
+        }
         ensureOverlay();
         ensureMirrorOverlay();
         ensureExtraOverlays();
         updateMainButtonStatus();
+        updateDebugButtonStatus();
         updateInfoWindowStatus();
         updateCycleLimitDialogStatus();
         syncEngineStateBroadcastIfNeeded();
@@ -691,6 +706,19 @@ public class GlobalFloatService extends Service {
         });
         row.addView(toggleButton);
 
+        TextView exportBtn = createActionButton(overlayContext, "导树", "#6D4C41");
+        exportViewTreeButton = exportBtn;
+        LinearLayout.LayoutParams exportLp = (LinearLayout.LayoutParams) exportBtn.getLayoutParams();
+        exportLp.leftMargin = dp(6);
+        exportBtn.setLayoutParams(exportLp);
+        exportBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                onExportViewTreeClicked();
+            }
+        });
+        row.addView(exportBtn);
+
         LinearLayout actionPanel = new LinearLayout(overlayContext);
         actionPanel.setOrientation(LinearLayout.VERTICAL);
         actionPanel.setVisibility(View.GONE);
@@ -713,44 +741,11 @@ public class GlobalFloatService extends Service {
         });
         actionPanel.addView(runBtn);
 
-        TextView pauseBtn = createActionButton(overlayContext, "暂停", "#EF6C00");
-        pauseBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                long seq = ModuleSettings.pushEngineCommand(
-                        GlobalFloatService.this,
-                        ModuleSettings.ENGINE_CMD_PAUSE,
-                        ModuleSettings.EngineStatus.PAUSED
-                );
-                dispatchEngineCommandBroadcast(
-                        ModuleSettings.ENGINE_CMD_PAUSE,
-                        ModuleSettings.EngineStatus.PAUSED,
-                        seq
-                );
-                collapseActionPanel();
-                updateMainButtonStatus();
-                Toast.makeText(GlobalFloatService.this, "模块已暂停", Toast.LENGTH_SHORT).show();
-            }
-        });
-        actionPanel.addView(pauseBtn);
-
         TextView stopBtn = createActionButton(overlayContext, "停止", "#C62828");
         stopBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                long seq = ModuleSettings.pushEngineCommand(
-                        GlobalFloatService.this,
-                        ModuleSettings.ENGINE_CMD_STOP,
-                        ModuleSettings.EngineStatus.STOPPED
-                );
-                dispatchEngineCommandBroadcast(
-                        ModuleSettings.ENGINE_CMD_STOP,
-                        ModuleSettings.EngineStatus.STOPPED,
-                        seq
-                );
-                collapseActionPanel();
-                updateMainButtonStatus();
-                Toast.makeText(GlobalFloatService.this, "模块已停止", Toast.LENGTH_SHORT).show();
+                onStopClicked();
             }
         });
         actionPanel.addView(stopBtn);
@@ -830,6 +825,19 @@ public class GlobalFloatService extends Service {
         });
         row.addView(toggleButton);
 
+        TextView exportBtn = createActionButton(overlayContext, "导树", "#6D4C41");
+        mirrorExportViewTreeButton = exportBtn;
+        LinearLayout.LayoutParams exportLp = (LinearLayout.LayoutParams) exportBtn.getLayoutParams();
+        exportLp.leftMargin = dp(6);
+        exportBtn.setLayoutParams(exportLp);
+        exportBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                onExportViewTreeClicked();
+            }
+        });
+        row.addView(exportBtn);
+
         LinearLayout panel = new LinearLayout(overlayContext);
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setVisibility(View.GONE);
@@ -852,44 +860,11 @@ public class GlobalFloatService extends Service {
         });
         panel.addView(runBtn);
 
-        TextView pauseBtn = createActionButton(overlayContext, "暂停", "#EF6C00");
-        pauseBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                long seq = ModuleSettings.pushEngineCommand(
-                        GlobalFloatService.this,
-                        ModuleSettings.ENGINE_CMD_PAUSE,
-                        ModuleSettings.EngineStatus.PAUSED
-                );
-                dispatchEngineCommandBroadcast(
-                        ModuleSettings.ENGINE_CMD_PAUSE,
-                        ModuleSettings.EngineStatus.PAUSED,
-                        seq
-                );
-                collapseActionPanel();
-                updateMainButtonStatus();
-                Toast.makeText(GlobalFloatService.this, "模块已暂停", Toast.LENGTH_SHORT).show();
-            }
-        });
-        panel.addView(pauseBtn);
-
         TextView stopBtn = createActionButton(overlayContext, "停止", "#C62828");
         stopBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                long seq = ModuleSettings.pushEngineCommand(
-                        GlobalFloatService.this,
-                        ModuleSettings.ENGINE_CMD_STOP,
-                        ModuleSettings.EngineStatus.STOPPED
-                );
-                dispatchEngineCommandBroadcast(
-                        ModuleSettings.ENGINE_CMD_STOP,
-                        ModuleSettings.EngineStatus.STOPPED,
-                        seq
-                );
-                collapseActionPanel();
-                updateMainButtonStatus();
-                Toast.makeText(GlobalFloatService.this, "模块已停止", Toast.LENGTH_SHORT).show();
+                onStopClicked();
             }
         });
         panel.addView(stopBtn);
@@ -976,6 +951,19 @@ public class GlobalFloatService extends Service {
         });
         row.addView(toggleButton);
 
+        TextView exportBtn = createActionButton(overlayContext, "导树", "#6D4C41");
+        overlay.exportViewTreeButton = exportBtn;
+        LinearLayout.LayoutParams exportLp = (LinearLayout.LayoutParams) exportBtn.getLayoutParams();
+        exportLp.leftMargin = dp(6);
+        exportBtn.setLayoutParams(exportLp);
+        exportBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                onExportViewTreeClicked();
+            }
+        });
+        row.addView(exportBtn);
+
         LinearLayout panel = new LinearLayout(overlayContext);
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setVisibility(View.GONE);
@@ -998,44 +986,11 @@ public class GlobalFloatService extends Service {
         });
         panel.addView(runBtn);
 
-        TextView pauseBtn = createActionButton(overlayContext, "暂停", "#EF6C00");
-        pauseBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                long seq = ModuleSettings.pushEngineCommand(
-                        GlobalFloatService.this,
-                        ModuleSettings.ENGINE_CMD_PAUSE,
-                        ModuleSettings.EngineStatus.PAUSED
-                );
-                dispatchEngineCommandBroadcast(
-                        ModuleSettings.ENGINE_CMD_PAUSE,
-                        ModuleSettings.EngineStatus.PAUSED,
-                        seq
-                );
-                collapseActionPanel();
-                updateMainButtonStatus();
-                Toast.makeText(GlobalFloatService.this, "模块已暂停", Toast.LENGTH_SHORT).show();
-            }
-        });
-        panel.addView(pauseBtn);
-
         TextView stopBtn = createActionButton(overlayContext, "停止", "#C62828");
         stopBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                long seq = ModuleSettings.pushEngineCommand(
-                        GlobalFloatService.this,
-                        ModuleSettings.ENGINE_CMD_STOP,
-                        ModuleSettings.EngineStatus.STOPPED
-                );
-                dispatchEngineCommandBroadcast(
-                        ModuleSettings.ENGINE_CMD_STOP,
-                        ModuleSettings.EngineStatus.STOPPED,
-                        seq
-                );
-                collapseActionPanel();
-                updateMainButtonStatus();
-                Toast.makeText(GlobalFloatService.this, "模块已停止", Toast.LENGTH_SHORT).show();
+                onStopClicked();
             }
         });
         panel.addView(stopBtn);
@@ -1148,6 +1103,10 @@ public class GlobalFloatService extends Service {
     }
 
     private void onRunClicked() {
+        if (!isAccessibilityServiceEnabledCompat()) {
+            promptEnableAccessibility(true);
+            return;
+        }
         hideCycleLimitFinishedDialog("run_clicked");
         long seq = ModuleSettings.pushEngineCommand(
                 this,
@@ -1171,11 +1130,7 @@ public class GlobalFloatService extends Service {
     }
 
     private void onCycleLimitDialogEndClicked() {
-        long seq = ModuleSettings.pushEngineCommand(
-                this,
-                ModuleSettings.ENGINE_CMD_STOP,
-                ModuleSettings.EngineStatus.STOPPED
-        );
+        long seq = ModuleSettings.forceStopAndResetRuntime(this);
         dispatchEngineCommandBroadcast(
                 ModuleSettings.ENGINE_CMD_STOP,
                 ModuleSettings.EngineStatus.STOPPED,
@@ -1184,7 +1139,37 @@ public class GlobalFloatService extends Service {
         hideCycleLimitFinishedDialog("end_clicked");
         collapseActionPanel();
         updateMainButtonStatus();
+        updateInfoWindowStatus();
+        updateCycleLimitDialogStatus();
         Toast.makeText(this, "模块已结束", Toast.LENGTH_SHORT).show();
+    }
+
+    private void onStopClicked() {
+        long seq = ModuleSettings.forceStopAndResetRuntime(this);
+        dispatchEngineCommandBroadcast(
+                ModuleSettings.ENGINE_CMD_STOP,
+                ModuleSettings.EngineStatus.STOPPED,
+                seq
+        );
+        hideCycleLimitFinishedDialog("stop_clicked");
+        collapseActionPanel();
+        updateMainButtonStatus();
+        updateInfoWindowStatus();
+        updateCycleLimitDialogStatus();
+        Toast.makeText(this, "模块已停止", Toast.LENGTH_SHORT).show();
+    }
+
+    private void onExportViewTreeClicked() {
+        if (!ModuleSettings.getViewTreeDumpDebugEnabled(prefs)) {
+            Toast.makeText(this, "请先开启View树调试输出", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        dispatchDebugCommandBroadcast(
+                ModuleSettings.DEBUG_CMD_EXPORT_ACTIVITY_VIEW_TREE,
+                "float_export_button"
+        );
+        Toast.makeText(this, "已发送导出请求", Toast.LENGTH_SHORT).show();
+        collapseActionPanel();
     }
 
     private void restartTargetAppForNextCycle() {
@@ -1228,6 +1213,16 @@ public class GlobalFloatService extends Service {
             handler.postDelayed(new Runnable() {
                 @Override
                 public void run() {
+                    if (prefs == null) {
+                        return;
+                    }
+                    if (ModuleSettings.getEngineStatus(prefs) != ModuleSettings.EngineStatus.RUNNING) {
+                        return;
+                    }
+                    long latestSeq = ModuleSettings.getEngineCommandSeq(prefs);
+                    if (latestSeq != seq) {
+                        return;
+                    }
                     dispatchEngineCommandBroadcast(
                             ModuleSettings.ENGINE_CMD_RUN,
                             ModuleSettings.EngineStatus.RUNNING,
@@ -1274,6 +1269,22 @@ public class GlobalFloatService extends Service {
         }
     }
 
+    private void dispatchDebugCommandBroadcast(String command, String trigger) {
+        if (TextUtils.isEmpty(command)) {
+            return;
+        }
+        try {
+            Intent intent = new Intent(ModuleSettings.ACTION_DEBUG_COMMAND);
+            intent.setPackage(UiComponentConfig.TARGET_PACKAGE);
+            intent.putExtra(ModuleSettings.EXTRA_DEBUG_COMMAND, command);
+            intent.putExtra(ModuleSettings.EXTRA_DEBUG_TRIGGER, safeReason(trigger));
+            sendBroadcast(intent);
+            log("debug command broadcast sent: cmd=" + command + " trigger=" + safeReason(trigger));
+        } catch (Throwable e) {
+            log("debug command broadcast failed: " + e);
+        }
+    }
+
     private void syncEngineStateBroadcastIfNeeded() {
         if (prefs == null) {
             return;
@@ -1285,8 +1296,6 @@ public class GlobalFloatService extends Service {
         if (TextUtils.isEmpty(command)) {
             if (status == ModuleSettings.EngineStatus.RUNNING) {
                 command = ModuleSettings.ENGINE_CMD_RUN;
-            } else if (status == ModuleSettings.EngineStatus.PAUSED) {
-                command = ModuleSettings.ENGINE_CMD_PAUSE;
             } else {
                 command = ModuleSettings.ENGINE_CMD_STOP;
             }
@@ -1312,6 +1321,25 @@ public class GlobalFloatService extends Service {
             }
             applyMainButtonStatus(overlay.mainButton, status);
         }
+    }
+
+    private void updateDebugButtonStatus() {
+        boolean enabled = ModuleSettings.getViewTreeDumpDebugEnabled(prefs);
+        applyDebugButtonStatus(exportViewTreeButton, enabled);
+        applyDebugButtonStatus(mirrorExportViewTreeButton, enabled);
+        for (ExtraOverlay overlay : extraOverlays.values()) {
+            if (overlay == null) {
+                continue;
+            }
+            applyDebugButtonStatus(overlay.exportViewTreeButton, enabled);
+        }
+    }
+
+    private void applyDebugButtonStatus(TextView button, boolean enabled) {
+        if (button == null) {
+            return;
+        }
+        button.setVisibility(enabled ? View.VISIBLE : View.GONE);
     }
 
     private void updateInfoWindowStatus() {
@@ -1485,9 +1513,6 @@ public class GlobalFloatService extends Service {
         if (status == ModuleSettings.EngineStatus.RUNNING) {
             button.setText("LSP-运行中");
             button.setBackgroundColor(Color.parseColor("#2E7D32"));
-        } else if (status == ModuleSettings.EngineStatus.PAUSED) {
-            button.setText("LSP-已暂停");
-            button.setBackgroundColor(Color.parseColor("#EF6C00"));
         } else {
             button.setText("LSP-未运行");
             button.setBackgroundColor(Color.parseColor("#C62828"));
@@ -1817,6 +1842,69 @@ public class GlobalFloatService extends Service {
         lp.bottomMargin = dp(6);
         tv.setLayoutParams(lp);
         return tv;
+    }
+
+    private void forceStopForMissingAccessibility(String reason) {
+        if (prefs == null) {
+            return;
+        }
+        if (ModuleSettings.getEngineStatus(prefs) != ModuleSettings.EngineStatus.RUNNING) {
+            return;
+        }
+        long seq = ModuleSettings.forceStopAndResetRuntime(this);
+        dispatchEngineCommandBroadcast(
+                ModuleSettings.ENGINE_CMD_STOP,
+                ModuleSettings.EngineStatus.STOPPED,
+                seq
+        );
+        hideCycleLimitFinishedDialog("missing_accessibility_" + safeReason(reason));
+        collapseActionPanel();
+        updateMainButtonStatus();
+        updateInfoWindowStatus();
+        updateCycleLimitDialogStatus();
+        log("force stop: missing accessibility permission, reason=" + safeReason(reason));
+    }
+
+    private void promptEnableAccessibility(boolean force) {
+        long now = System.currentTimeMillis();
+        if (!force && now - lastAccessibilityPromptAt < ACCESSIBILITY_PROMPT_MIN_INTERVAL_MS) {
+            return;
+        }
+        lastAccessibilityPromptAt = now;
+        Toast.makeText(this, "请开启模块无障碍权限后再运行", Toast.LENGTH_LONG).show();
+        openAccessibilitySettings();
+    }
+
+    private void openAccessibilitySettings() {
+        try {
+            Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        } catch (Throwable e) {
+            Toast.makeText(this, "打开无障碍设置失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private boolean isAccessibilityServiceEnabledCompat() {
+        String enabled = Settings.Secure.getString(
+                getContentResolver(),
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        );
+        if (TextUtils.isEmpty(enabled)) {
+            return false;
+        }
+        ComponentName target = new ComponentName(this, LookAccessibilityAdService.class);
+        String expectFull = target.flattenToString();
+        String expectShort = target.flattenToShortString();
+        TextUtils.SimpleStringSplitter splitter = new TextUtils.SimpleStringSplitter(':');
+        splitter.setString(enabled);
+        for (String item : splitter) {
+            String current = item == null ? "" : item.trim();
+            if (expectFull.equalsIgnoreCase(current) || expectShort.equalsIgnoreCase(current)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private int dp(int value) {

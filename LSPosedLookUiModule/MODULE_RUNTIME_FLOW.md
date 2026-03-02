@@ -1,6 +1,6 @@
 # LSPosedLookUiModule 运行逻辑说明
 
-最后更新：2026-03-03（v1.6.8）
+最后更新：2026-03-03（v1.6.29）
 
 ## 1. 长期维护约定
 
@@ -33,15 +33,14 @@
   - `广告处理`
   - `无障碍实时广告服务（替代LSP）`
   - `启动软件自动运行模块`
+  - `View树调试输出（仅调试）`
   - `一起聊直播间循环点击次数`（0=无限）
   - `每次循环后等待时间（秒）`（默认10秒）
 - 悬浮按钮命令：
   - `运行` -> `RUNNING`
-  - `暂停` -> `PAUSED`
   - `停止` -> `STOPPED`
 - 悬浮按钮状态文案（v1.0.33）：
   - 运行中：`LSP-运行中`
-  - 暂停：`LSP-已暂停`
   - 未运行：`LSP-未运行`
 - `运行`命令补发机制（v1.0.17）：
   - 点击“运行”后若会 `force-stop` 并重启 LOOK，`GlobalFloatService` 会在启动后延迟多次补发 `RUN` 实时广播，确保新进程收到运行命令。
@@ -66,7 +65,7 @@
   - 解决多显示屏环境下“服务在运行但按钮不在当前屏显示”的问题。
 - 运行状态回传修复（v1.0.33）：
   - LOOK 进程状态变化时发送 `ACTION_ENGINE_STATUS_REPORT` 回模块进程。
-  - 模块进程落盘同步 `engine_status/engine_command/engine_command_seq`，悬浮按钮读取后可正确显示“运行中/已暂停/未运行”。
+  - 模块进程落盘同步 `engine_status/engine_command/engine_command_seq`，悬浮按钮读取后可正确显示“运行中/未运行”。
 - 悬浮信息窗口（v1.0.40）：
   - 新增设置项 `悬浮信息窗口`（默认关闭）。
   - 开启后在悬浮按钮上方显示小窗：`循环 当前/剩余`、`本轮直播间进入数`、`运行时长`。
@@ -87,10 +86,10 @@
   - 悬浮信息窗口文案缩短并限制宽度，避免整体窗口过宽导致内容显示不全。
 - 悬浮控制区点击兜底（v1.0.44）：
   - 除主按钮外，`悬浮信息窗口`、`循环提示条`、`按钮行区域` 均可触发动作面板展开/收起。
-  - 用于兼容部分设备上主按钮命中不稳定的问题，确保“运行/暂停/停止”可操作。
+  - 用于兼容部分设备上主按钮命中不稳定的问题，确保“运行/停止”可操作。
 - 悬浮控制面板下方展开（v1.0.45）：
   - 将动作面板由主按钮右侧横向展开改为主按钮下方纵向展开。
-  - 点击主按钮后，`运行/暂停/停止` 按钮按竖向顺序显示在下方，避免遮挡右侧内容。
+  - 点击主按钮后，`运行/停止` 按钮按竖向顺序显示在下方，避免遮挡右侧内容。
 - 悬浮窗口全局显示修复（v1.4.6）：
   - 悬浮服务改为固定“全局模式”，不再根据 LOOK 进程同步的 `displayId` 切换挂载显示屏。
   - `FloatServiceBootstrap` 同步服务时忽略 `target_display_id`，仅处理“是否重启目标应用”控制。
@@ -101,7 +100,7 @@
   - 目标：避免“全局可见但 LOOK 不显示”与“只在 LOOK 显示”的互相冲突。
 - 全局与 LOOK 双实例悬浮层（v1.4.8）：
   - 悬浮服务同时维护两套悬浮层：全局层（默认显示屏）+ LOOK 镜像层（`target_display_id` 指向的显示屏）。
-  - 两套悬浮层共享同一运行状态与控制动作，任一侧都可操作运行/暂停/停止。
+  - 两套悬浮层共享同一运行状态与控制动作，任一侧都可操作运行/停止。
   - 目标：无论在桌面/其他 App 还是 LOOK 界面，都可见并可操作悬浮按钮与信息窗口。
 - 全局层主屏固定修复（v1.4.9）：
   - 全局层强制挂载 `displayId=0`，不再依赖服务上下文的当前显示屏。
@@ -139,7 +138,7 @@
   - 增加挂载显示屏日志：全局层与镜像层分别输出实际 `displayId`，便于排查显示异常。
 - 全屏多实例悬浮层（v1.5.8）：
   - 新增“额外显示屏悬浮层”机制：对当前在线屏幕逐个创建悬浮层实例，不再仅限全局层 + LOOK 镜像层。
-  - 每个屏幕上的 `运行/暂停/停止` 与信息窗口状态实时同步，任一屏幕操作都会作用于同一引擎状态。
+  - 每个屏幕上的 `运行/停止` 与信息窗口状态实时同步，任一屏幕操作都会作用于同一引擎状态。
   - 屏幕上下线时自动增删对应悬浮层实例，避免某些屏幕切换后悬浮按钮缺失。
 - 多屏 WindowContext 绑定增强（v1.5.9）：
   - `resolveOverlayContext` 优先使用 `createWindowContext(display, TYPE_APPLICATION_OVERLAY, null)` 直接按目标屏创建窗口上下文。
@@ -178,10 +177,112 @@
 - 循环完成弹窗持久化修复（v1.6.8）：
   - 循环完成弹窗状态写入 `module_settings`，`GlobalFloatService` 重建后会恢复显示。
   - 只有点击弹窗中的 `重新运行` 或 `结束` 才会清除并关闭，避免“未点击自动消失”。
+- 直播间任务采集扩展（v1.6.9）：
+  - `live_room_enter_task` 从纯等待扩展为真实采集：按 `LIVE_ROOM_TASK_CAPTURE_SPECS` 抽取 `roomNo/title/closeBtn` 快照并记录缺失项。
+  - 新增直播间文本摘要采集（最大条数/长度、纯数字过滤、排除词均在 `UiComponentConfig.java` 配置），写入运行日志。
+  - 保持原返回节奏：任务等待时长仍由 `LIVE_ROOM_ENTER_TASK_WAIT_MS` 控制，不改变循环计数、总运行时长和悬浮窗状态同步链路。
+  - 注：该方案已在 v1.6.10 被“vflipper 榜单切换任务”替换。
+- 直播间榜单切换任务（v1.6.10）：
+  - 取消 `roomNo/title/closeBtn` 任务内采集（这三项仅用于“进入直播间校验”，不再属于任务执行内容）。
+  - 任务改为：进入直播间后持续查找 `com.netease.play:id/vflipper`，命中后点击进入榜单面板。
+  - 榜单面板通过 `当前房间/贡献榜/魅力榜/贵族/粉团榜/在线` 组合按钮识别（阈值与节点配置均在 `UiComponentConfig.java`）。
+  - 任务顺序：点击 `贡献榜` -> 等待 5 秒 -> 点击 `魅力榜` -> 等待 5 秒 -> 返回一次关闭榜单面板，并校验按钮组已消失后继续主流程。
+- 直播间任务防重复与停止收敛（v1.6.11）：
+  - 修复“已进入榜单面板仍重复点击 `vflipper`”问题：任务在每轮先判断榜单面板按钮组，已命中则直接执行榜单切换，不再重复点击 `vflipper`。
+  - 新增“面板就绪重试”阶段：点击 `vflipper` 后先等待面板按钮出现，多次重试仍未就绪才回退到下一轮 `vflipper` 查找，避免高频重复点击。
+  - 任务链所有延时步骤新增运行态门禁（读取实时引擎状态）：点击悬浮窗“停止”后不再继续执行后续 `vflipper/榜单` 点击与返回动作。
+- 悬浮控制强制收敛（v1.6.12）：
+  - 移除悬浮按钮 `暂停` 操作，仅保留 `运行/停止`。
+  - `停止` 改为强制即时生效：落盘 `STOPPED` + 立即广播 + 清理运行时统计，确保所有功能收到停止控制。
+  - 修复 `运行` 延迟补发广播竞态：补发前校验当前序列号与状态，停止后不会被旧 `RUN` 广播反向拉起。
+  - LOOK 进程实时命令同步新增“命令序列号防回退”，忽略过期命令，避免停止后被旧命令覆盖。
+- vflipper 开榜单防重复点击修复（v1.6.13）：
+  - `vflipper` 点击后首轮面板检测等待由 `500ms` 调整为 `2000ms`，先给开榜单动画与节点渲染留出稳定时间。
+  - 榜单面板识别新增 `content-desc` 节点匹配（`当前房间/贡献榜/魅力榜/贵族/粉团榜/在线`），避免因内部 `TextView` 结构波动导致“已开面板但识别失败”。
+  - 面板按钮点击目标改为优先命中 `content-desc` 对应可点击节点，降低重复回退到 `vflipper` 再次点击的概率。
+- vflipper 重复点击日志修复（v1.6.14）：
+  - 日志显示存在“点击 `vflipper` 后 `markerCount=0` 连续重试并回退再点”的场景，本次将“面板已打开”判定扩展为双通道：`markerCount` + `贡献/魅力主按钮命中数`。
+  - 面板就绪重试窗口由 `8` 次扩展至 `24` 次（间隔保持 `350ms`），减少慢加载场景下的误回退重点击。
+  - 榜单点击节点改为候选集匹配（`content-desc` 与 `TextView` 双候选），降低节点形态变化导致的“已开面板但点不到贡献/魅力”的概率。
+- 榜单按钮点击兜底修复（v1.6.15）：
+  - 根据日志（`markerCount=0 / primaryCount=0` 持续重试）确认：部分设备上榜单按钮节点无法从 View 树稳定读取，导致不会执行“魅力榜”点击。
+  - 当点击 `vflipper` 后超出面板就绪重试上限，不再回退重新找 `vflipper`，改为直接进入榜单步骤（避免重复点 `vflipper`）。
+  - `贡献榜/魅力榜` 点击新增屏幕比例坐标兜底（参数全部在 `UiComponentConfig.java`），在节点缺失时仍可按固定比例执行点击。
+- vflipper 面板检测链路修正（v1.6.16）：
+  - 按需求取消“贡献榜/魅力榜屏幕比例坐标兜底点击”。
+  - 任务识别链路由“仅 View 树”扩展为“View 树 + AccessibilityNodeInfo 节点树”双通道：
+    - 面板开启检测（`当前房间/贡献榜/魅力榜/贵族/粉团榜/在线`）支持无障碍节点匹配。
+    - `贡献榜/魅力榜` 点击在 View 节点缺失时，改为对无障碍节点执行 `ACTION_CLICK`，不再使用坐标点击。
+  - 结合 `live_ui.xml`，补充 `ViewPager/RecyclerView` 作为榜单结构识别节点，并放宽面板节点 `packageName` 约束，降低“界面已开但识别为未开”的误判。
+- vflipper 面板命中阈值与类名兼容修复（v1.6.17）：
+  - 根据日志（`markerCount=1, primaryCount=0` 持续重试）调整面板就绪阈值：`LIVE_ROOM_TASK_PANEL_MARKER_MIN_MATCH_COUNT` 由 `2` 调整为 `1`。
+  - 榜单 `content-desc` 节点取消固定类名限制（由 `android.view.View` 放宽为不限类名），适配不同设备上同语义不同类实现。
+  - 移除 `ViewPager/RecyclerView` 通用结构节点作为面板标记，避免“结构命中但语义未命中”干扰判断。
+  - 新增面板诊断日志：输出 `current/contribution/charm` 三个关键语义节点命中详情，便于继续对照现场日志定位。
+- vflipper 开启判定改为无障碍按钮组（v1.6.18）：
+  - 点击 `vflipper` 后仍固定等待 `2秒`（`LIVE_ROOM_TASK_WAIT_AFTER_VFLIPPER_CLICK_MS=2000`）。
+  - 面板开启检测改为“仅无障碍UI树”：
+    - 在无障碍节点树中查找 `当前房间/贡献榜/魅力榜/贵族/粉团榜/在线`（文本 + content-desc 双通道）。
+    - 只要检测到该按钮组中的任一按钮，即判定 vflipper 面板已打开并继续后续流程。
+  - 取消面板开启判定对 Activity View 树的依赖，避免“界面已开但 View 树未暴露节点”导致误判。
+- Activity View树调试开关与导出（v1.6.19）：
+  - 设置页新增 `View树调试输出（仅调试）` 开关（默认关闭，持久化到 `module_settings`）。
+  - 开关开启后，`live_room_enter_task` 会在关键阶段输出 Activity View 树（节点 class/id/text/content-desc/clickable/shown/bounds）。
+  - 导出阶段包含：点击 `vflipper` 后首轮 2 秒检测点、面板识别成功前、面板识别超时前。
+  - 输出带节点上限与深度上限，避免日志无限膨胀；默认业务流程与点击逻辑不变。
+- 手动导出 Activity View树（v1.6.20）：
+  - 当设置项 `View树调试输出（仅调试）` 开启时，悬浮按钮行会出现 `导树` 按钮。
+  - 点击 `导树` 后，模块向 LOOK 进程发送调试命令，立即导出当前 Activity 的 View 层级到独立文件。
+  - 导出文件目录：`/sdcard/Android/data/com.oodbye.looklspmodule/files/view_tree_dumps/`
+  - 若上述目录不可写，会自动回退到目标进程目录：`/sdcard/Android/data/com.netease.play/files/look_view_tree_dumps/`
+  - 文件名：`look_activity_view_tree_yyyyMMdd_HHmmss_SSS.txt`
+  - 用途：手动抓取“界面打开前/后”的两份文件进行结构对比，不影响主流程状态机。
+- 面板判定改为无障碍全局树 + 运行前权限守卫（v1.6.21）：
+  - `live_room_enter_task` 的 vflipper 面板开启/关闭判定，改为读取无障碍服务 `rootInActiveWindow` 全局树快照，不再使用 `Activity root.createAccessibilityNodeInfo()` 作为面板判定来源。
+  - `LookAccessibilityAdService` 持续写入面板快照（`marker/primary/detail/updatedAt`）到 `ModuleSettings`，任务侧按快照新鲜度阈值判定是否可用，过期快照不参与“面板已开”判定。
+  - 悬浮按钮点击 `运行` 时，若未开启模块无障碍权限，会立即拦截运行并自动拉起系统无障碍设置页提示开启。
+  - 模块处于 `RUNNING` 期间若检测到无障碍权限被关闭，会立刻执行 `STOP`（含运行统计重置与广播同步），并提示用户重新开启无障碍权限。
+- 无障碍面板快照跨进程同步修复（v1.6.22）：
+  - 修复 `LOOKA11yAd` 已更新快照但 `LOOKScriptRunner` 仍读到 `updatedAt=0` 导致重复点击 `vflipper` 的问题。
+  - `LookAccessibilityAdService` 在持久化快照后，新增发送 `ACTION_A11Y_PANEL_SNAPSHOT` 广播到 LOOK 进程（携带 marker/primary/detail/updatedAt）。
+  - `LookHookEntry` 新增接收并缓存实时面板快照，`LiveRoomTaskScriptRunner` 优先读取该内存快照判定面板状态；仅在无实时快照时回退 XSP。
+  - 任务日志会标注快照来源：`realtime:` 或 `xsp:`，便于后续排查。
+- vflipper 面板内按钮点击改为无障碍服务执行（v1.6.23）：
+  - `LiveRoomTaskScriptRunner` 不再通过 Activity View 树/Activity 无障碍节点点击 `贡献榜/魅力榜`。
+  - 改为由 `LookAccessibilityAdService` 基于 `rootInActiveWindow` 全局树执行点击：任务进程发送 `ACTION_A11Y_PANEL_CLICK_REQUEST`，服务回传 `ACTION_A11Y_PANEL_CLICK_RESULT`。
+  - 目标进程内新增点击结果同步与等待机制，日志中会输出无障碍点击结果细节。
+  - 作用范围限定在 vflipper 面板内榜单按钮点击，不影响直播间进入校验与循环计数链路。
+- 无障碍点击回传超时修复（v1.6.24）：
+  - 修复“`LOOKA11yAd` 已回传 success，但 `LOOKScriptRunner` 先报 `a11y_click_timeout`”的问题。
+  - 原因是任务主线程同步等待结果，导致同进程动态接收器无法及时处理回传广播。
+  - 改为使用独立 `HandlerThread` 接收 `ACTION_A11Y_PANEL_CLICK_RESULT`，避免主线程阻塞导致的假超时。
+  - 修复后 `rank clicked` 与服务侧 `面板点击结果 success=true` 时序一致，不再出现“先超时后成功”。
+- 面板检测阻塞节点等待（v1.6.25）：
+  - 在 `live_room_enter_task` 的“点击 vflipper 后面板检测”阶段，新增 Activity View 树阻塞节点判定：
+    - `class=com.netease.cloudmusic.bottom.StableSlidingLayout`
+    - `id=com.netease.play:id/slidingContainer`
+  - 当该节点仍可见时，不执行“面板未打开”判定，也不回退重复点击 `vflipper`，改为继续按重试间隔等待其消失后再检测。
+  - 对应节点参数统一收敛到 `UiComponentConfig.java`，不在业务流程中硬编码。
+- 直播间任务完成门禁修复（v1.6.26）：
+  - 修复“直播间任务尚未执行完（贡献榜/魅力榜/关面板）就提前触发返回退出直播间”的问题。
+  - `LiveRoomRuntimeModule` 不再按固定 `waitMs` 提前退出；改为等待 `LiveRoomTaskScriptRunner` 任务链路明确回调完成后，再执行“直播间任务完成，执行返回退出直播间”。
+  - `live_room_enter_task` 新增“任务完成回调一次性收敛”，仅在链路真正结束（例如面板关闭确认、重试耗尽等）时回调完成，避免提前返回。
+  - `slidingContainer` 阻塞节点匹配放宽为按 `id=com.netease.play:id/slidingContainer` 识别（不强依赖具体 class），提升机型兼容性。
+- 直播间返回后1秒等待起点修复（v1.6.27）：
+  - 修复“从直播间返回到一起聊后，偶发立即点击下一卡片”的问题。
+  - 冷却计时起点由“直播间执行返回按键时刻”调整为“检测到已回到一起聊页面时刻”。
+  - 返回过程中（动画/页面切换耗时）不再提前消耗这 1 秒等待，确保回到一起聊后稳定等待 1 秒再点击下一卡片。
+- 返回冷却诊断日志增强（v1.6.28）：
+  - 每次实际点击“一起聊直播卡片”时，日志追加 `sinceReturnCooldownMs`（距返回冷却起点已过毫秒）。
+  - 用于直接验证“是否严格等待至少 1 秒后才点击下一卡片”。
+- 直播间返回后等待时长调整（v1.6.29）：
+  - `LIVE_ROOM_RETURN_TOGETHER_WAIT_MS` 由 `1000ms` 调整为 `3000ms`。
+  - 一起聊页在直播间返回后的卡片点击冷却由 1 秒改为 3 秒。
 
 ## 4. 当前主流程
 
 1. 点击悬浮按钮“运行”后，若 LOOK 正在运行先 `force-stop`，再启动 LOOK。
+   - 若未开启模块无障碍权限，会拦截运行并拉起无障碍设置页，不进入运行态。
 2. LSPosed 在 `com.netease.play` 进程注入，进入主循环。
 3. 启动后先等待数秒，再在首页点击“`一起聊`”tab。
 4. 进入一起聊界面后，先执行一次“下滑刷新”，等待页面稳定。
@@ -196,7 +297,7 @@
    - 直播间 `title` 文本需与该卡片 `index=1..4` 子节点文本之一一致。
 9. 校验通过后执行直播间任务。
 10. 直播间任务执行完成后自动返回上一页（退出直播间）。
-11. 从直播间返回到一起聊后，先等待 `1秒`，再点击下一个直播卡片。
+11. 从直播间返回到一起聊后，先等待 `3秒`，再点击下一个直播卡片。
 12. 回到一起聊后继续点击后续卡片；无新卡片时继续上滑，循环处理。
 13. 当“一起聊无新卡片”满足完成阈值时，判定一次循环完成，延迟后请求模块服务重启 LOOK 进入下一轮。
 14. 若设置了 `一起聊直播间循环点击次数=N`（N>0），则每完成一轮计数 +1；当计数达到 N 时，不再重启下一轮，模块自动切换为停止状态并弹出“循环完成”操作窗口（重新运行/结束）。
@@ -307,9 +408,16 @@
 - 入口文件与方法：
   - `app/src/main/java/com/oodbye/looklspmodule/LiveRoomTaskScriptRunner.java`
   - `runLiveRoomEnterTask(Activity activity)`
-- 当前行为：
+- 当前行为（v1.6.24）：
   - 进入直播间并完成校验后，执行 `live_room_enter_task`。
-  - 当前任务逻辑为等待 `5000ms` 后结束，随后自动返回上一页。
+  - 任务持续查找并点击 `com.netease.play:id/vflipper`，进入榜单面板。
+  - 面板识别条件：`当前房间/贡献榜/魅力榜/贵族/粉团榜/在线`（命中数阈值可配置）。
+  - 面板判定来源：无障碍服务 `rootInActiveWindow` 全局树快照（带过期判定），不再依赖 Activity View 树无障碍节点。
+  - 若面板已打开则不再重复点击 `vflipper`，直接执行后续榜单步骤。
+  - 顺序执行：`贡献榜(等待5秒)` -> `魅力榜(等待5秒)` -> `返回关闭榜单面板`。
+  - 其中 `贡献榜/魅力榜` 点击由无障碍服务全局树执行，不再走 Activity 视角点击。
+  - 关闭校验：通过检测上述按钮组是否消失来确认面板关闭；若仍存在会按配置重试返回。
+  - 任务返回等待时长为 `max(LIVE_ROOM_ENTER_TASK_WAIT_MS, LIVE_ROOM_TASK_MIN_RETURN_DELAY_MS)`，随后自动返回上一页。
 - 说明：
   - 你后续要扩展“进入直播间后的采集功能”，直接在 `LiveRoomTaskScriptRunner.runLiveRoomEnterTask(...)` 中追加即可。
 

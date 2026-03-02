@@ -18,6 +18,11 @@ final class ModuleSettings {
     static final String KEY_TOGETHER_CYCLE_LIMIT = "together_cycle_limit";
     static final String KEY_TOGETHER_CYCLE_WAIT_SECONDS = "together_cycle_wait_seconds";
     static final String KEY_FLOAT_INFO_WINDOW_ENABLED = "float_info_window_enabled";
+    static final String KEY_VIEW_TREE_DUMP_DEBUG_ENABLED = "view_tree_dump_debug_enabled";
+    static final String KEY_A11Y_PANEL_MARKER_COUNT = "a11y_panel_marker_count";
+    static final String KEY_A11Y_PANEL_PRIMARY_COUNT = "a11y_panel_primary_count";
+    static final String KEY_A11Y_PANEL_UPDATED_AT = "a11y_panel_updated_at";
+    static final String KEY_A11Y_PANEL_DETAIL = "a11y_panel_detail";
     static final String KEY_RUNTIME_RUN_START_AT = "runtime_run_start_at";
     static final String KEY_RUNTIME_CYCLE_COMPLETED = "runtime_cycle_completed";
     static final String KEY_RUNTIME_CYCLE_ENTERED = "runtime_cycle_entered";
@@ -28,6 +33,10 @@ final class ModuleSettings {
     static final String KEY_ENGINE_COMMAND = "engine_command";
     static final String KEY_ENGINE_COMMAND_SEQ = "engine_command_seq";
     static final String ACTION_ENGINE_COMMAND = MODULE_PACKAGE + ".ACTION_ENGINE_COMMAND";
+    static final String ACTION_DEBUG_COMMAND = MODULE_PACKAGE + ".ACTION_DEBUG_COMMAND";
+    static final String ACTION_A11Y_PANEL_SNAPSHOT = MODULE_PACKAGE + ".ACTION_A11Y_PANEL_SNAPSHOT";
+    static final String ACTION_A11Y_PANEL_CLICK_REQUEST = MODULE_PACKAGE + ".ACTION_A11Y_PANEL_CLICK_REQUEST";
+    static final String ACTION_A11Y_PANEL_CLICK_RESULT = MODULE_PACKAGE + ".ACTION_A11Y_PANEL_CLICK_RESULT";
     static final String ACTION_SYNC_FLOAT_SERVICE = MODULE_PACKAGE + ".ACTION_SYNC_FLOAT_SERVICE";
     static final String ACTION_ENGINE_STATUS_REPORT = MODULE_PACKAGE + ".ACTION_ENGINE_STATUS_REPORT";
     static final String ACTION_CYCLE_COMPLETE_NOTICE = MODULE_PACKAGE + ".ACTION_CYCLE_COMPLETE_NOTICE";
@@ -36,6 +45,16 @@ final class ModuleSettings {
     static final String EXTRA_ENGINE_COMMAND = "engine_command";
     static final String EXTRA_ENGINE_STATUS = "engine_status";
     static final String EXTRA_ENGINE_COMMAND_SEQ = "engine_command_seq";
+    static final String EXTRA_DEBUG_COMMAND = "debug_command";
+    static final String EXTRA_DEBUG_TRIGGER = "debug_trigger";
+    static final String EXTRA_A11Y_PANEL_MARKER_COUNT = "a11y_panel_marker_count";
+    static final String EXTRA_A11Y_PANEL_PRIMARY_COUNT = "a11y_panel_primary_count";
+    static final String EXTRA_A11Y_PANEL_UPDATED_AT = "a11y_panel_updated_at";
+    static final String EXTRA_A11Y_PANEL_DETAIL = "a11y_panel_detail";
+    static final String EXTRA_A11Y_PANEL_CLICK_TARGET = "a11y_panel_click_target";
+    static final String EXTRA_A11Y_PANEL_CLICK_REQUEST_ID = "a11y_panel_click_request_id";
+    static final String EXTRA_A11Y_PANEL_CLICK_SUCCESS = "a11y_panel_click_success";
+    static final String EXTRA_A11Y_PANEL_CLICK_DETAIL = "a11y_panel_click_detail";
     static final String EXTRA_TOGETHER_CYCLE_LIMIT = "together_cycle_limit";
     static final String EXTRA_TOGETHER_CYCLE_WAIT_SECONDS = "together_cycle_wait_seconds";
     static final String EXTRA_TARGET_DISPLAY_ID = "target_display_id";
@@ -50,8 +69,10 @@ final class ModuleSettings {
     static final String EXTRA_RUNTIME_COMMAND_SEQ = "runtime_command_seq";
 
     static final String ENGINE_CMD_RUN = "RUN";
-    static final String ENGINE_CMD_PAUSE = "PAUSE";
     static final String ENGINE_CMD_STOP = "STOP";
+    static final String DEBUG_CMD_EXPORT_ACTIVITY_VIEW_TREE = "EXPORT_ACTIVITY_VIEW_TREE";
+    static final String A11Y_PANEL_CLICK_TARGET_CONTRIBUTION = "contribution";
+    static final String A11Y_PANEL_CLICK_TARGET_CHARM = "charm";
 
     static final boolean DEFAULT_GLOBAL_FLOAT_BUTTON_ENABLED = false;
     static final boolean DEFAULT_AD_PROCESS_ENABLED = true;
@@ -60,6 +81,11 @@ final class ModuleSettings {
     static final int DEFAULT_TOGETHER_CYCLE_LIMIT = 0;
     static final int DEFAULT_TOGETHER_CYCLE_WAIT_SECONDS = 10;
     static final boolean DEFAULT_FLOAT_INFO_WINDOW_ENABLED = false;
+    static final boolean DEFAULT_VIEW_TREE_DUMP_DEBUG_ENABLED = false;
+    static final int DEFAULT_A11Y_PANEL_MARKER_COUNT = 0;
+    static final int DEFAULT_A11Y_PANEL_PRIMARY_COUNT = 0;
+    static final long DEFAULT_A11Y_PANEL_UPDATED_AT = 0L;
+    static final String DEFAULT_A11Y_PANEL_DETAIL = "";
     static final String DEFAULT_ENGINE_STATUS = EngineStatus.STOPPED.name();
 
     private static final long XSP_RELOAD_INTERVAL_MS = 1000L;
@@ -156,12 +182,64 @@ final class ModuleSettings {
         return xsp.getBoolean(KEY_FLOAT_INFO_WINDOW_ENABLED, DEFAULT_FLOAT_INFO_WINDOW_ENABLED);
     }
 
+    static synchronized boolean isViewTreeDumpDebugEnabled() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return DEFAULT_VIEW_TREE_DUMP_DEBUG_ENABLED;
+        }
+        return xsp.getBoolean(
+                KEY_VIEW_TREE_DUMP_DEBUG_ENABLED,
+                DEFAULT_VIEW_TREE_DUMP_DEBUG_ENABLED
+        );
+    }
+
+    static synchronized int getA11yPanelMarkerCount() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return DEFAULT_A11Y_PANEL_MARKER_COUNT;
+        }
+        return sanitizeNonNegativeInt(
+                xsp.getInt(KEY_A11Y_PANEL_MARKER_COUNT, DEFAULT_A11Y_PANEL_MARKER_COUNT)
+        );
+    }
+
+    static synchronized int getA11yPanelPrimaryCount() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return DEFAULT_A11Y_PANEL_PRIMARY_COUNT;
+        }
+        return sanitizeNonNegativeInt(
+                xsp.getInt(KEY_A11Y_PANEL_PRIMARY_COUNT, DEFAULT_A11Y_PANEL_PRIMARY_COUNT)
+        );
+    }
+
+    static synchronized long getA11yPanelUpdatedAt() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return DEFAULT_A11Y_PANEL_UPDATED_AT;
+        }
+        return Math.max(
+                DEFAULT_A11Y_PANEL_UPDATED_AT,
+                xsp.getLong(KEY_A11Y_PANEL_UPDATED_AT, DEFAULT_A11Y_PANEL_UPDATED_AT)
+        );
+    }
+
+    static synchronized String getA11yPanelDetail() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return DEFAULT_A11Y_PANEL_DETAIL;
+        }
+        return safeTrim(
+                xsp.getString(KEY_A11Y_PANEL_DETAIL, DEFAULT_A11Y_PANEL_DETAIL)
+        );
+    }
+
     static synchronized String getEngineCommand() {
         XSharedPreferences xsp = getXsp();
         if (xsp == null) {
             return "";
         }
-        return safeTrim(xsp.getString(KEY_ENGINE_COMMAND, ""));
+        return normalizeEngineCommand(xsp.getString(KEY_ENGINE_COMMAND, ""));
     }
 
     static synchronized long getEngineCommandSeq() {
@@ -278,6 +356,16 @@ final class ModuleSettings {
         return prefs.getBoolean(KEY_FLOAT_INFO_WINDOW_ENABLED, DEFAULT_FLOAT_INFO_WINDOW_ENABLED);
     }
 
+    static synchronized boolean getViewTreeDumpDebugEnabled(SharedPreferences prefs) {
+        if (prefs == null) {
+            return DEFAULT_VIEW_TREE_DUMP_DEBUG_ENABLED;
+        }
+        return prefs.getBoolean(
+                KEY_VIEW_TREE_DUMP_DEBUG_ENABLED,
+                DEFAULT_VIEW_TREE_DUMP_DEBUG_ENABLED
+        );
+    }
+
     static synchronized long getRuntimeRunStartAt(SharedPreferences prefs) {
         if (prefs == null) {
             return 0L;
@@ -317,7 +405,7 @@ final class ModuleSettings {
         if (prefs == null) {
             return "";
         }
-        return safeTrim(prefs.getString(KEY_ENGINE_COMMAND, ""));
+        return normalizeEngineCommand(prefs.getString(KEY_ENGINE_COMMAND, ""));
     }
 
     static synchronized long getEngineCommandSeq(SharedPreferences prefs) {
@@ -392,6 +480,35 @@ final class ModuleSettings {
         ensurePrefsReadable(context);
     }
 
+    static synchronized void setViewTreeDumpDebugEnabled(Context context, boolean enabled) {
+        if (context == null) {
+            return;
+        }
+        SharedPreferences prefs = appPrefs(context);
+        prefs.edit().putBoolean(KEY_VIEW_TREE_DUMP_DEBUG_ENABLED, enabled).commit();
+        ensurePrefsReadable(context);
+    }
+
+    static synchronized void updateA11yPanelSnapshot(
+            Context context,
+            int markerCount,
+            int primaryCount,
+            long updatedAt,
+            String detail
+    ) {
+        if (context == null) {
+            return;
+        }
+        SharedPreferences prefs = appPrefs(context);
+        prefs.edit()
+                .putInt(KEY_A11Y_PANEL_MARKER_COUNT, sanitizeNonNegativeInt(markerCount))
+                .putInt(KEY_A11Y_PANEL_PRIMARY_COUNT, sanitizeNonNegativeInt(primaryCount))
+                .putLong(KEY_A11Y_PANEL_UPDATED_AT, Math.max(0L, updatedAt))
+                .putString(KEY_A11Y_PANEL_DETAIL, safeTrim(detail))
+                .commit();
+        ensurePrefsReadable(context);
+    }
+
     static synchronized void setCycleLimitDialogState(
             Context context,
             boolean visible,
@@ -414,8 +531,9 @@ final class ModuleSettings {
         }
         SharedPreferences prefs = appPrefs(context);
         long nextSeq = prefs.getLong(KEY_ENGINE_COMMAND_SEQ, 0L) + 1L;
+        String safeCommand = normalizeEngineCommand(command);
         prefs.edit()
-                .putString(KEY_ENGINE_COMMAND, safeTrim(command))
+                .putString(KEY_ENGINE_COMMAND, safeCommand)
                 .putString(KEY_ENGINE_STATUS, status.name())
                 .putLong(KEY_ENGINE_COMMAND_SEQ, nextSeq)
                 .commit();
@@ -446,6 +564,7 @@ final class ModuleSettings {
         }
         long finalSeq = seq > 0L ? seq : storedSeq;
         String cmd = safeTrim(command);
+        cmd = normalizeEngineCommand(cmd);
         if (cmd.length() == 0) {
             cmd = commandForStatus(status);
         }
@@ -533,9 +652,6 @@ final class ModuleSettings {
         if (status == EngineStatus.RUNNING) {
             return ENGINE_CMD_RUN;
         }
-        if (status == EngineStatus.PAUSED) {
-            return ENGINE_CMD_PAUSE;
-        }
         return ENGINE_CMD_STOP;
     }
 
@@ -571,6 +687,24 @@ final class ModuleSettings {
         }
         if (!prefs.contains(KEY_FLOAT_INFO_WINDOW_ENABLED)) {
             editor.putBoolean(KEY_FLOAT_INFO_WINDOW_ENABLED, DEFAULT_FLOAT_INFO_WINDOW_ENABLED);
+        }
+        if (!prefs.contains(KEY_VIEW_TREE_DUMP_DEBUG_ENABLED)) {
+            editor.putBoolean(
+                    KEY_VIEW_TREE_DUMP_DEBUG_ENABLED,
+                    DEFAULT_VIEW_TREE_DUMP_DEBUG_ENABLED
+            );
+        }
+        if (!prefs.contains(KEY_A11Y_PANEL_MARKER_COUNT)) {
+            editor.putInt(KEY_A11Y_PANEL_MARKER_COUNT, DEFAULT_A11Y_PANEL_MARKER_COUNT);
+        }
+        if (!prefs.contains(KEY_A11Y_PANEL_PRIMARY_COUNT)) {
+            editor.putInt(KEY_A11Y_PANEL_PRIMARY_COUNT, DEFAULT_A11Y_PANEL_PRIMARY_COUNT);
+        }
+        if (!prefs.contains(KEY_A11Y_PANEL_UPDATED_AT)) {
+            editor.putLong(KEY_A11Y_PANEL_UPDATED_AT, DEFAULT_A11Y_PANEL_UPDATED_AT);
+        }
+        if (!prefs.contains(KEY_A11Y_PANEL_DETAIL)) {
+            editor.putString(KEY_A11Y_PANEL_DETAIL, DEFAULT_A11Y_PANEL_DETAIL);
         }
         if (!prefs.contains(KEY_RUNTIME_RUN_START_AT)) {
             editor.putLong(KEY_RUNTIME_RUN_START_AT, 0L);
@@ -622,9 +756,6 @@ final class ModuleSettings {
         if (EngineStatus.RUNNING.name().equals(normalized)) {
             return EngineStatus.RUNNING;
         }
-        if (EngineStatus.PAUSED.name().equals(normalized)) {
-            return EngineStatus.PAUSED;
-        }
         return EngineStatus.STOPPED;
     }
 
@@ -635,13 +766,20 @@ final class ModuleSettings {
         return s.trim();
     }
 
+    private static String normalizeEngineCommand(String command) {
+        String normalized = safeTrim(command).toUpperCase();
+        if (ENGINE_CMD_RUN.equals(normalized)) {
+            return ENGINE_CMD_RUN;
+        }
+        return ENGINE_CMD_STOP;
+    }
+
     private static int sanitizeNonNegativeInt(int value) {
         return Math.max(0, value);
     }
 
     enum EngineStatus {
         RUNNING,
-        PAUSED,
         STOPPED
     }
 }

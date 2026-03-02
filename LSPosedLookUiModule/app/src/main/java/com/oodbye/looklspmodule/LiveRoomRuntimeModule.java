@@ -177,24 +177,36 @@ final class LiveRoomRuntimeModule {
         bridge.markLiveRoomEntered(liveRoomTitle);
         bridge.log("直播间校验通过，开始执行直播间任务。liveTitle=" + liveRoomTitle
                 + " candidates=" + titleCandidates);
-        long taskWaitMs = LiveRoomTaskScriptRunner.runLiveRoomEnterTask(activity);
-        bridge.markLiveRoomTaskFinished();
-        long backDelayMs = Math.max(UiComponentConfig.LIVE_ROOM_SCRIPT_BACK_DELAY_MS, taskWaitMs);
-        bridge.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                if (!bridge.isEngineRunning()) {
-                    return;
+        LiveRoomTaskScriptRunner.runLiveRoomEnterTask(
+                activity,
+                new LiveRoomTaskScriptRunner.TaskFinishListener() {
+                    @Override
+                    public void onTaskFinished(final String reason) {
+                        bridge.markLiveRoomTaskFinished();
+                        if (!bridge.isEngineRunning()) {
+                            bridge.log("直播间任务完成回调已收到，但引擎非运行态，跳过自动返回。reason="
+                                    + reason);
+                            return;
+                        }
+                        bridge.postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (!bridge.isEngineRunning()) {
+                                    return;
+                                }
+                                try {
+                                    bridge.onBackPressed();
+                                    bridge.markLiveRoomReturned(System.currentTimeMillis());
+                                    bridge.log("直播间任务完成，执行返回退出直播间。reason="
+                                            + (TextUtils.isEmpty(reason) ? "unknown" : reason.trim()));
+                                } catch (Throwable e) {
+                                    bridge.log("直播间返回失败: " + e);
+                                }
+                            }
+                        }, UiComponentConfig.LIVE_ROOM_SCRIPT_BACK_DELAY_MS);
+                    }
                 }
-                try {
-                    bridge.onBackPressed();
-                    bridge.markLiveRoomReturned(System.currentTimeMillis());
-                    bridge.log("直播间任务完成，执行返回退出直播间");
-                } catch (Throwable e) {
-                    bridge.log("直播间返回失败: " + e);
-                }
-            }
-        }, backDelayMs);
+        );
         return true;
     }
 

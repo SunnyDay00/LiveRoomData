@@ -8,6 +8,7 @@ import android.content.IntentFilter;
 import android.graphics.Rect;
 import android.os.Build;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.text.TextUtils;
@@ -17,12 +18,17 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.text.SimpleDateFormat;
 import java.util.Set;
 import java.util.WeakHashMap;
 
@@ -37,6 +43,12 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 public class LookHookEntry implements IXposedHookLoadPackage {
     private static final String TAG = "[LOOKLspModule]";
     private static final String LOGCAT_TAG = "LOOKLspModule";
+    private static final Object VIEW_DUMP_LOCK = new Object();
+    private static final Object A11Y_PANEL_CLICK_LOCK = new Object();
+    private static final SimpleDateFormat VIEW_DUMP_FILE_TS_FORMAT =
+            new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US);
+    private static final SimpleDateFormat VIEW_DUMP_LOG_TS_FORMAT =
+            new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US);
     private static final Object LOCK = new Object();
     private static final Object FLOW_STATE_LOCK = new Object();
     private static final Map<Activity, UiSession> SESSIONS = new WeakHashMap<Activity, UiSession>();
@@ -51,10 +63,20 @@ public class LookHookEntry implements IXposedHookLoadPackage {
     private static long sRealtimeCommandSeq = -1L;
     private static int sRealtimeTogetherCycleLimit = -1;
     private static int sRealtimeTogetherCycleWaitSeconds = -1;
+    private static long sA11yPanelClickRequestSeq = 0L;
+    private static final Map<Long, A11yPanelClickResult> sPendingA11yPanelClickResults =
+            new LinkedHashMap<Long, A11yPanelClickResult>();
+    private static HandlerThread sA11yPanelClickResultThread;
+    private static Handler sA11yPanelClickResultHandler;
+    private static int sRealtimeA11yPanelMarkerCount = 0;
+    private static int sRealtimeA11yPanelPrimaryCount = 0;
+    private static long sRealtimeA11yPanelUpdatedAt = 0L;
+    private static String sRealtimeA11yPanelDetail = "";
     private static boolean sHookInstalled = false;
     private static boolean sAwaitingLiveRoomScript = false;
     private static long sLastCardClickAt = 0L;
     private static long sLastLiveRoomReturnAt = 0L;
+    private static boolean sPendingLiveRoomReturnCooldown = false;
     private static long sLastFloatSyncRequestAt = 0L;
     private static boolean sAutoRunConsumedForProcess = false;
     private static long sRuntimeRunStartedAt = 0L;
@@ -126,14 +148,31 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             if (sCommandReceiverRegistered) {
                 return;
             }
-            IntentFilter filter = new IntentFilter(ModuleSettings.ACTION_ENGINE_COMMAND);
+            IntentFilter filter = new IntentFilter();
+            filter.addAction(ModuleSettings.ACTION_ENGINE_COMMAND);
+            filter.addAction(ModuleSettings.ACTION_DEBUG_COMMAND);
+            filter.addAction(ModuleSettings.ACTION_A11Y_PANEL_SNAPSHOT);
+            filter.addAction(ModuleSettings.ACTION_A11Y_PANEL_CLICK_RESULT);
             sCommandReceiver = new BroadcastReceiver() {
                 @Override
                 public void onReceive(Context context, Intent intent) {
                     if (intent == null) {
                         return;
                     }
-                    if (!ModuleSettings.ACTION_ENGINE_COMMAND.equals(intent.getAction())) {
+                    String action = safeTrimStatic(intent.getAction());
+                    if (ModuleSettings.ACTION_A11Y_PANEL_CLICK_RESULT.equals(action)) {
+                        handleA11yPanelClickResultIntent(intent);
+                        return;
+                    }
+                    if (ModuleSettings.ACTION_A11Y_PANEL_SNAPSHOT.equals(action)) {
+                        handleA11yPanelSnapshotIntent(intent);
+                        return;
+                    }
+                    if (ModuleSettings.ACTION_DEBUG_COMMAND.equals(action)) {
+                        handleDebugCommandIntent(intent);
+                        return;
+                    }
+                    if (!ModuleSettings.ACTION_ENGINE_COMMAND.equals(action)) {
                         return;
                     }
                     String command = safeTrimStatic(intent.getStringExtra(ModuleSettings.EXTRA_ENGINE_COMMAND));
@@ -208,6 +247,118 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                 session.start();
             }
         });
+    }
+
+    private void handleDebugCommandIntent(Intent intent) {
+        if (intent == null) {
+            return;
+        }
+        String command = safeTrimStatic(intent.getStringExtra(ModuleSettings.EXTRA_DEBUG_COMMAND));
+        String trigger = safeTrimStatic(intent.getStringExtra(ModuleSettings.EXTRA_DEBUG_TRIGGER));
+        log("receive debug command: cmd=" + command + " trigger=" + trigger);
+        if (!ModuleSettings.DEBUG_CMD_EXPORT_ACTIVITY_VIEW_TREE.equals(command)) {
+            return;
+        }
+        UiSession session = pickSessionForManualDump();
+        if (session == null) {
+            log("手动导出Activity View树失败：未找到可用Activity。trigger=" + trigger);
+            return;
+        }
+        session.requestManualViewTreeExport(trigger);
+    }
+
+    private void handleA11yPanelSnapshotIntent(Intent intent) {
+        if (intent == null) {
+            return;
+        }
+        int markerCount = intent.getIntExtra(
+                ModuleSettings.EXTRA_A11Y_PANEL_MARKER_COUNT,
+                0
+        );
+        int primaryCount = intent.getIntExtra(
+                ModuleSettings.EXTRA_A11Y_PANEL_PRIMARY_COUNT,
+                0
+        );
+        long updatedAt = intent.getLongExtra(
+                ModuleSettings.EXTRA_A11Y_PANEL_UPDATED_AT,
+                0L
+        );
+        String detail = safeTrimStatic(
+                intent.getStringExtra(ModuleSettings.EXTRA_A11Y_PANEL_DETAIL)
+        );
+        synchronized (FLOW_STATE_LOCK) {
+            sRealtimeA11yPanelMarkerCount = Math.max(0, markerCount);
+            sRealtimeA11yPanelPrimaryCount = Math.max(0, primaryCount);
+            sRealtimeA11yPanelUpdatedAt = Math.max(0L, updatedAt);
+            sRealtimeA11yPanelDetail = detail;
+        }
+    }
+
+    private void handleA11yPanelClickResultIntent(Intent intent) {
+        if (intent == null) {
+            return;
+        }
+        long requestId = intent.getLongExtra(
+                ModuleSettings.EXTRA_A11Y_PANEL_CLICK_REQUEST_ID,
+                -1L
+        );
+        if (requestId <= 0L) {
+            return;
+        }
+        boolean success = intent.getBooleanExtra(
+                ModuleSettings.EXTRA_A11Y_PANEL_CLICK_SUCCESS,
+                false
+        );
+        String detail = safeTrimStatic(
+                intent.getStringExtra(ModuleSettings.EXTRA_A11Y_PANEL_CLICK_DETAIL)
+        );
+        synchronized (A11Y_PANEL_CLICK_LOCK) {
+            sPendingA11yPanelClickResults.put(
+                    requestId,
+                    new A11yPanelClickResult(success, detail)
+            );
+            while (sPendingA11yPanelClickResults.size() > 64) {
+                Long oldest = sPendingA11yPanelClickResults.keySet().iterator().next();
+                sPendingA11yPanelClickResults.remove(oldest);
+            }
+            A11Y_PANEL_CLICK_LOCK.notifyAll();
+        }
+    }
+
+    private UiSession pickSessionForManualDump() {
+        synchronized (LOCK) {
+            UiSession fallback = null;
+            for (Map.Entry<Activity, UiSession> entry : SESSIONS.entrySet()) {
+                Activity activity = entry.getKey();
+                UiSession session = entry.getValue();
+                if (activity == null || session == null) {
+                    continue;
+                }
+                if (!isActivityUsableForManualDump(activity)) {
+                    continue;
+                }
+                if (activity.hasWindowFocus()) {
+                    return session;
+                }
+                if (fallback == null) {
+                    fallback = session;
+                }
+            }
+            return fallback;
+        }
+    }
+
+    private boolean isActivityUsableForManualDump(Activity activity) {
+        if (activity == null) {
+            return false;
+        }
+        if (activity.isFinishing()) {
+            return false;
+        }
+        if (Build.VERSION.SDK_INT >= 17 && activity.isDestroyed()) {
+            return false;
+        }
+        return true;
     }
 
     private void requestModuleFloatServiceSync(Context appContext, Activity activity) {
@@ -650,6 +801,9 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                     togetherPageEnteredAt = now;
                     log("已进入一起聊界面，识别成功");
                 }
+                if (consumePendingLiveRoomReturnOnTogether(now)) {
+                    log("一起聊页：检测到直播间已返回，开始1秒冷却计时");
+                }
                 if (handlePendingLiveRoomEntryInTogether(now)) {
                     return;
                 }
@@ -778,8 +932,15 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                 logFlow("一起聊页：等待直播间任务执行");
                 return;
             }
-            if (now - getLastLiveRoomReturnAt() < UiComponentConfig.LIVE_ROOM_RETURN_TOGETHER_WAIT_MS) {
-                logFlow("一起聊页：直播间返回后等待1秒再点击下一卡片");
+            long lastReturnAt = getLastLiveRoomReturnAt();
+            long togetherEnteredAt = Math.max(0L, togetherPageEnteredAt);
+            long cooldownStartAt = Math.max(lastReturnAt, togetherEnteredAt);
+            long returnWaitMs = Math.max(0L, UiComponentConfig.LIVE_ROOM_RETURN_TOGETHER_WAIT_MS);
+            if (cooldownStartAt > 0L && now - cooldownStartAt < returnWaitMs) {
+                long remainingMs = Math.max(0L, returnWaitMs - (now - cooldownStartAt));
+                long waitSeconds = Math.max(1L, (returnWaitMs + 999L) / 1000L);
+                logFlow("一起聊页：直播间返回后等待" + waitSeconds
+                        + "秒再点击下一卡片，remaining=" + remainingMs + "ms");
                 return;
             }
             if (now - getLastCardClickAt() < UiComponentConfig.CARD_CLICK_COOLDOWN_MS) {
@@ -822,6 +983,9 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             togetherNoNewSameSignatureStreak = 0;
             togetherLastNoNewSignature = "";
             ClickResult clickResult = clickTogetherCard(pick.next);
+            long sinceReturnCooldownMs = cooldownStartAt <= 0L
+                    ? -1L
+                    : Math.max(0L, now - cooldownStartAt);
             if (clickResult.success) {
                 markCardClicked(pick.next.key, now, pick.next.titleCandidates);
                 flowState = RunFlowState.WAIT_LIVE_ROOM;
@@ -830,7 +994,8 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                         + " titleCandidates=" + pick.next.titleCandidates
                         + " visible=" + pick.visibleTotal
                         + " processed=" + pick.processedCount
-                        + " unprocessed=" + pick.unprocessedCount);
+                        + " unprocessed=" + pick.unprocessedCount
+                        + " sinceReturnCooldownMs=" + sinceReturnCooldownMs);
             } else {
                 logFlow("直播卡片点击失败，等待重试 key=" + pick.next.key + " reason=" + clickResult.target);
             }
@@ -1354,6 +1519,50 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             } catch (Throwable ignore) {
                 return null;
             }
+        }
+
+        void requestManualViewTreeExport(final String trigger) {
+            if (!isActivityUsableForDebugExport()) {
+                log("手动导出Activity View树失败：Activity不可用。trigger=" + safeTrim(trigger));
+                return;
+            }
+            try {
+                activity.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        exportCurrentActivityViewTree(trigger);
+                    }
+                });
+            } catch (Throwable e) {
+                log("手动导出Activity View树失败：切主线程异常 " + e + " trigger=" + safeTrim(trigger));
+            }
+        }
+
+        private boolean isActivityUsableForDebugExport() {
+            if (activity == null || activity.isFinishing()) {
+                return false;
+            }
+            if (Build.VERSION.SDK_INT >= 17 && activity.isDestroyed()) {
+                return false;
+            }
+            return true;
+        }
+
+        private void exportCurrentActivityViewTree(String trigger) {
+            if (!isActivityUsableForDebugExport()) {
+                log("手动导出Activity View树失败：Activity已销毁。trigger=" + safeTrim(trigger));
+                return;
+            }
+            View root = getRootView();
+            String content = buildManualViewTreeDumpContent(activity, root, trigger);
+            File file = writeManualViewTreeDumpFile(activity.getApplicationContext(), content);
+            if (file == null) {
+                log("手动导出Activity View树失败：文件写入失败。trigger=" + safeTrim(trigger));
+                return;
+            }
+            log("手动导出Activity View树成功：file=" + file.getAbsolutePath()
+                    + " trigger=" + safeTrim(trigger)
+                    + " activity=" + activity.getClass().getName());
         }
 
         private boolean hasAllNodes(View root, java.util.List<UiComponentConfig.UiNodeSpec> specs) {
@@ -2096,6 +2305,250 @@ public class LookHookEntry implements IXposedHookLoadPackage {
         }
     }
 
+    private static String buildManualViewTreeDumpContent(Activity activity, View root, String trigger) {
+        StringBuilder sb = new StringBuilder(96 * 1024);
+        sb.append("timestamp=").append(safeDumpTimestamp()).append('\n');
+        sb.append("trigger=").append(safeTrimStatic(trigger)).append('\n');
+        sb.append("package=").append(activity == null ? "" : safeTrimStatic(activity.getPackageName())).append('\n');
+        sb.append("activity=").append(activity == null ? "" : safeTrimStatic(activity.getClass().getName())).append('\n');
+        sb.append("engineStatus=").append(ModuleSettings.getEngineStatus().name()).append('\n');
+        if (root == null) {
+            sb.append("root=null\n");
+            return sb.toString();
+        }
+        sb.append("maxNodes=").append(UiComponentConfig.MANUAL_VIEW_TREE_EXPORT_MAX_NODES).append('\n');
+        sb.append("maxDepth=").append(UiComponentConfig.MANUAL_VIEW_TREE_EXPORT_MAX_DEPTH).append('\n');
+        sb.append("---- view_tree_begin ----\n");
+        ArrayDeque<DumpNode> queue = new ArrayDeque<DumpNode>();
+        queue.offer(new DumpNode(root, 0));
+        int dumped = 0;
+        while (!queue.isEmpty() && dumped < UiComponentConfig.MANUAL_VIEW_TREE_EXPORT_MAX_NODES) {
+            DumpNode current = queue.poll();
+            if (current == null || current.view == null) {
+                continue;
+            }
+            dumped++;
+            sb.append(String.format(
+                    Locale.US,
+                    "#%04d d=%02d %s%s\n",
+                    dumped,
+                    current.depth,
+                    buildIndent(current.depth),
+                    formatDumpView(current.view)
+            ));
+            if (current.depth >= UiComponentConfig.MANUAL_VIEW_TREE_EXPORT_MAX_DEPTH) {
+                continue;
+            }
+            if (!(current.view instanceof ViewGroup)) {
+                continue;
+            }
+            ViewGroup group = (ViewGroup) current.view;
+            int childCount = group.getChildCount();
+            for (int i = 0; i < childCount; i++) {
+                View child = group.getChildAt(i);
+                if (child != null) {
+                    queue.offer(new DumpNode(child, current.depth + 1));
+                }
+            }
+        }
+        if (!queue.isEmpty()) {
+            sb.append("truncated=true dumped=").append(dumped).append(" remaining=").append(queue.size()).append('\n');
+        } else {
+            sb.append("truncated=false dumped=").append(dumped).append('\n');
+        }
+        sb.append("---- view_tree_end ----\n");
+        return sb.toString();
+    }
+
+    private static File writeManualViewTreeDumpFile(Context context, String content) {
+        String safeContent = content == null ? "" : content;
+        File dir = resolveManualViewTreeDumpDir(context);
+        if (dir == null) {
+            return null;
+        }
+        String fileName = UiComponentConfig.MANUAL_VIEW_TREE_EXPORT_FILE_PREFIX
+                + "_" + safeDumpFileTimestamp()
+                + ".txt";
+        File outFile = new File(dir, fileName);
+        synchronized (VIEW_DUMP_LOCK) {
+            FileOutputStream fos = null;
+            try {
+                fos = new FileOutputStream(outFile, false);
+                fos.write(safeContent.getBytes("UTF-8"));
+                fos.flush();
+                return outFile;
+            } catch (Throwable e) {
+                return null;
+            } finally {
+                if (fos != null) {
+                    try {
+                        fos.close();
+                    } catch (Throwable ignore) {
+                    }
+                }
+            }
+        }
+    }
+
+    private static File resolveManualViewTreeDumpDir(Context context) {
+        File[] candidates = new File[] {
+                new File(UiComponentConfig.MANUAL_VIEW_TREE_EXPORT_DIR),
+                buildExternalDumpDir(context),
+                buildInternalDumpDir(context)
+        };
+        for (File candidate : candidates) {
+            if (candidate == null) {
+                continue;
+            }
+            if (ensureWritableDir(candidate)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private static File buildExternalDumpDir(Context context) {
+        if (context == null) {
+            return null;
+        }
+        try {
+            File base = context.getExternalFilesDir(null);
+            if (base == null) {
+                return null;
+            }
+            return new File(base, UiComponentConfig.MANUAL_VIEW_TREE_EXPORT_FALLBACK_DIR_NAME);
+        } catch (Throwable ignore) {
+            return null;
+        }
+    }
+
+    private static File buildInternalDumpDir(Context context) {
+        if (context == null) {
+            return null;
+        }
+        try {
+            File base = context.getFilesDir();
+            if (base == null) {
+                return null;
+            }
+            return new File(base, UiComponentConfig.MANUAL_VIEW_TREE_EXPORT_FALLBACK_DIR_NAME);
+        } catch (Throwable ignore) {
+            return null;
+        }
+    }
+
+    private static boolean ensureWritableDir(File dir) {
+        if (dir == null) {
+            return false;
+        }
+        try {
+            if (dir.exists()) {
+                if (!dir.isDirectory()) {
+                    return false;
+                }
+            } else if (!dir.mkdirs()) {
+                return false;
+            }
+            File probe = new File(dir, ".probe");
+            FileOutputStream fos = new FileOutputStream(probe, false);
+            fos.write('1');
+            fos.flush();
+            fos.close();
+            if (probe.exists()) {
+                probe.delete();
+            }
+            return true;
+        } catch (Throwable ignore) {
+            return false;
+        }
+    }
+
+    private static String formatDumpView(View view) {
+        if (view == null) {
+            return "view=null";
+        }
+        String className = safeTrimStatic(view.getClass().getName());
+        String idName = resolveViewResourceName(view);
+        String text = "";
+        if (view instanceof TextView) {
+            text = safeDumpText(String.valueOf(((TextView) view).getText()));
+        }
+        String desc = safeDumpText(String.valueOf(view.getContentDescription()));
+        Rect rect = new Rect();
+        boolean hasRect = false;
+        try {
+            hasRect = view.getGlobalVisibleRect(rect);
+        } catch (Throwable ignore) {
+            hasRect = false;
+        }
+        String bounds = hasRect
+                ? ("[" + rect.left + "," + rect.top + "][" + rect.right + "," + rect.bottom + "]")
+                : "none";
+        return "class=" + className
+                + " id=\"" + safeDumpText(idName) + "\""
+                + " text=\"" + text + "\""
+                + " desc=\"" + desc + "\""
+                + " clickable=" + view.isClickable()
+                + " enabled=" + view.isEnabled()
+                + " selected=" + view.isSelected()
+                + " shown=" + view.isShown()
+                + " alpha=" + view.getAlpha()
+                + " bounds=" + bounds;
+    }
+
+    private static String resolveViewResourceName(View view) {
+        if (view == null || view.getId() == View.NO_ID) {
+            return "";
+        }
+        try {
+            return safeTrimStatic(view.getResources().getResourceName(view.getId()));
+        } catch (Throwable ignore) {
+            return "";
+        }
+    }
+
+    private static String safeDumpText(String value) {
+        String normalized = safeTrimStatic(value)
+                .replace('\n', ' ')
+                .replace('\r', ' ')
+                .replace('\t', ' ');
+        if (normalized.length() > UiComponentConfig.MANUAL_VIEW_TREE_EXPORT_MAX_TEXT_LENGTH) {
+            normalized = normalized.substring(0, UiComponentConfig.MANUAL_VIEW_TREE_EXPORT_MAX_TEXT_LENGTH) + "...";
+        }
+        return normalized;
+    }
+
+    private static String buildIndent(int depth) {
+        int safeDepth = Math.max(0, depth);
+        StringBuilder sb = new StringBuilder(safeDepth * 2);
+        for (int i = 0; i < safeDepth; i++) {
+            sb.append("  ");
+        }
+        return sb.toString();
+    }
+
+    private static String safeDumpFileTimestamp() {
+        synchronized (VIEW_DUMP_FILE_TS_FORMAT) {
+            return VIEW_DUMP_FILE_TS_FORMAT.format(new Date());
+        }
+    }
+
+    private static String safeDumpTimestamp() {
+        synchronized (VIEW_DUMP_LOG_TS_FORMAT) {
+            return VIEW_DUMP_LOG_TS_FORMAT.format(new Date());
+        }
+    }
+
+    private static final class DumpNode {
+        final View view;
+        final int depth;
+
+        DumpNode(View view, int depth) {
+            this.view = view;
+            this.depth = Math.max(0, depth);
+        }
+    }
+
     private static void resetGlobalCardFlowState() {
         synchronized (FLOW_STATE_LOCK) {
             PROCESSED_CARD_KEYS.clear();
@@ -2103,6 +2556,7 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             sAwaitingLiveRoomScript = false;
             sLastCardClickAt = 0L;
             sLastLiveRoomReturnAt = 0L;
+            sPendingLiveRoomReturnCooldown = false;
         }
     }
 
@@ -2137,6 +2591,9 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             int runtimeEntered
     ) {
         synchronized (FLOW_STATE_LOCK) {
+            if (seq > 0L && sRealtimeCommandSeq > 0L && seq < sRealtimeCommandSeq) {
+                return;
+            }
             sRealtimeCommand = safeTrimStatic(command);
             sRealtimeStatus = status;
             sRealtimeCommandSeq = seq;
@@ -2164,9 +2621,14 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             }
             if (status != ModuleSettings.EngineStatus.RUNNING) {
                 sAwaitingLiveRoomScript = false;
+                sPendingLiveRoomReturnCooldown = false;
                 sRuntimeRunStartedAt = 0L;
                 sRuntimeCycleCompletedCount = 0;
                 sRuntimeCycleEnteredCount = 0;
+                sRealtimeA11yPanelMarkerCount = 0;
+                sRealtimeA11yPanelPrimaryCount = 0;
+                sRealtimeA11yPanelUpdatedAt = 0L;
+                sRealtimeA11yPanelDetail = "";
             }
         }
     }
@@ -2236,6 +2698,218 @@ public class LookHookEntry implements IXposedHookLoadPackage {
         }
     }
 
+    static boolean isEngineRunningForTaskRunner() {
+        ModuleSettings.EngineStatus realtime;
+        synchronized (FLOW_STATE_LOCK) {
+            realtime = sRealtimeStatus;
+        }
+        if (realtime != null) {
+            return realtime == ModuleSettings.EngineStatus.RUNNING;
+        }
+        return ModuleSettings.getEngineStatus() == ModuleSettings.EngineStatus.RUNNING;
+    }
+
+    static int getRealtimeA11yPanelMarkerCountForTaskRunner() {
+        synchronized (FLOW_STATE_LOCK) {
+            return Math.max(0, sRealtimeA11yPanelMarkerCount);
+        }
+    }
+
+    static int getRealtimeA11yPanelPrimaryCountForTaskRunner() {
+        synchronized (FLOW_STATE_LOCK) {
+            return Math.max(0, sRealtimeA11yPanelPrimaryCount);
+        }
+    }
+
+    static long getRealtimeA11yPanelUpdatedAtForTaskRunner() {
+        synchronized (FLOW_STATE_LOCK) {
+            return Math.max(0L, sRealtimeA11yPanelUpdatedAt);
+        }
+    }
+
+    static String getRealtimeA11yPanelDetailForTaskRunner() {
+        synchronized (FLOW_STATE_LOCK) {
+            return safeTrimStatic(sRealtimeA11yPanelDetail);
+        }
+    }
+
+    static long dispatchA11yPanelClickRequestForTaskRunner(Activity activity, String target) {
+        if (activity == null) {
+            return -1L;
+        }
+        Context appContext;
+        try {
+            appContext = activity.getApplicationContext();
+        } catch (Throwable ignore) {
+            appContext = null;
+        }
+        if (appContext == null) {
+            return -1L;
+        }
+        String safeTarget = safeTrimStatic(target);
+        if (TextUtils.isEmpty(safeTarget)) {
+            return -1L;
+        }
+        final long requestId;
+        synchronized (A11Y_PANEL_CLICK_LOCK) {
+            sA11yPanelClickRequestSeq = Math.max(0L, sA11yPanelClickRequestSeq) + 1L;
+            requestId = sA11yPanelClickRequestSeq;
+            sPendingA11yPanelClickResults.remove(requestId);
+        }
+        try {
+            Intent intent = new Intent(ModuleSettings.ACTION_A11Y_PANEL_CLICK_REQUEST);
+            intent.setPackage(ModuleSettings.MODULE_PACKAGE);
+            intent.putExtra(ModuleSettings.EXTRA_A11Y_PANEL_CLICK_REQUEST_ID, requestId);
+            intent.putExtra(ModuleSettings.EXTRA_A11Y_PANEL_CLICK_TARGET, safeTarget);
+            appContext.sendBroadcast(intent);
+            return requestId;
+        } catch (Throwable ignore) {
+            return -1L;
+        }
+    }
+
+    static A11yPanelClickResult requestA11yPanelClickForTaskRunner(
+            Activity activity,
+            String target,
+            long timeoutMs
+    ) {
+        if (activity == null) {
+            return new A11yPanelClickResult(false, "activity_null");
+        }
+        Context appContext;
+        try {
+            appContext = activity.getApplicationContext();
+        } catch (Throwable ignore) {
+            appContext = null;
+        }
+        if (appContext == null) {
+            return new A11yPanelClickResult(false, "app_context_null");
+        }
+        String safeTarget = safeTrimStatic(target);
+        if (TextUtils.isEmpty(safeTarget)) {
+            return new A11yPanelClickResult(false, "target_empty");
+        }
+        final long requestId;
+        synchronized (A11Y_PANEL_CLICK_LOCK) {
+            sA11yPanelClickRequestSeq = Math.max(0L, sA11yPanelClickRequestSeq) + 1L;
+            requestId = sA11yPanelClickRequestSeq;
+            sPendingA11yPanelClickResults.remove(requestId);
+        }
+        final Object waitLock = new Object();
+        final A11yPanelClickResult[] holder = new A11yPanelClickResult[1];
+        final BroadcastReceiver tempReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (intent == null) {
+                    return;
+                }
+                String action = safeTrimStatic(intent.getAction());
+                if (!ModuleSettings.ACTION_A11Y_PANEL_CLICK_RESULT.equals(action)) {
+                    return;
+                }
+                long callbackRequestId = intent.getLongExtra(
+                        ModuleSettings.EXTRA_A11Y_PANEL_CLICK_REQUEST_ID,
+                        -1L
+                );
+                if (callbackRequestId != requestId) {
+                    return;
+                }
+                boolean success = intent.getBooleanExtra(
+                        ModuleSettings.EXTRA_A11Y_PANEL_CLICK_SUCCESS,
+                        false
+                );
+                String detail = safeTrimStatic(
+                        intent.getStringExtra(ModuleSettings.EXTRA_A11Y_PANEL_CLICK_DETAIL)
+                );
+                synchronized (waitLock) {
+                    holder[0] = new A11yPanelClickResult(success, detail);
+                    waitLock.notifyAll();
+                }
+            }
+        };
+        boolean receiverRegistered = false;
+        try {
+            IntentFilter filter = new IntentFilter(ModuleSettings.ACTION_A11Y_PANEL_CLICK_RESULT);
+            if (Build.VERSION.SDK_INT >= 33) {
+                appContext.registerReceiver(
+                        tempReceiver,
+                        filter,
+                        null,
+                        getA11yPanelClickResultHandler(),
+                        Context.RECEIVER_EXPORTED
+                );
+            } else {
+                appContext.registerReceiver(
+                        tempReceiver,
+                        filter,
+                        null,
+                        getA11yPanelClickResultHandler()
+                );
+            }
+            receiverRegistered = true;
+            Intent intent = new Intent(ModuleSettings.ACTION_A11Y_PANEL_CLICK_REQUEST);
+            intent.setPackage(ModuleSettings.MODULE_PACKAGE);
+            intent.putExtra(ModuleSettings.EXTRA_A11Y_PANEL_CLICK_REQUEST_ID, requestId);
+            intent.putExtra(ModuleSettings.EXTRA_A11Y_PANEL_CLICK_TARGET, safeTarget);
+            appContext.sendBroadcast(intent);
+        } catch (Throwable e) {
+            if (receiverRegistered) {
+                try {
+                    appContext.unregisterReceiver(tempReceiver);
+                } catch (Throwable ignore) {
+                }
+            }
+            return new A11yPanelClickResult(false, "send_request_failed:" + safeTrimStatic(e.toString()));
+        }
+        long safeTimeoutMs = Math.max(120L, timeoutMs);
+        long deadline = SystemClock.uptimeMillis() + safeTimeoutMs;
+        try {
+            synchronized (waitLock) {
+                while (holder[0] == null) {
+                    long remain = deadline - SystemClock.uptimeMillis();
+                    if (remain <= 0L) {
+                        break;
+                    }
+                    try {
+                        waitLock.wait(remain);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+        } finally {
+            try {
+                appContext.unregisterReceiver(tempReceiver);
+            } catch (Throwable ignore) {
+            }
+        }
+        if (holder[0] != null) {
+            return holder[0];
+        }
+        return new A11yPanelClickResult(false, "a11y_click_timeout");
+    }
+
+    private static Handler getA11yPanelClickResultHandler() {
+        synchronized (A11Y_PANEL_CLICK_LOCK) {
+            if (sA11yPanelClickResultHandler != null) {
+                return sA11yPanelClickResultHandler;
+            }
+            try {
+                sA11yPanelClickResultThread = new HandlerThread("look_a11y_panel_click_result");
+                sA11yPanelClickResultThread.start();
+                sA11yPanelClickResultHandler = new Handler(
+                        sA11yPanelClickResultThread.getLooper()
+                );
+                return sA11yPanelClickResultHandler;
+            } catch (Throwable e) {
+                sA11yPanelClickResultThread = null;
+                sA11yPanelClickResultHandler = new Handler(Looper.getMainLooper());
+                return sA11yPanelClickResultHandler;
+            }
+        }
+    }
+
     private static long getRealtimeCommandSeq() {
         synchronized (FLOW_STATE_LOCK) {
             return sRealtimeCommandSeq;
@@ -2265,10 +2939,17 @@ public class LookHookEntry implements IXposedHookLoadPackage {
         if (ModuleSettings.EngineStatus.RUNNING.name().equals(normalized)) {
             return ModuleSettings.EngineStatus.RUNNING;
         }
-        if (ModuleSettings.EngineStatus.PAUSED.name().equals(normalized)) {
-            return ModuleSettings.EngineStatus.PAUSED;
-        }
         return ModuleSettings.EngineStatus.STOPPED;
+    }
+
+    static final class A11yPanelClickResult {
+        final boolean success;
+        final String detail;
+
+        A11yPanelClickResult(boolean success, String detail) {
+            this.success = success;
+            this.detail = safeTrimStatic(detail);
+        }
     }
 
     private static void markCardClicked(String key, long now, List<String> titleCandidates) {
@@ -2297,6 +2978,7 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             }
             sAwaitingLiveRoomScript = true;
             sLastCardClickAt = now;
+            sPendingLiveRoomReturnCooldown = false;
         }
     }
 
@@ -2327,12 +3009,24 @@ public class LookHookEntry implements IXposedHookLoadPackage {
     private static void markLiveRoomReturned(long now) {
         synchronized (FLOW_STATE_LOCK) {
             sLastLiveRoomReturnAt = now;
+            sPendingLiveRoomReturnCooldown = true;
         }
     }
 
     private static long getLastLiveRoomReturnAt() {
         synchronized (FLOW_STATE_LOCK) {
             return sLastLiveRoomReturnAt;
+        }
+    }
+
+    private static boolean consumePendingLiveRoomReturnOnTogether(long now) {
+        synchronized (FLOW_STATE_LOCK) {
+            if (!sPendingLiveRoomReturnCooldown) {
+                return false;
+            }
+            sPendingLiveRoomReturnCooldown = false;
+            sLastLiveRoomReturnAt = Math.max(0L, now);
+            return true;
         }
     }
 

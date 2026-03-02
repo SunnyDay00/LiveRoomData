@@ -18,6 +18,12 @@ final class UiComponentConfig {
     static final String RUN_LOG_FALLBACK_DIR_NAME = "look_lsp_logs";
     static final String RUN_LOG_CURRENT_FILE_NAME = "look_lsp_run_current.log";
     static final String RUN_LOG_PREVIOUS_FILE_NAME = "look_lsp_run_previous.log";
+    static final String MANUAL_VIEW_TREE_EXPORT_DIR = "/sdcard/Android/data/com.oodbye.looklspmodule/files/view_tree_dumps";
+    static final String MANUAL_VIEW_TREE_EXPORT_FALLBACK_DIR_NAME = "look_view_tree_dumps";
+    static final String MANUAL_VIEW_TREE_EXPORT_FILE_PREFIX = "look_activity_view_tree";
+    static final int MANUAL_VIEW_TREE_EXPORT_MAX_NODES = 1200;
+    static final int MANUAL_VIEW_TREE_EXPORT_MAX_DEPTH = 28;
+    static final int MANUAL_VIEW_TREE_EXPORT_MAX_TEXT_LENGTH = 180;
 
     static final long MAIN_LOOP_INTERVAL_MS = 500L;
     static final long AD_SCAN_INTERVAL_MS = 120L;
@@ -39,9 +45,26 @@ final class UiComponentConfig {
     static final long LIVE_ROOM_VERIFY_TIMEOUT_MS = 9000L;
     static final int LIVE_ROOM_VERIFY_MAX_RETRY_COUNT = 18;
     static final long CARD_CLICK_COOLDOWN_MS = 1000L;
-    static final long LIVE_ROOM_RETURN_TOGETHER_WAIT_MS = 1000L;
+    static final long LIVE_ROOM_RETURN_TOGETHER_WAIT_MS = 3000L;
     static final long LIVE_ROOM_ENTER_TASK_WAIT_MS = 5000L;
+    static final long LIVE_ROOM_TASK_VFLIPPER_FIND_RETRY_INTERVAL_MS = 350L;
+    static final long LIVE_ROOM_TASK_VFLIPPER_FIND_TIMEOUT_MS = 0L;
+    static final long LIVE_ROOM_TASK_WAIT_AFTER_VFLIPPER_CLICK_MS = 2000L;
+    static final long LIVE_ROOM_TASK_PANEL_READY_RETRY_INTERVAL_MS = 350L;
+    static final int LIVE_ROOM_TASK_PANEL_READY_MAX_RETRY = 24;
+    static final long LIVE_ROOM_TASK_PANEL_A11Y_SNAPSHOT_STALE_MS = 3500L;
+    static final long LIVE_ROOM_TASK_A11Y_CLICK_RESULT_WAIT_MS = 1200L;
+    static final long LIVE_ROOM_TASK_CONTRIBUTION_WAIT_MS = 5000L;
+    static final long LIVE_ROOM_TASK_CHARM_WAIT_MS = 5000L;
+    static final long LIVE_ROOM_TASK_PANEL_CLOSE_CHECK_DELAY_MS = 500L;
+    static final long LIVE_ROOM_TASK_PANEL_CLOSE_RETRY_INTERVAL_MS = 600L;
+    static final int LIVE_ROOM_TASK_PANEL_CLOSE_MAX_BACK_RETRY = 2;
+    static final int LIVE_ROOM_TASK_PANEL_MARKER_MIN_MATCH_COUNT = 1;
+    static final int LIVE_ROOM_TASK_PANEL_PRIMARY_MIN_MATCH_COUNT = 1;
+    static final long LIVE_ROOM_TASK_MIN_RETURN_DELAY_MS = 13000L;
     static final long LIVE_ROOM_SCRIPT_BACK_DELAY_MS = 500L;
+    static final long A11Y_PANEL_SNAPSHOT_MIN_UPDATE_INTERVAL_MS = 400L;
+    static final long A11Y_PANEL_SNAPSHOT_MAX_WRITE_INTERVAL_MS = 1200L;
     static final long TOUCH_SWIPE_DURATION_MS = 280L;
     static final int TOUCH_SWIPE_MOVE_STEPS = 8;
     static final float TOGETHER_REFRESH_SWIPE_X_RATIO = 0.5f;
@@ -176,6 +199,175 @@ final class UiComponentConfig {
             LIVE_ROOM_CLOSE_BUTTON_NODE
     ));
 
+    static final UiNodeSpec LIVE_ROOM_TASK_VFLIPPER_NODE = new UiNodeSpec(
+            "",
+            "com.netease.play:id/vflipper",
+            "android.widget.ViewFlipper",
+            "com.netease.play",
+            null
+    );
+
+    static final UiNodeSpec LIVE_ROOM_TASK_PANEL_DETECT_BLOCK_NODE = new UiNodeSpec(
+            "",
+            "com.netease.play:id/slidingContainer",
+            "",
+            "com.netease.play",
+            null
+    );
+
+    static final UiNodeSpec LIVE_ROOM_TASK_PANEL_CURRENT_ROOM_NODE = new UiNodeSpec(
+            "当前房间",
+            "",
+            "android.widget.TextView",
+            "",
+            null
+    );
+
+    static final UiNodeSpec LIVE_ROOM_TASK_PANEL_CURRENT_ROOM_DESC_NODE = new UiNodeSpec(
+            "",
+            "",
+            "",
+            "",
+            null,
+            "当前房间"
+    );
+
+    static final UiNodeSpec LIVE_ROOM_TASK_PANEL_CONTRIBUTION_NODE = new UiNodeSpec(
+            "贡献榜",
+            "",
+            "android.widget.TextView",
+            "",
+            null
+    );
+
+    static final UiNodeSpec LIVE_ROOM_TASK_PANEL_CONTRIBUTION_DESC_NODE = new UiNodeSpec(
+            "",
+            "",
+            "",
+            "",
+            null,
+            "贡献榜"
+    );
+
+    static final UiNodeSpec LIVE_ROOM_TASK_PANEL_CHARM_NODE = new UiNodeSpec(
+            "魅力榜",
+            "",
+            "android.widget.TextView",
+            "",
+            null
+    );
+
+    static final UiNodeSpec LIVE_ROOM_TASK_PANEL_CHARM_DESC_NODE = new UiNodeSpec(
+            "",
+            "",
+            "",
+            "",
+            null,
+            "魅力榜"
+    );
+
+    static final UiNodeSpec LIVE_ROOM_TASK_PANEL_NOBILITY_NODE = new UiNodeSpec(
+            "贵族",
+            "",
+            "android.widget.TextView",
+            "",
+            null
+    );
+
+    static final UiNodeSpec LIVE_ROOM_TASK_PANEL_NOBILITY_DESC_NODE = new UiNodeSpec(
+            "",
+            "",
+            "",
+            "",
+            null,
+            "贵族"
+    );
+
+    static final UiNodeSpec LIVE_ROOM_TASK_PANEL_FANS_NODE = new UiNodeSpec(
+            "粉团榜",
+            "",
+            "android.widget.TextView",
+            "",
+            null
+    );
+
+    static final UiNodeSpec LIVE_ROOM_TASK_PANEL_FANS_DESC_NODE = new UiNodeSpec(
+            "",
+            "",
+            "",
+            "",
+            null,
+            "粉团榜"
+    );
+
+    static final UiNodeSpec LIVE_ROOM_TASK_PANEL_ONLINE_NODE = new UiNodeSpec(
+            "在线",
+            "",
+            "android.widget.TextView",
+            "",
+            null
+    );
+
+    static final UiNodeSpec LIVE_ROOM_TASK_PANEL_ONLINE_DESC_NODE = new UiNodeSpec(
+            "",
+            "",
+            "",
+            "",
+            null,
+            "在线"
+    );
+
+    static final List<UiNodeSpec> LIVE_ROOM_TASK_PANEL_MARKER_NODES = Collections.unmodifiableList(Arrays.asList(
+            LIVE_ROOM_TASK_PANEL_CURRENT_ROOM_NODE,
+            LIVE_ROOM_TASK_PANEL_CONTRIBUTION_NODE,
+            LIVE_ROOM_TASK_PANEL_CHARM_NODE,
+            LIVE_ROOM_TASK_PANEL_NOBILITY_NODE,
+            LIVE_ROOM_TASK_PANEL_FANS_NODE,
+            LIVE_ROOM_TASK_PANEL_ONLINE_NODE
+    ));
+
+    static final List<UiNodeSpec> LIVE_ROOM_TASK_PANEL_MARKER_DESC_NODES = Collections.unmodifiableList(Arrays.asList(
+            LIVE_ROOM_TASK_PANEL_CURRENT_ROOM_DESC_NODE,
+            LIVE_ROOM_TASK_PANEL_CONTRIBUTION_DESC_NODE,
+            LIVE_ROOM_TASK_PANEL_CHARM_DESC_NODE,
+            LIVE_ROOM_TASK_PANEL_NOBILITY_DESC_NODE,
+            LIVE_ROOM_TASK_PANEL_FANS_DESC_NODE,
+            LIVE_ROOM_TASK_PANEL_ONLINE_DESC_NODE
+    ));
+
+    // vflipper 面板开启判定：仅使用无障碍树匹配此按钮组（文本 + content-desc 双通道）
+    static final List<UiNodeSpec> LIVE_ROOM_TASK_PANEL_OPEN_A11Y_NODES = Collections.unmodifiableList(Arrays.asList(
+            LIVE_ROOM_TASK_PANEL_CURRENT_ROOM_DESC_NODE,
+            LIVE_ROOM_TASK_PANEL_CONTRIBUTION_DESC_NODE,
+            LIVE_ROOM_TASK_PANEL_CHARM_DESC_NODE,
+            LIVE_ROOM_TASK_PANEL_NOBILITY_DESC_NODE,
+            LIVE_ROOM_TASK_PANEL_FANS_DESC_NODE,
+            LIVE_ROOM_TASK_PANEL_ONLINE_DESC_NODE,
+            LIVE_ROOM_TASK_PANEL_CURRENT_ROOM_NODE,
+            LIVE_ROOM_TASK_PANEL_CONTRIBUTION_NODE,
+            LIVE_ROOM_TASK_PANEL_CHARM_NODE,
+            LIVE_ROOM_TASK_PANEL_NOBILITY_NODE,
+            LIVE_ROOM_TASK_PANEL_FANS_NODE,
+            LIVE_ROOM_TASK_PANEL_ONLINE_NODE
+    ));
+
+    static final List<UiNodeSpec> LIVE_ROOM_TASK_PANEL_OPEN_PRIMARY_NODES = Collections.unmodifiableList(Arrays.asList(
+            LIVE_ROOM_TASK_PANEL_CONTRIBUTION_DESC_NODE,
+            LIVE_ROOM_TASK_PANEL_CHARM_DESC_NODE,
+            LIVE_ROOM_TASK_PANEL_CONTRIBUTION_NODE,
+            LIVE_ROOM_TASK_PANEL_CHARM_NODE
+    ));
+
+    static final List<UiNodeSpec> LIVE_ROOM_TASK_CONTRIBUTION_TAB_CANDIDATE_NODES = Collections.unmodifiableList(Arrays.asList(
+            LIVE_ROOM_TASK_PANEL_CONTRIBUTION_DESC_NODE,
+            LIVE_ROOM_TASK_PANEL_CONTRIBUTION_NODE
+    ));
+
+    static final List<UiNodeSpec> LIVE_ROOM_TASK_CHARM_TAB_CANDIDATE_NODES = Collections.unmodifiableList(Arrays.asList(
+            LIVE_ROOM_TASK_PANEL_CHARM_DESC_NODE,
+            LIVE_ROOM_TASK_PANEL_CHARM_NODE
+    ));
+
     static final List<String> COMMON_CLOSE_ACTIONS = Collections.unmodifiableList(Arrays.asList(
             "关闭",
             "跳过",
@@ -202,13 +394,26 @@ final class UiComponentConfig {
         final String className;
         final String packageName;
         final Boolean selected;
+        final String contentDesc;
 
         UiNodeSpec(String text, String fullResourceId, String className, String packageName, Boolean selected) {
+            this(text, fullResourceId, className, packageName, selected, "");
+        }
+
+        UiNodeSpec(
+                String text,
+                String fullResourceId,
+                String className,
+                String packageName,
+                Boolean selected,
+                String contentDesc
+        ) {
             this.text = text;
             this.fullResourceId = fullResourceId;
             this.className = className;
             this.packageName = packageName;
             this.selected = selected;
+            this.contentDesc = contentDesc;
         }
     }
 }
