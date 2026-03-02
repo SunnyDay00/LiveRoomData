@@ -22,6 +22,8 @@ final class ModuleSettings {
     static final String KEY_RUNTIME_CYCLE_COMPLETED = "runtime_cycle_completed";
     static final String KEY_RUNTIME_CYCLE_ENTERED = "runtime_cycle_entered";
     static final String KEY_RUNTIME_COMMAND_SEQ = "runtime_command_seq";
+    static final String KEY_CYCLE_LIMIT_DIALOG_VISIBLE = "cycle_limit_dialog_visible";
+    static final String KEY_CYCLE_LIMIT_DIALOG_MESSAGE = "cycle_limit_dialog_message";
     static final String KEY_ENGINE_STATUS = "engine_status";
     static final String KEY_ENGINE_COMMAND = "engine_command";
     static final String KEY_ENGINE_COMMAND_SEQ = "engine_command_seq";
@@ -194,6 +196,22 @@ final class ModuleSettings {
         return sanitizeNonNegativeInt(xsp.getInt(KEY_RUNTIME_CYCLE_ENTERED, 0));
     }
 
+    static synchronized boolean isCycleLimitDialogVisible() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return false;
+        }
+        return xsp.getBoolean(KEY_CYCLE_LIMIT_DIALOG_VISIBLE, false);
+    }
+
+    static synchronized String getCycleLimitDialogMessage() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return "";
+        }
+        return safeTrim(xsp.getString(KEY_CYCLE_LIMIT_DIALOG_MESSAGE, ""));
+    }
+
     static synchronized boolean getGlobalFloatButtonEnabled(SharedPreferences prefs) {
         if (prefs == null) {
             return DEFAULT_GLOBAL_FLOAT_BUTTON_ENABLED;
@@ -281,6 +299,20 @@ final class ModuleSettings {
         return sanitizeNonNegativeInt(prefs.getInt(KEY_RUNTIME_CYCLE_ENTERED, 0));
     }
 
+    static synchronized boolean getCycleLimitDialogVisible(SharedPreferences prefs) {
+        if (prefs == null) {
+            return false;
+        }
+        return prefs.getBoolean(KEY_CYCLE_LIMIT_DIALOG_VISIBLE, false);
+    }
+
+    static synchronized String getCycleLimitDialogMessage(SharedPreferences prefs) {
+        if (prefs == null) {
+            return "";
+        }
+        return safeTrim(prefs.getString(KEY_CYCLE_LIMIT_DIALOG_MESSAGE, ""));
+    }
+
     static synchronized String getEngineCommand(SharedPreferences prefs) {
         if (prefs == null) {
             return "";
@@ -357,6 +389,22 @@ final class ModuleSettings {
         }
         SharedPreferences prefs = appPrefs(context);
         prefs.edit().putBoolean(KEY_FLOAT_INFO_WINDOW_ENABLED, enabled).commit();
+        ensurePrefsReadable(context);
+    }
+
+    static synchronized void setCycleLimitDialogState(
+            Context context,
+            boolean visible,
+            String message
+    ) {
+        if (context == null) {
+            return;
+        }
+        SharedPreferences prefs = appPrefs(context);
+        prefs.edit()
+                .putBoolean(KEY_CYCLE_LIMIT_DIALOG_VISIBLE, visible)
+                .putString(KEY_CYCLE_LIMIT_DIALOG_MESSAGE, safeTrim(message))
+                .commit();
         ensurePrefsReadable(context);
     }
 
@@ -470,6 +518,8 @@ final class ModuleSettings {
                 .putInt(KEY_RUNTIME_CYCLE_COMPLETED, 0)
                 .putInt(KEY_RUNTIME_CYCLE_ENTERED, 0)
                 .putLong(KEY_RUNTIME_COMMAND_SEQ, nextSeq)
+                .putBoolean(KEY_CYCLE_LIMIT_DIALOG_VISIBLE, false)
+                .putString(KEY_CYCLE_LIMIT_DIALOG_MESSAGE, "")
                 .commit();
         ensurePrefsReadable(context);
         return nextSeq;
@@ -533,6 +583,12 @@ final class ModuleSettings {
         }
         if (!prefs.contains(KEY_RUNTIME_COMMAND_SEQ)) {
             editor.putLong(KEY_RUNTIME_COMMAND_SEQ, 0L);
+        }
+        if (!prefs.contains(KEY_CYCLE_LIMIT_DIALOG_VISIBLE)) {
+            editor.putBoolean(KEY_CYCLE_LIMIT_DIALOG_VISIBLE, false);
+        }
+        if (!prefs.contains(KEY_CYCLE_LIMIT_DIALOG_MESSAGE)) {
+            editor.putString(KEY_CYCLE_LIMIT_DIALOG_MESSAGE, "");
         }
         if (!prefs.contains(KEY_ENGINE_STATUS)) {
             editor.putString(KEY_ENGINE_STATUS, DEFAULT_ENGINE_STATUS);

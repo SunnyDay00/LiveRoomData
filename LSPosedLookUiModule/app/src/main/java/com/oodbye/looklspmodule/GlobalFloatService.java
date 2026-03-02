@@ -195,6 +195,8 @@ public class GlobalFloatService extends Service {
         super.onCreate();
         prefs = ModuleSettings.appPrefs(this);
         ModuleSettings.ensureDefaults(this);
+        cycleLimitDialogVisible = ModuleSettings.getCycleLimitDialogVisible(prefs);
+        cycleLimitDialogMessage = ModuleSettings.getCycleLimitDialogMessage(prefs);
         handler = new Handler(Looper.getMainLooper());
         lastRealtimeSyncAt = 0L;
         lastRealtimeSyncedSeq = -1L;
@@ -204,7 +206,7 @@ public class GlobalFloatService extends Service {
         startForegroundInternal();
         refreshOverlayState();
         handler.postDelayed(refreshTask, DISPLAY_REFRESH_INTERVAL_MS);
-        log("service created");
+        log("service created, restore cycleLimitDialogVisible=" + cycleLimitDialogVisible);
     }
 
     @Override
@@ -1146,7 +1148,7 @@ public class GlobalFloatService extends Service {
     }
 
     private void onRunClicked() {
-        hideCycleLimitFinishedDialog();
+        hideCycleLimitFinishedDialog("run_clicked");
         long seq = ModuleSettings.pushEngineCommand(
                 this,
                 ModuleSettings.ENGINE_CMD_RUN,
@@ -1179,7 +1181,7 @@ public class GlobalFloatService extends Service {
                 ModuleSettings.EngineStatus.STOPPED,
                 seq
         );
-        hideCycleLimitFinishedDialog();
+        hideCycleLimitFinishedDialog("end_clicked");
         collapseActionPanel();
         updateMainButtonStatus();
         Toast.makeText(this, "模块已结束", Toast.LENGTH_SHORT).show();
@@ -1406,6 +1408,7 @@ public class GlobalFloatService extends Service {
                 + "\n运行时长: " + formatElapsed(safeDuration)
                 + "\n请选择“重新运行”或“结束”";
         cycleLimitDialogVisible = true;
+        persistCycleLimitDialogState();
         ensureOverlay();
         ensureMirrorOverlay();
         ensureExtraOverlays();
@@ -1415,12 +1418,37 @@ public class GlobalFloatService extends Service {
     }
 
     private void hideCycleLimitFinishedDialog() {
+        hideCycleLimitFinishedDialog("unspecified");
+    }
+
+    private void hideCycleLimitFinishedDialog(String reason) {
         if (!cycleLimitDialogVisible && TextUtils.isEmpty(cycleLimitDialogMessage)) {
             return;
         }
         cycleLimitDialogVisible = false;
         cycleLimitDialogMessage = "";
+        persistCycleLimitDialogState();
         updateCycleLimitDialogStatus();
+        log("hide cycle limit dialog, reason=" + safeReason(reason));
+    }
+
+    private void persistCycleLimitDialogState() {
+        try {
+            ModuleSettings.setCycleLimitDialogState(
+                    this,
+                    cycleLimitDialogVisible,
+                    cycleLimitDialogMessage
+            );
+        } catch (Throwable e) {
+            log("persist cycle limit dialog state failed: " + e);
+        }
+    }
+
+    private String safeReason(String reason) {
+        if (reason == null) {
+            return "";
+        }
+        return reason.trim();
     }
 
     private void showCycleCompleteNotice(String message) {
