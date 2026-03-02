@@ -4,6 +4,8 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.BIND_ACCESSIBILITY_SERVICE" />
 
     <application
         android:allowBackup="false"
@@ -13,6 +15,7 @@
         <activity
             android:name=".ModuleSettingsActivity"
             android:exported="true"
+            android:excludeFromRecents="true"
             android:label="LOOK LSP 设置">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -25,6 +28,35 @@
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <service
+            android:name=".LookAccessibilityAdService"
+            android:enabled="true"
+            android:exported="false"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/look_accessibility_service_config" />
+        </service>
+
+        <receiver
+            android:name=".ModuleStartupReceiver"
+            android:directBootAware="true"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.USER_UNLOCKED" />
+                <action android:name="com.oodbye.looklspmodule.ACTION_SYNC_FLOAT_SERVICE" />
+                <action android:name="com.oodbye.looklspmodule.ACTION_ENGINE_STATUS_REPORT" />
+                <action android:name="com.oodbye.looklspmodule.ACTION_CYCLE_COMPLETE_NOTICE" />
+            </intent-filter>
+        </receiver>
 
         <meta-data
             android:name="xposedmodule"

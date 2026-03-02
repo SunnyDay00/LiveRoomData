@@ -91,6 +91,23 @@ def _get_focused_windows(adb: str, serial: str) -> List[Tuple[str, str]]:
     return results
 
 
+def _find_windows_by_package(adb: str, serial: str, package_name: str) -> List[str]:
+    if not package_name:
+        return []
+    proc = _run([adb, "-s", serial, "shell", "dumpsys", "window", "windows"])
+    if proc.returncode != 0:
+        return []
+    out: List[str] = []
+    for raw_line in proc.stdout.splitlines():
+        line = raw_line.strip()
+        if "Window{" not in line:
+            continue
+        if package_name not in line:
+            continue
+        out.append(line)
+    return out
+
+
 def _extract_first_package(xml: str) -> Optional[str]:
     match = re.search(r'<node[^>]*\spackage="([^"]+)"', xml)
     if match:
@@ -169,6 +186,10 @@ def main() -> int:
         "--adb-path",
         help="指定 adb 可执行文件路径（可选）",
     )
+    parser.add_argument(
+        "--check-window-package",
+        help="额外检查该包名在 dumpsys window windows 中是否存在窗口（可用于悬浮窗巡检）",
+    )
     args = parser.parse_args()
 
     adb = _find_adb(args.adb_path)
@@ -188,6 +209,15 @@ def main() -> int:
         print("当前焦点窗口（按 display）：")
         for display_id, window in focused:
             print(f"  display {display_id}: {window}")
+    if args.check_window_package:
+        lines = _find_windows_by_package(adb, serial, args.check_window_package.strip())
+        print(
+            "窗口巡检 package="
+            + args.check_window_package.strip()
+            + f" count={len(lines)}"
+        )
+        for idx, line in enumerate(lines[:5], start=1):
+            print(f"  [{idx}] {line}")
 
     output = Path(args.output).resolve()
 

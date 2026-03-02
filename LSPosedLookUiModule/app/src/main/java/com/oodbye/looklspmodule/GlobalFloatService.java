@@ -4,20 +4,20 @@ import android.app.ActivityManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
-import android.app.PendingIntent;
 import android.app.Service;
+import android.hardware.display.DisplayManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
-import android.hardware.display.DisplayManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.provider.Settings;
 import android.text.TextUtils;
+import android.util.Log;
 import android.util.TypedValue;
 import android.view.Display;
 import android.view.Gravity;
@@ -28,20 +28,27 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.DataOutputStream;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
 
 public class GlobalFloatService extends Service {
+    private static final String TAG = "LOOKLspModule";
     private static final String CHANNEL_ID = "look_lsp_float_service";
     private static final int NOTIFICATION_ID = 2026030101;
     private static final long DISPLAY_REFRESH_INTERVAL_MS = 2000L;
+    private static final long PERMISSION_TOAST_MIN_INTERVAL_MS = 6000L;
 
     private SharedPreferences prefs;
     private Handler handler;
-    private final Map<Integer, OverlayHolder> overlays = new HashMap<Integer, OverlayHolder>();
+    private long lastRealtimeSyncAt;
+    private long lastRealtimeSyncedSeq;
+    private WindowManager windowManager;
+    private LinearLayout rootLayout;
+    private LinearLayout actionPanel;
+    private TextView mainButton;
+    private boolean overlayAdded;
+    private long lastPermissionToastAt;
+    private int preferredDisplayId = -1;
+    private int attachedDisplayId = -1;
     private final Runnable refreshTask = new Runnable() {
         @Override
         public void run() {
@@ -51,10 +58,27 @@ public class GlobalFloatService extends Service {
     };
 
     public static void startServiceCompat(Context context) {
+        startServiceCompat(context, -1, false);
+    }
+
+    public static void startServiceCompat(Context context, int targetDisplayId) {
+        startServiceCompat(context, targetDisplayId, false);
+    }
+
+    public static void startServiceCompat(
+            Context context,
+            int targetDisplayId,
+            boolean requestRestartTargetApp
+    ) {
         if (context == null) {
             return;
         }
         Intent intent = new Intent(context, GlobalFloatService.class);
+        intent.putExtra(ModuleSettings.EXTRA_TARGET_DISPLAY_ID, targetDisplayId);
+        intent.putExtra(
+                ModuleSettings.EXTRA_REQUEST_RESTART_TARGET_APP,
+                requestRestartTargetApp
+        );
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             context.startForegroundService(intent);
         } else {
@@ -76,14 +100,45 @@ public class GlobalFloatService extends Service {
         prefs = ModuleSettings.appPrefs(this);
         ModuleSettings.ensureDefaults(this);
         handler = new Handler(Looper.getMainLooper());
+        lastRealtimeSyncAt = 0L;
+        lastRealtimeSyncedSeq = -1L;
+        overlayAdded = false;
+        lastPermissionToastAt = 0L;
         startForegroundInternal();
         refreshOverlayState();
         handler.postDelayed(refreshTask, DISPLAY_REFRESH_INTERVAL_MS);
+        log("service created");
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        int targetDisplayId = preferredDisplayId;
+        boolean hasDisplayExtra = false;
+        boolean requestRestartTargetApp = false;
+        if (intent != null) {
+            hasDisplayExtra = intent.hasExtra(ModuleSettings.EXTRA_TARGET_DISPLAY_ID);
+            if (hasDisplayExtra) {
+                targetDisplayId = intent.getIntExtra(
+                        ModuleSettings.EXTRA_TARGET_DISPLAY_ID,
+                        preferredDisplayId
+                );
+            }
+            requestRestartTargetApp = intent.getBooleanExtra(
+                    ModuleSettings.EXTRA_REQUEST_RESTART_TARGET_APP,
+                    false
+            );
+        }
+        if (hasDisplayExtra && targetDisplayId != preferredDisplayId) {
+            preferredDisplayId = targetDisplayId;
+            removeOverlay();
+            windowManager = null;
+            attachedDisplayId = -1;
+            log("switch target displayId=" + preferredDisplayId);
+        }
         refreshOverlayState();
+        if (requestRestartTargetApp) {
+            restartTargetAppForNextCycle();
+        }
         return START_STICKY;
     }
 
@@ -93,6 +148,11 @@ public class GlobalFloatService extends Service {
             handler.removeCallbacks(refreshTask);
         }
         removeOverlay();
+        windowManager = null;
+        rootLayout = null;
+        actionPanel = null;
+        mainButton = null;
+        log("service destroyed");
         super.onDestroy();
     }
 
@@ -105,85 +165,122 @@ public class GlobalFloatService extends Service {
         boolean enabled = ModuleSettings.getGlobalFloatButtonEnabled(prefs);
         if (!enabled) {
             removeOverlay();
+            log("float button disabled, stop self");
             stopSelf();
             return;
         }
         if (!Settings.canDrawOverlays(this)) {
-            Toast.makeText(this, "请先授予悬浮窗权限", Toast.LENGTH_LONG).show();
+            maybeShowOverlayPermissionToast();
             removeOverlay();
             return;
         }
         ensureOverlay();
         updateMainButtonStatus();
+        syncEngineStateBroadcastIfNeeded();
+    }
+
+    private void maybeShowOverlayPermissionToast() {
+        long now = System.currentTimeMillis();
+        if (now - lastPermissionToastAt < PERMISSION_TOAST_MIN_INTERVAL_MS) {
+            return;
+        }
+        lastPermissionToastAt = now;
+        Toast.makeText(this, "请先授予悬浮窗权限", Toast.LENGTH_LONG).show();
     }
 
     private void ensureOverlay() {
-        DisplayManager dm = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
-        if (dm == null) {
+        if (windowManager == null) {
+            windowManager = resolveWindowManagerForDisplay(preferredDisplayId);
+        }
+        if (windowManager == null) {
             return;
         }
-        Display[] displays = dm.getDisplays();
-        if (displays == null || displays.length == 0) {
+        if (rootLayout == null) {
+            buildOverlayView();
+        }
+        if (isOverlayAttached()) {
             return;
         }
-        Set<Integer> activeDisplayIds = new HashSet<Integer>();
-        for (Display display : displays) {
-            if (display == null || display.getState() == Display.STATE_OFF) {
-                continue;
-            }
-            int displayId = display.getDisplayId();
-            activeDisplayIds.add(displayId);
-            if (!overlays.containsKey(displayId)) {
-                createOverlayForDisplay(display);
-            }
-        }
-        Set<Integer> toRemove = new HashSet<Integer>();
-        toRemove.addAll(overlays.keySet());
-        toRemove.removeAll(activeDisplayIds);
-        for (Integer displayId : toRemove) {
-            removeOverlayForDisplay(displayId.intValue());
+        removeOverlay();
+
+        int type = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                : WindowManager.LayoutParams.TYPE_PHONE;
+        int flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
+        WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                type,
+                flags,
+                PixelFormat.TRANSLUCENT
+        );
+        params.gravity = Gravity.END | Gravity.CENTER_VERTICAL;
+        params.x = dp(12);
+        params.y = 0;
+        try {
+            windowManager.addView(rootLayout, params);
+            overlayAdded = true;
+            attachedDisplayId = preferredDisplayId;
+            log("overlay added on displayId=" + attachedDisplayId);
+        } catch (Throwable e) {
+            overlayAdded = false;
+            attachedDisplayId = -1;
+            log("overlay add failed on displayId=" + preferredDisplayId + ": " + e);
         }
     }
 
-    private void createOverlayForDisplay(Display display) {
-        Context displayContext = createDisplayContext(display);
-        WindowManager wm = (WindowManager) displayContext.getSystemService(WINDOW_SERVICE);
-        if (wm == null) {
-            return;
+    private WindowManager resolveWindowManagerForDisplay(int displayId) {
+        if (displayId >= 0) {
+            try {
+                DisplayManager dm = (DisplayManager) getSystemService(DISPLAY_SERVICE);
+                if (dm != null) {
+                    Display display = dm.getDisplay(displayId);
+                    if (display != null) {
+                        Context displayContext = createDisplayContext(display);
+                        WindowManager wm = (WindowManager) displayContext.getSystemService(WINDOW_SERVICE);
+                        if (wm != null) {
+                            return wm;
+                        }
+                    }
+                }
+            } catch (Throwable e) {
+                log("resolve display window manager failed, displayId=" + displayId + " err=" + e);
+            }
         }
-        final OverlayHolder holder = new OverlayHolder();
-        holder.displayId = display.getDisplayId();
-        holder.windowManager = wm;
+        return (WindowManager) getSystemService(WINDOW_SERVICE);
+    }
 
-        LinearLayout rootLayout = new LinearLayout(displayContext);
-        rootLayout.setOrientation(LinearLayout.HORIZONTAL);
-        rootLayout.setGravity(Gravity.CENTER_VERTICAL);
-        rootLayout.setPadding(dp(6), dp(6), dp(6), dp(6));
-        rootLayout.setBackgroundColor(Color.parseColor("#33222222"));
-        holder.rootLayout = rootLayout;
+    private void buildOverlayView() {
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.HORIZONTAL);
+        root.setGravity(Gravity.CENTER_VERTICAL);
+        root.setPadding(dp(6), dp(6), dp(6), dp(6));
+        root.setBackgroundColor(Color.parseColor("#33222222"));
+        rootLayout = root;
 
-        TextView mainButton = createActionButton(displayContext, "LSP", "#1E88E5");
-        holder.mainButton = mainButton;
+        TextView toggleButton = createActionButton(this, "LSP", "#1E88E5");
+        mainButton = toggleButton;
         mainButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (holder.actionPanel == null) {
+                if (actionPanel == null) {
                     return;
                 }
-                holder.actionPanel.setVisibility(
-                        holder.actionPanel.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE
+                actionPanel.setVisibility(
+                        actionPanel.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE
                 );
             }
         });
-        rootLayout.addView(mainButton);
+        root.addView(toggleButton);
 
-        LinearLayout actionPanel = new LinearLayout(displayContext);
+        LinearLayout actionPanel = new LinearLayout(this);
         actionPanel.setOrientation(LinearLayout.HORIZONTAL);
         actionPanel.setVisibility(View.GONE);
         actionPanel.setPadding(dp(6), 0, 0, 0);
-        holder.actionPanel = actionPanel;
+        this.actionPanel = actionPanel;
 
-        TextView runBtn = createActionButton(displayContext, "运行", "#2E7D32");
+        TextView runBtn = createActionButton(this, "运行", "#2E7D32");
         runBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -192,7 +289,7 @@ public class GlobalFloatService extends Service {
         });
         actionPanel.addView(runBtn);
 
-        TextView pauseBtn = createActionButton(displayContext, "暂停", "#EF6C00");
+        TextView pauseBtn = createActionButton(this, "暂停", "#EF6C00");
         pauseBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -206,13 +303,14 @@ public class GlobalFloatService extends Service {
                         ModuleSettings.EngineStatus.PAUSED,
                         seq
                 );
+                collapseActionPanel();
                 updateMainButtonStatus();
                 Toast.makeText(GlobalFloatService.this, "模块已暂停", Toast.LENGTH_SHORT).show();
             }
         });
         actionPanel.addView(pauseBtn);
 
-        TextView stopBtn = createActionButton(displayContext, "停止", "#C62828");
+        TextView stopBtn = createActionButton(this, "停止", "#C62828");
         stopBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -226,55 +324,75 @@ public class GlobalFloatService extends Service {
                         ModuleSettings.EngineStatus.STOPPED,
                         seq
                 );
+                collapseActionPanel();
                 updateMainButtonStatus();
                 Toast.makeText(GlobalFloatService.this, "模块已停止", Toast.LENGTH_SHORT).show();
             }
         });
         actionPanel.addView(stopBtn);
 
-        rootLayout.addView(actionPanel);
+        root.addView(actionPanel);
+    }
 
-        int type = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                : WindowManager.LayoutParams.TYPE_PHONE;
-        WindowManager.LayoutParams params = new WindowManager.LayoutParams(
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                type,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                PixelFormat.TRANSLUCENT
-        );
-        params.gravity = Gravity.END | Gravity.CENTER_VERTICAL;
-        params.x = dp(12);
-        params.y = 0;
-        try {
-            wm.addView(rootLayout, params);
-            overlays.put(holder.displayId, holder);
-        } catch (Throwable e) {
-            Toast.makeText(this, "display " + holder.displayId + " 悬浮窗创建失败", Toast.LENGTH_SHORT).show();
+    private boolean isOverlayAttached() {
+        if (!overlayAdded || rootLayout == null) {
+            return false;
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+            return rootLayout.isAttachedToWindow();
+        }
+        return rootLayout.getWindowToken() != null;
     }
 
     private void removeOverlay() {
-        Set<Integer> ids = new HashSet<Integer>(overlays.keySet());
-        for (Integer id : ids) {
-            removeOverlayForDisplay(id.intValue());
+        if (!overlayAdded && (rootLayout == null || rootLayout.getParent() == null)) {
+            return;
         }
-    }
-
-    private void removeOverlayForDisplay(int displayId) {
-        OverlayHolder holder = overlays.remove(displayId);
-        if (holder == null || holder.windowManager == null || holder.rootLayout == null) {
+        if (windowManager == null || rootLayout == null) {
+            overlayAdded = false;
             return;
         }
         try {
-            holder.windowManager.removeView(holder.rootLayout);
-        } catch (Throwable ignore) {
+            windowManager.removeViewImmediate(rootLayout);
+            log("overlay removed");
+        } catch (Throwable e) {
+            log("overlay remove failed: " + e);
         }
+        overlayAdded = false;
+        attachedDisplayId = -1;
     }
 
     private void onRunClicked() {
+        long seq = ModuleSettings.pushEngineCommand(
+                this,
+                ModuleSettings.ENGINE_CMD_RUN,
+                ModuleSettings.EngineStatus.RUNNING
+        );
+        dispatchEngineCommandBroadcast(
+                ModuleSettings.ENGINE_CMD_RUN,
+                ModuleSettings.EngineStatus.RUNNING,
+                seq
+        );
+        collapseActionPanel();
+        boolean running = isPackageRunning(UiComponentConfig.TARGET_PACKAGE);
+        if (running) {
+            forceStopPackage(UiComponentConfig.TARGET_PACKAGE);
+        }
+        launchTargetApp(UiComponentConfig.TARGET_PACKAGE);
+        dispatchRunCommandAfterLaunch(seq);
+        updateMainButtonStatus();
+        Toast.makeText(this, "模块运行中", Toast.LENGTH_SHORT).show();
+    }
+
+    private void restartTargetAppForNextCycle() {
+        if (prefs == null) {
+            return;
+        }
+        ModuleSettings.EngineStatus status = ModuleSettings.getEngineStatus(prefs);
+        if (status != ModuleSettings.EngineStatus.RUNNING) {
+            log("ignore cycle restart request: engine status=" + status);
+            return;
+        }
         long seq = ModuleSettings.pushEngineCommand(
                 this,
                 ModuleSettings.ENGINE_CMD_RUN,
@@ -290,8 +408,28 @@ public class GlobalFloatService extends Service {
             forceStopPackage(UiComponentConfig.TARGET_PACKAGE);
         }
         launchTargetApp(UiComponentConfig.TARGET_PACKAGE);
+        dispatchRunCommandAfterLaunch(seq);
         updateMainButtonStatus();
-        Toast.makeText(this, "模块运行中", Toast.LENGTH_SHORT).show();
+        log("cycle restart requested: relaunched target app, seq=" + seq);
+    }
+
+    private void dispatchRunCommandAfterLaunch(final long seq) {
+        if (handler == null) {
+            return;
+        }
+        long[] delays = new long[] { 400L, 1200L, 2200L };
+        for (final long delay : delays) {
+            handler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    dispatchEngineCommandBroadcast(
+                            ModuleSettings.ENGINE_CMD_RUN,
+                            ModuleSettings.EngineStatus.RUNNING,
+                            seq
+                    );
+                }
+            }, delay);
+        }
     }
 
     private void dispatchEngineCommandBroadcast(
@@ -310,22 +448,48 @@ public class GlobalFloatService extends Service {
         }
     }
 
-    private void updateMainButtonStatus() {
+    private void syncEngineStateBroadcastIfNeeded() {
+        if (prefs == null) {
+            return;
+        }
+        long now = System.currentTimeMillis();
         ModuleSettings.EngineStatus status = ModuleSettings.getEngineStatus(prefs);
-        for (OverlayHolder holder : overlays.values()) {
-            if (holder == null || holder.mainButton == null) {
-                continue;
-            }
+        long seq = ModuleSettings.getEngineCommandSeq(prefs);
+        String command = ModuleSettings.getEngineCommand(prefs);
+        if (TextUtils.isEmpty(command)) {
             if (status == ModuleSettings.EngineStatus.RUNNING) {
-                holder.mainButton.setText("LSP·运行");
-                holder.mainButton.setBackgroundColor(Color.parseColor("#2E7D32"));
+                command = ModuleSettings.ENGINE_CMD_RUN;
             } else if (status == ModuleSettings.EngineStatus.PAUSED) {
-                holder.mainButton.setText("LSP·暂停");
-                holder.mainButton.setBackgroundColor(Color.parseColor("#EF6C00"));
+                command = ModuleSettings.ENGINE_CMD_PAUSE;
             } else {
-                holder.mainButton.setText("LSP·停止");
-                holder.mainButton.setBackgroundColor(Color.parseColor("#C62828"));
+                command = ModuleSettings.ENGINE_CMD_STOP;
             }
+        }
+        boolean seqChanged = (seq != lastRealtimeSyncedSeq);
+        boolean runningHeartbeat = (status == ModuleSettings.EngineStatus.RUNNING
+                && now - lastRealtimeSyncAt >= 3000L);
+        if (!seqChanged && !runningHeartbeat) {
+            return;
+        }
+        dispatchEngineCommandBroadcast(command, status, seq);
+        lastRealtimeSyncedSeq = seq;
+        lastRealtimeSyncAt = now;
+    }
+
+    private void updateMainButtonStatus() {
+        if (mainButton == null) {
+            return;
+        }
+        ModuleSettings.EngineStatus status = ModuleSettings.getEngineStatus(prefs);
+        if (status == ModuleSettings.EngineStatus.RUNNING) {
+            mainButton.setText("LSP-运行中");
+            mainButton.setBackgroundColor(Color.parseColor("#2E7D32"));
+        } else if (status == ModuleSettings.EngineStatus.PAUSED) {
+            mainButton.setText("LSP-已暂停");
+            mainButton.setBackgroundColor(Color.parseColor("#EF6C00"));
+        } else {
+            mainButton.setText("LSP-未运行");
+            mainButton.setBackgroundColor(Color.parseColor("#C62828"));
         }
     }
 
@@ -435,6 +599,12 @@ public class GlobalFloatService extends Service {
         }
     }
 
+    private void collapseActionPanel() {
+        if (actionPanel != null) {
+            actionPanel.setVisibility(View.GONE);
+        }
+    }
+
     private TextView createActionButton(Context context, String text, String colorHex) {
         TextView tv = new TextView(context);
         tv.setText(text);
@@ -469,11 +639,6 @@ public class GlobalFloatService extends Service {
             channel.setDescription("提供全局悬浮按钮控制模块运行状态");
             nm.createNotificationChannel(channel);
         }
-        Intent openSettings = new Intent(this, ModuleSettingsActivity.class);
-        int flags = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
-                ? (PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT)
-                : PendingIntent.FLAG_UPDATE_CURRENT;
-        PendingIntent pendingIntent = PendingIntent.getActivity(this, 0, openSettings, flags);
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? new Notification.Builder(this, CHANNEL_ID)
                 : new Notification.Builder(this);
@@ -481,7 +646,6 @@ public class GlobalFloatService extends Service {
                 .setSmallIcon(android.R.drawable.stat_notify_sync)
                 .setContentTitle("LOOK LSP 模块")
                 .setContentText("全局悬浮按钮服务运行中")
-                .setContentIntent(pendingIntent)
                 .setOngoing(true)
                 .build();
         try {
@@ -491,11 +655,10 @@ public class GlobalFloatService extends Service {
         }
     }
 
-    private static final class OverlayHolder {
-        int displayId;
-        WindowManager windowManager;
-        LinearLayout rootLayout;
-        LinearLayout actionPanel;
-        TextView mainButton;
+    private void log(String msg) {
+        try {
+            Log.i(TAG, "[FloatService] " + msg);
+        } catch (Throwable ignore) {
+        }
     }
 }

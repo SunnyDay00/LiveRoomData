@@ -20,7 +20,8 @@ final class UiComponentConfig {
     static final String RUN_LOG_PREVIOUS_FILE_NAME = "look_lsp_run_previous.log";
 
     static final long MAIN_LOOP_INTERVAL_MS = 500L;
-    static final long AD_SCAN_INTERVAL_MS = 350L;
+    static final long AD_SCAN_INTERVAL_MS = 120L;
+    static final long AD_REALTIME_LOOP_INTERVAL_MS = 120L;
     static final long HOME_LOG_INTERVAL_MS = 3000L;
     static final long FLOW_LOG_INTERVAL_MS = 2500L;
     static final long ENTER_TOGETHER_TIMEOUT_MS = 5000L;
@@ -29,7 +30,14 @@ final class UiComponentConfig {
     static final long TOGETHER_REFRESH_WAIT_BEFORE_PULL_MS = 1200L;
     static final long TOGETHER_REFRESH_SETTLE_MS = 1800L;
     static final long TOGETHER_REFRESH_RETRY_INTERVAL_MS = 900L;
+    static final long TOGETHER_SCROLL_RETRY_INTERVAL_MS = 1100L;
+    static final long TOGETHER_SCROLL_SETTLE_MS = 900L;
+    static final int TOGETHER_CYCLE_COMPLETE_EMPTY_STREAK = 4;
+    static final int TOGETHER_CYCLE_COMPLETE_SAME_SIGNATURE_STREAK = 2;
+    static final long TOGETHER_CYCLE_RESTART_INTERVAL_MS = 10000L;
     static final long LIVE_ROOM_ENTER_WAIT_MS = 700L;
+    static final long LIVE_ROOM_VERIFY_TIMEOUT_MS = 9000L;
+    static final int LIVE_ROOM_VERIFY_MAX_RETRY_COUNT = 18;
     static final long CARD_CLICK_COOLDOWN_MS = 1000L;
     static final long LIVE_ROOM_RETURN_TOGETHER_WAIT_MS = 1000L;
     static final long LIVE_ROOM_ENTER_TASK_WAIT_MS = 5000L;
@@ -39,6 +47,9 @@ final class UiComponentConfig {
     static final float TOGETHER_REFRESH_SWIPE_X_RATIO = 0.5f;
     static final float TOGETHER_REFRESH_SWIPE_START_Y_RATIO = 0.28f;
     static final float TOGETHER_REFRESH_SWIPE_END_Y_RATIO = 0.78f;
+    static final float TOGETHER_SCROLL_SWIPE_X_RATIO = 0.5f;
+    static final float TOGETHER_SCROLL_SWIPE_START_Y_RATIO = 0.60f;
+    static final float TOGETHER_SCROLL_SWIPE_END_Y_RATIO = 0.32f;
     static final int TOGETHER_CARD_TITLE_INDEX_START = 1;
     static final int TOGETHER_CARD_TITLE_INDEX_END = 4;
     static final int TOGETHER_CARD_CLICK_TITLE_INDEX_START = 3;
@@ -49,6 +60,7 @@ final class UiComponentConfig {
     static final float TOGETHER_CARD_TAP_ALT_Y_RATIO = 0.68f;
     static final float TOGETHER_CARD_COVER_TAP_X_RATIO = 0.5f;
     static final float TOGETHER_CARD_COVER_TAP_Y_RATIO = 0.56f;
+    static final float TOGETHER_CARD_SAFE_BOTTOM_Y_RATIO = 0.90f;
 
     static final List<UiNodeSpec> LOOK_HOME_NODES = Collections.unmodifiableList(Arrays.asList(
             new UiNodeSpec("推荐", "com.netease.play:id/tv_dragon_tab", "android.widget.TextView", "com.netease.play", null),
@@ -91,6 +103,44 @@ final class UiComponentConfig {
             null
     );
 
+    static final List<UiNodeSpec> LOGIN_BLOCK_DIALOG_NODES = Collections.unmodifiableList(Arrays.asList(
+            new UiNodeSpec(
+                    "设置",
+                    "com.netease.play:id/menu_login_with_setting",
+                    "",
+                    "com.netease.play",
+                    null
+            ),
+            new UiNodeSpec(
+                    "",
+                    "com.netease.play:id/qq",
+                    "",
+                    "com.netease.play",
+                    null
+            ),
+            new UiNodeSpec(
+                    "",
+                    "com.netease.play:id/weibo",
+                    "",
+                    "com.netease.play",
+                    null
+            ),
+            new UiNodeSpec(
+                    "",
+                    "com.netease.play:id/phone",
+                    "",
+                    "com.netease.play",
+                    null
+            ),
+            new UiNodeSpec(
+                    "",
+                    "com.netease.play:id/cloudmusic",
+                    "",
+                    "com.netease.play",
+                    null
+            )
+    ));
+
     static final UiNodeSpec LIVE_ROOM_ROOM_NO_NODE = new UiNodeSpec(
             "",
             "com.netease.play:id/roomNo",
@@ -117,6 +167,11 @@ final class UiComponentConfig {
 
     static final List<UiNodeSpec> LIVE_ROOM_VERIFY_NODES = Collections.unmodifiableList(Arrays.asList(
             LIVE_ROOM_ROOM_NO_NODE,
+            LIVE_ROOM_TITLE_NODE,
+            LIVE_ROOM_CLOSE_BUTTON_NODE
+    ));
+
+    static final List<UiNodeSpec> LIVE_ROOM_VERIFY_RELAXED_NODES = Collections.unmodifiableList(Arrays.asList(
             LIVE_ROOM_TITLE_NODE,
             LIVE_ROOM_CLOSE_BUTTON_NODE
     ));

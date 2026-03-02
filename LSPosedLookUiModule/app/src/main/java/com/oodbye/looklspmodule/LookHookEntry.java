@@ -53,6 +53,8 @@ public class LookHookEntry implements IXposedHookLoadPackage {
     private static boolean sAwaitingLiveRoomScript = false;
     private static long sLastCardClickAt = 0L;
     private static long sLastLiveRoomReturnAt = 0L;
+    private static long sLastFloatSyncRequestAt = 0L;
+    private static boolean sAutoRunConsumedForProcess = false;
 
     static {
         log("LookHookEntry class loaded");
@@ -155,6 +157,7 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             return;
         }
         ensureCommandReceiver(activity.getApplicationContext());
+        requestModuleFloatServiceSync(activity.getApplicationContext(), activity);
         activity.runOnUiThread(new Runnable() {
             @Override
             public void run() {
@@ -166,6 +169,33 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                 session.start();
             }
         });
+    }
+
+    private void requestModuleFloatServiceSync(Context appContext, Activity activity) {
+        if (appContext == null) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        synchronized (FLOW_STATE_LOCK) {
+            if (now - sLastFloatSyncRequestAt < 2500L) {
+                return;
+            }
+            sLastFloatSyncRequestAt = now;
+        }
+        try {
+            Intent intent = new Intent(ModuleSettings.ACTION_SYNC_FLOAT_SERVICE);
+            intent.setPackage(ModuleSettings.MODULE_PACKAGE);
+            int displayId = -1;
+            if (activity != null && activity.getDisplay() != null) {
+                displayId = activity.getDisplay().getDisplayId();
+            }
+            if (displayId >= 0) {
+                intent.putExtra(ModuleSettings.EXTRA_TARGET_DISPLAY_ID, displayId);
+            }
+            appContext.sendBroadcast(intent);
+        } catch (Throwable e) {
+            log("sync float service broadcast failed: " + e);
+        }
     }
 
     private UiSession getSession(Activity activity) {
@@ -189,7 +219,8 @@ public class LookHookEntry implements IXposedHookLoadPackage {
     private static final class UiSession {
         private final Activity activity;
         private final Handler handler;
-        private CustomRulesAdProcessor adProcessor;
+        private final LiveRoomRuntimeModule.RuntimeBridge liveRoomRuntimeBridge;
+        private final RealtimeAdLoop realtimeAdLoop;
         private final Runnable loopTask;
 
         private boolean started;
@@ -202,15 +233,25 @@ public class LookHookEntry implements IXposedHookLoadPackage {
         private long togetherPageEnteredAt;
         private long togetherRefreshAt;
         private long lastTogetherRefreshAttemptAt;
+        private long togetherScrollAt;
+        private long lastTogetherScrollAttemptAt;
+        private int togetherNoNewCardStreak;
+        private int togetherNoNewSameSignatureStreak;
+        private int togetherCycleCompletedCount;
+        private int togetherCycleLiveRoomEnteredCount;
+        private String togetherLastNoNewSignature;
+        private long togetherLastCycleCompleteAt;
+        private boolean togetherCycleRestartRequested;
+        private long lastLoginBlockHandleAt;
         private ModuleSettings.EngineStatus lastStatus;
         private RunFlowState flowState;
         private boolean liveRoomScriptHandledInSession;
         private boolean togetherRefreshedInRun;
+        private boolean adModeHintLogged;
 
         UiSession(Activity activity) {
             this.activity = activity;
             this.handler = new Handler(Looper.getMainLooper());
-            this.adProcessor = null;
             this.started = false;
             this.lastFlowLogAt = 0L;
             this.lastFlowLogMessage = "";
@@ -221,10 +262,132 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             this.togetherPageEnteredAt = 0L;
             this.togetherRefreshAt = 0L;
             this.lastTogetherRefreshAttemptAt = 0L;
+            this.togetherScrollAt = 0L;
+            this.lastTogetherScrollAttemptAt = 0L;
+            this.togetherNoNewCardStreak = 0;
+            this.togetherNoNewSameSignatureStreak = 0;
+            this.togetherCycleCompletedCount = 0;
+            this.togetherCycleLiveRoomEnteredCount = 0;
+            this.togetherLastNoNewSignature = "";
+            this.togetherLastCycleCompleteAt = 0L;
+            this.togetherCycleRestartRequested = false;
+            this.lastLoginBlockHandleAt = 0L;
             this.lastStatus = ModuleSettings.EngineStatus.STOPPED;
             this.flowState = RunFlowState.IDLE;
             this.liveRoomScriptHandledInSession = false;
             this.togetherRefreshedInRun = false;
+            this.adModeHintLogged = false;
+            this.liveRoomRuntimeBridge = new LiveRoomRuntimeModule.RuntimeBridge() {
+                @Override
+                public boolean isAwaitingLiveRoomTask() {
+                    return isAwaitingLiveRoomScript();
+                }
+
+                @Override
+                public long getLastCardClickAt() {
+                    return LookHookEntry.getLastCardClickAt();
+                }
+
+                @Override
+                public View getRootView() {
+                    return UiSession.this.getRootView();
+                }
+
+                @Override
+                public boolean hasAllNodes(View root, List<UiComponentConfig.UiNodeSpec> specs) {
+                    return UiSession.this.hasAllNodes(root, specs);
+                }
+
+                @Override
+                public String findMissingNodeReason(View root, List<UiComponentConfig.UiNodeSpec> specs) {
+                    return UiSession.this.findMissingNodeReason(root, specs);
+                }
+
+                @Override
+                public boolean isLiveRoomActivity() {
+                    return UiSession.this.isLiveRoomActivity();
+                }
+
+                @Override
+                public List<String> getLastClickedCardTitleCandidates() {
+                    return LookHookEntry.getLastClickedCardTitleCandidates();
+                }
+
+                @Override
+                public String resolveLiveRoomTitle(View root) {
+                    return UiSession.this.resolveLiveRoomTitle(root);
+                }
+
+                @Override
+                public boolean isTitleMatched(List<String> values, String target) {
+                    return UiSession.this.isStringInList(values, target);
+                }
+
+                @Override
+                public void resetAwaitingLiveRoomFlag() {
+                    LookHookEntry.resetAwaitingLiveRoomFlag();
+                }
+
+                @Override
+                public void markLiveRoomTaskFinished() {
+                    LookHookEntry.markLiveRoomScriptFinished();
+                }
+
+                @Override
+                public void log(String msg) {
+                    LookHookEntry.log(msg);
+                }
+
+                @Override
+                public void logFlow(String msg) {
+                    UiSession.this.logFlow(msg);
+                }
+
+                @Override
+                public void postDelayed(Runnable task, long delayMs) {
+                    handler.postDelayed(task, delayMs);
+                }
+
+                @Override
+                public boolean isEngineRunning() {
+                    return resolveEffectiveEngineStatus() == ModuleSettings.EngineStatus.RUNNING;
+                }
+
+                @Override
+                public void onBackPressed() {
+                    activity.onBackPressed();
+                }
+
+                @Override
+                public void markLiveRoomReturned(long now) {
+                    LookHookEntry.markLiveRoomReturned(now);
+                }
+
+                @Override
+                public void markLiveRoomEntered(String liveRoomTitle) {
+                    UiSession.this.onLiveRoomEntered(liveRoomTitle);
+                }
+            };
+            this.realtimeAdLoop = new RealtimeAdLoop(
+                    activity,
+                    handler,
+                    new RealtimeAdLoop.RuntimeBridge() {
+                        @Override
+                        public boolean isEngineRunning() {
+                            return resolveEffectiveEngineStatus() == ModuleSettings.EngineStatus.RUNNING;
+                        }
+
+                        @Override
+                        public boolean isAdProcessEnabled() {
+                            return ModuleSettings.isAdProcessEnabled();
+                        }
+
+                        @Override
+                        public boolean isAccessibilityAdServiceEnabled() {
+                            return ModuleSettings.isAccessibilityAdServiceEnabled();
+                        }
+                    }
+            );
             this.loopTask = new Runnable() {
                 @Override
                 public void run() {
@@ -242,6 +405,11 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                 return;
             }
             started = true;
+            if (!adModeHintLogged && ModuleSettings.isAccessibilityAdServiceEnabled()) {
+                adModeHintLogged = true;
+                log("广告处理当前由无障碍服务执行，日志请查看 tag=LOOKA11yAd");
+            }
+            realtimeAdLoop.start();
             handler.post(loopTask);
         }
 
@@ -256,6 +424,7 @@ public class LookHookEntry implements IXposedHookLoadPackage {
         private void stopLoop() {
             started = false;
             handler.removeCallbacks(loopTask);
+            realtimeAdLoop.stop();
         }
 
         private void tick() {
@@ -283,20 +452,8 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                     return;
                 }
                 logFlow("点击卡片后已离开一起聊，开始进行广告与直播间校验");
-                if (ModuleSettings.isAdProcessEnabled()) {
-                    if (adProcessor == null) {
-                        adProcessor = new CustomRulesAdProcessor(activity);
-                    }
-                    adProcessor.scanAndHandleIfNeeded(now);
-                }
                 runLiveRoomFlow(now);
                 return;
-            }
-            if (ModuleSettings.isAdProcessEnabled()) {
-                if (adProcessor == null) {
-                    adProcessor = new CustomRulesAdProcessor(activity);
-                }
-                adProcessor.scanAndHandleIfNeeded(now);
             }
             if (isLiveRoomActivity()) {
                 runLiveRoomFlow(now);
@@ -312,16 +469,18 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             }
             ModuleSettings.EngineStatus configured = ModuleSettings.getEngineStatus();
             if (configured != ModuleSettings.EngineStatus.STOPPED) {
+                markAutoRunConsumedForProcess();
                 return configured;
             }
-            // 首次安装且尚未收到悬浮按钮命令时，默认自动进入运行态。
-            if (ModuleSettings.getEngineCommandSeq() == 0L) {
+            if (ModuleSettings.isAutoRunOnAppStartEnabled() && tryConsumeAutoRunForProcess()) {
+                log("启动软件自动运行模块：本次进程自动进入运行态");
                 return ModuleSettings.EngineStatus.RUNNING;
             }
             return ModuleSettings.EngineStatus.STOPPED;
         }
 
         private void onStatusChanged(ModuleSettings.EngineStatus from, ModuleSettings.EngineStatus to) {
+            reportEngineStatusToModule(to);
             if (to == ModuleSettings.EngineStatus.RUNNING) {
                 long seq = resolveEffectiveCommandSeq();
                 if (!markRunSeqInitialized(seq)) {
@@ -338,6 +497,16 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                 togetherPageEnteredAt = 0L;
                 togetherRefreshAt = 0L;
                 lastTogetherRefreshAttemptAt = 0L;
+                togetherScrollAt = 0L;
+                lastTogetherScrollAttemptAt = 0L;
+                togetherNoNewCardStreak = 0;
+                togetherNoNewSameSignatureStreak = 0;
+                togetherCycleCompletedCount = 0;
+                togetherCycleLiveRoomEnteredCount = 0;
+                togetherLastNoNewSignature = "";
+                togetherLastCycleCompleteAt = 0L;
+                togetherCycleRestartRequested = false;
+                lastLoginBlockHandleAt = 0L;
                 togetherRefreshedInRun = false;
                 resetGlobalCardFlowState();
                 log("运行流程开始：启动软件 -> 判断首页 -> 点击一起聊 -> 校验一起聊界面");
@@ -354,10 +523,38 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                 togetherPageEnteredAt = 0L;
                 togetherRefreshAt = 0L;
                 lastTogetherRefreshAttemptAt = 0L;
+                togetherScrollAt = 0L;
+                lastTogetherScrollAttemptAt = 0L;
+                togetherNoNewCardStreak = 0;
+                togetherNoNewSameSignatureStreak = 0;
+                togetherCycleCompletedCount = 0;
+                togetherCycleLiveRoomEnteredCount = 0;
+                togetherLastNoNewSignature = "";
+                togetherLastCycleCompleteAt = 0L;
+                togetherCycleRestartRequested = false;
+                lastLoginBlockHandleAt = 0L;
                 togetherRefreshedInRun = false;
                 liveRoomScriptHandledInSession = false;
                 lastFlowLogMessage = "";
                 resetAwaitingLiveRoomFlag();
+            }
+        }
+
+        private void reportEngineStatusToModule(ModuleSettings.EngineStatus status) {
+            Context appContext = activity.getApplicationContext();
+            if (appContext == null || status == null) {
+                return;
+            }
+            try {
+                Intent intent = new Intent(ModuleSettings.ACTION_ENGINE_STATUS_REPORT);
+                intent.setPackage(ModuleSettings.MODULE_PACKAGE);
+                String command = ModuleSettings.commandForStatus(status);
+                intent.putExtra(ModuleSettings.EXTRA_ENGINE_STATUS, status.name());
+                intent.putExtra(ModuleSettings.EXTRA_ENGINE_COMMAND, command);
+                intent.putExtra(ModuleSettings.EXTRA_ENGINE_COMMAND_SEQ, resolveEffectiveCommandSeq());
+                appContext.sendBroadcast(intent);
+            } catch (Throwable e) {
+                log("report engine status failed: " + e);
             }
         }
 
@@ -367,8 +564,11 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                 logFlow("未获取到根节点，等待下一轮");
                 return;
             }
+            if (handleLoginBlockDialog(root, now)) {
+                return;
+            }
             if (!isHomeActivity()) {
-                logFlow("当前非 HomeActivity，等待返回首页容器页");
+                logFlow("当前非 HomeActivity，等待返回首页容器页。activity=" + activity.getClass().getName());
                 return;
             }
 
@@ -412,7 +612,8 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                     log("等待进入一起聊超时，回退到首页识别阶段");
                     return;
                 }
-                logFlow("当前不在首页，等待首页出现；缺失节点=" + missing);
+                logFlow("当前不在首页，等待首页出现；缺失节点=" + missing
+                        + " activity=" + activity.getClass().getName());
                 return;
             }
 
@@ -441,6 +642,26 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             } else {
                 logFlow("首页识别成功，但未完成一起聊点击。reason=" + togetherClick.target);
             }
+        }
+
+        private boolean handleLoginBlockDialog(View root, long now) {
+            if (root == null) {
+                return false;
+            }
+            if (!hasAllNodes(root, UiComponentConfig.LOGIN_BLOCK_DIALOG_NODES)) {
+                return false;
+            }
+            if (now - lastLoginBlockHandleAt < 1000L) {
+                return true;
+            }
+            lastLoginBlockHandleAt = now;
+            try {
+                activity.onBackPressed();
+                log("检测到登录拦截界面（menu_login_with_setting+qq+weibo+phone+cloudmusic），已执行返回");
+            } catch (Throwable e) {
+                log("检测到登录拦截界面，但返回失败: " + e);
+            }
+            return true;
         }
 
         private boolean handlePendingLiveRoomEntryInTogether(long now) {
@@ -493,21 +714,227 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                 logFlow("一起聊页：直播卡片点击冷却中");
                 return;
             }
-            TogetherCard card = findNextTogetherCard(root);
-            if (card == null) {
-                logFlow("一起聊页：当前可见区域无新直播卡片");
+            if (togetherScrollAt > 0L
+                    && now - togetherScrollAt < UiComponentConfig.TOGETHER_SCROLL_SETTLE_MS) {
+                logFlow("一起聊页：上滑后等待页面稳定");
                 return;
             }
-            ClickResult clickResult = clickTogetherCard(card);
-            if (clickResult.success) {
-                markCardClicked(card.key, now, card.titleCandidates);
-                flowState = RunFlowState.WAIT_LIVE_ROOM;
-                log("已点击直播卡片，key=" + card.key
-                        + " clickTarget=" + clickResult.target
-                        + " titleCandidates=" + card.titleCandidates);
-            } else {
-                logFlow("直播卡片点击失败，等待重试 key=" + card.key + " reason=" + clickResult.target);
+            CardPickResult pick = pickNextTogetherCard(root);
+            if (pick == null || pick.next == null) {
+                if (now - lastTogetherScrollAttemptAt < UiComponentConfig.TOGETHER_SCROLL_RETRY_INTERVAL_MS) {
+                    logFlow("一起聊页：无新卡片，等待上滑重试间隔");
+                    return;
+                }
+                lastTogetherScrollAttemptAt = now;
+                boolean swiped = performTogetherScrollUp();
+                if (swiped) {
+                    togetherScrollAt = now;
+                    togetherNoNewCardStreak++;
+                    int visible = pick == null ? 0 : pick.visibleTotal;
+                    int processed = pick == null ? 0 : pick.processedCount;
+                    int unprocessed = pick == null ? 0 : pick.unprocessedCount;
+                    String signature = pick == null ? "" : pick.visibleKeySignature;
+                    updateNoNewSignatureStreak(signature);
+                    log("一起聊页：当前可见区域无新卡片，执行上滑加载更多。visible="
+                            + visible + " processed=" + processed + " unprocessed=" + unprocessed
+                            + " emptyStreak=" + togetherNoNewCardStreak);
+                    if (shouldFinishTogetherCycle(now, pick)) {
+                        requestRestartForNextTogetherCycle(now);
+                    }
+                } else {
+                    logFlow("一起聊页：上滑加载更多失败，等待重试");
+                }
+                return;
             }
+            togetherNoNewCardStreak = 0;
+            togetherNoNewSameSignatureStreak = 0;
+            togetherLastNoNewSignature = "";
+            ClickResult clickResult = clickTogetherCard(pick.next);
+            if (clickResult.success) {
+                markCardClicked(pick.next.key, now, pick.next.titleCandidates);
+                flowState = RunFlowState.WAIT_LIVE_ROOM;
+                log("已点击直播卡片，key=" + pick.next.key
+                        + " clickTarget=" + clickResult.target
+                        + " titleCandidates=" + pick.next.titleCandidates
+                        + " visible=" + pick.visibleTotal
+                        + " processed=" + pick.processedCount
+                        + " unprocessed=" + pick.unprocessedCount);
+            } else {
+                logFlow("直播卡片点击失败，等待重试 key=" + pick.next.key + " reason=" + clickResult.target);
+            }
+        }
+
+        private void updateNoNewSignatureStreak(String signature) {
+            String current = safeTrim(signature);
+            if (TextUtils.isEmpty(current)) {
+                togetherNoNewSameSignatureStreak = 0;
+                togetherLastNoNewSignature = "";
+                return;
+            }
+            if (current.equals(togetherLastNoNewSignature)) {
+                togetherNoNewSameSignatureStreak++;
+                return;
+            }
+            togetherLastNoNewSignature = current;
+            togetherNoNewSameSignatureStreak = 1;
+        }
+
+        private boolean shouldFinishTogetherCycle(long now, CardPickResult pick) {
+            if (pick == null) {
+                return false;
+            }
+            if (pick.visibleTotal <= 0 || pick.unprocessedCount > 0) {
+                return false;
+            }
+            if (getProcessedCardCount() <= 0) {
+                return false;
+            }
+            if (togetherCycleRestartRequested) {
+                return false;
+            }
+            long waitMs = resolveTogetherCycleRestartDelayMs();
+            if (now - togetherLastCycleCompleteAt < waitMs) {
+                return false;
+            }
+            boolean emptyStreakReached = togetherNoNewCardStreak
+                    >= UiComponentConfig.TOGETHER_CYCLE_COMPLETE_EMPTY_STREAK;
+            boolean signatureStreakReached = togetherNoNewSameSignatureStreak
+                    >= UiComponentConfig.TOGETHER_CYCLE_COMPLETE_SAME_SIGNATURE_STREAK;
+            return emptyStreakReached && signatureStreakReached;
+        }
+
+        private void requestRestartForNextTogetherCycle(final long now) {
+            int completed = togetherCycleCompletedCount + 1;
+            togetherCycleCompletedCount = completed;
+            int cycleLimit = resolveTogetherCycleLimit();
+            long restartDelayMs = resolveTogetherCycleRestartDelayMs();
+            int enteredCount = Math.max(0, togetherCycleLiveRoomEnteredCount);
+            String cycleCompleteMessage = buildCycleCompleteMessage(enteredCount, completed, cycleLimit);
+            notifyCycleCompleteToModule(cycleCompleteMessage);
+            togetherCycleLiveRoomEnteredCount = 0;
+            togetherLastCycleCompleteAt = now;
+            if (cycleLimit > 0 && completed >= cycleLimit) {
+                stopEngineAfterCycleLimitReached(completed, cycleLimit);
+                return;
+            }
+            togetherCycleRestartRequested = true;
+            final int processedCount = getProcessedCardCount();
+            log("一起聊页：判定本轮卡片处理完成，准备重启 LOOK 进入下一轮。processedKeys="
+                    + processedCount
+                    + " enteredLiveRooms=" + enteredCount
+                    + " completedCycles=" + completed
+                    + " cycleLimit=" + cycleLimit
+                    + " cycleCompleteCond=emptyStreak>="
+                    + UiComponentConfig.TOGETHER_CYCLE_COMPLETE_EMPTY_STREAK
+                    + " && signatureStreak>="
+                    + UiComponentConfig.TOGETHER_CYCLE_COMPLETE_SAME_SIGNATURE_STREAK
+                    + " emptyStreak=" + togetherNoNewCardStreak
+                    + " signatureStreak=" + togetherNoNewSameSignatureStreak
+                    + " restartDelayMs=" + restartDelayMs);
+            handler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (!started) {
+                        togetherCycleRestartRequested = false;
+                        return;
+                    }
+                    if (resolveEffectiveEngineStatus() != ModuleSettings.EngineStatus.RUNNING) {
+                        togetherCycleRestartRequested = false;
+                        return;
+                    }
+                    try {
+                        requestModuleRestartTargetApp(activity.getApplicationContext(), activity);
+                    } finally {
+                        togetherCycleRestartRequested = false;
+                    }
+                }
+            }, restartDelayMs);
+        }
+
+        private int resolveTogetherCycleLimit() {
+            return ModuleSettings.getTogetherCycleLimit();
+        }
+
+        private long resolveTogetherCycleRestartDelayMs() {
+            long seconds = ModuleSettings.getTogetherCycleWaitSeconds();
+            if (seconds < 0L) {
+                seconds = 0L;
+            }
+            if (seconds > 86400L) {
+                seconds = 86400L;
+            }
+            return seconds * 1000L;
+        }
+
+        private void onLiveRoomEntered(String liveRoomTitle) {
+            togetherCycleLiveRoomEnteredCount++;
+            String title = safeTrim(liveRoomTitle);
+            if (!TextUtils.isEmpty(title)) {
+                log("直播间进入计数+1，本轮累计=" + togetherCycleLiveRoomEnteredCount + " title=" + title);
+            } else {
+                log("直播间进入计数+1，本轮累计=" + togetherCycleLiveRoomEnteredCount);
+            }
+        }
+
+        private String buildCycleCompleteMessage(int enteredCount, int completedCycles, int cycleLimit) {
+            int remaining = cycleLimit <= 0 ? -1 : Math.max(0, cycleLimit - completedCycles);
+            String remainingText = remaining < 0 ? "无限" : String.valueOf(remaining);
+            return "本轮进入直播间 " + Math.max(0, enteredCount)
+                    + " 个，还有 " + remainingText + " 次循环";
+        }
+
+        private void notifyCycleCompleteToModule(String message) {
+            String msg = safeTrim(message);
+            if (TextUtils.isEmpty(msg)) {
+                return;
+            }
+            Context appContext = activity.getApplicationContext();
+            if (appContext == null) {
+                return;
+            }
+            try {
+                Intent intent = new Intent(ModuleSettings.ACTION_CYCLE_COMPLETE_NOTICE);
+                intent.setPackage(ModuleSettings.MODULE_PACKAGE);
+                intent.putExtra(ModuleSettings.EXTRA_CYCLE_COMPLETE_MESSAGE, msg);
+                appContext.sendBroadcast(intent);
+            } catch (Throwable e) {
+                log("循环完成提示广播发送失败: " + e);
+            }
+        }
+
+        private void stopEngineAfterCycleLimitReached(int completed, int cycleLimit) {
+            long nextSeq = resolveEffectiveCommandSeq();
+            if (nextSeq <= 0L) {
+                nextSeq = 1L;
+            } else {
+                nextSeq += 1L;
+            }
+            updateRealtimeEngineState(
+                    ModuleSettings.ENGINE_CMD_STOP,
+                    ModuleSettings.EngineStatus.STOPPED,
+                    nextSeq
+            );
+            reportEngineStatusToModule(ModuleSettings.EngineStatus.STOPPED);
+            log("一起聊页：已完成循环次数上限，自动停止模块。completedCycles="
+                    + completed + " cycleLimit=" + cycleLimit);
+        }
+
+        private void requestModuleRestartTargetApp(Context appContext, Activity activity) {
+            if (appContext == null) {
+                return;
+            }
+            Intent intent = new Intent(ModuleSettings.ACTION_SYNC_FLOAT_SERVICE);
+            intent.setPackage(ModuleSettings.MODULE_PACKAGE);
+            int displayId = -1;
+            if (activity != null && activity.getDisplay() != null) {
+                displayId = activity.getDisplay().getDisplayId();
+            }
+            if (displayId >= 0) {
+                intent.putExtra(ModuleSettings.EXTRA_TARGET_DISPLAY_ID, displayId);
+            }
+            intent.putExtra(ModuleSettings.EXTRA_REQUEST_RESTART_TARGET_APP, true);
+            appContext.sendBroadcast(intent);
+            log("一起聊页：已请求模块服务重启 LOOK，displayId=" + displayId);
         }
 
         private boolean performTogetherPullRefresh() {
@@ -532,6 +959,42 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             );
             float endY = clamp(
                     height * UiComponentConfig.TOGETHER_REFRESH_SWIPE_END_Y_RATIO,
+                    1f,
+                    Math.max(1f, height - 1f)
+            );
+            return dispatchSwipeTouch(
+                    root,
+                    x,
+                    startY,
+                    x,
+                    endY,
+                    UiComponentConfig.TOUCH_SWIPE_DURATION_MS,
+                    UiComponentConfig.TOUCH_SWIPE_MOVE_STEPS
+            );
+        }
+
+        private boolean performTogetherScrollUp() {
+            View root = getRootView();
+            if (root == null) {
+                return false;
+            }
+            int width = root.getWidth();
+            int height = root.getHeight();
+            if (width <= 0 || height <= 0) {
+                return false;
+            }
+            float x = clamp(
+                    width * UiComponentConfig.TOGETHER_SCROLL_SWIPE_X_RATIO,
+                    1f,
+                    Math.max(1f, width - 1f)
+            );
+            float startY = clamp(
+                    height * UiComponentConfig.TOGETHER_SCROLL_SWIPE_START_Y_RATIO,
+                    1f,
+                    Math.max(1f, height - 1f)
+            );
+            float endY = clamp(
+                    height * UiComponentConfig.TOGETHER_SCROLL_SWIPE_END_Y_RATIO,
                     1f,
                     Math.max(1f, height - 1f)
             );
@@ -614,94 +1077,12 @@ public class LookHookEntry implements IXposedHookLoadPackage {
         }
 
         private void runLiveRoomFlow(long now) {
-            if (!isAwaitingLiveRoomScript()) {
-                logFlow("直播间页：当前无待执行任务");
-                return;
-            }
-            if (liveRoomScriptHandledInSession) {
-                return;
-            }
-            if (now - getLastCardClickAt() < UiComponentConfig.LIVE_ROOM_ENTER_WAIT_MS) {
-                logFlow("直播间页：等待页面稳定后执行任务");
-                return;
-            }
-            View root = getRootView();
-            if (root == null) {
-                logFlow("直播间页：未获取到根节点，等待校验");
-                return;
-            }
-            if (!hasAllNodes(root, UiComponentConfig.LIVE_ROOM_VERIFY_NODES)) {
-                String missing = findMissingNodeReason(root, UiComponentConfig.LIVE_ROOM_VERIFY_NODES);
-                if (now - getLastCardClickAt() > UiComponentConfig.ENTER_TOGETHER_TIMEOUT_MS) {
-                    resetAwaitingLiveRoomFlag();
-                    log("直播间校验超时，缺失节点=" + missing + "，恢复列表点击流程");
-                } else {
-                    logFlow("直播间校验中，缺失节点=" + missing);
-                }
-                return;
-            }
-            String liveRoomTitle = resolveLiveRoomTitle(root);
-            List<String> titleCandidates = getLastClickedCardTitleCandidates();
-            if (titleCandidates.isEmpty()) {
-                if (now - getLastCardClickAt() > UiComponentConfig.ENTER_TOGETHER_TIMEOUT_MS) {
-                    resetAwaitingLiveRoomFlag();
-                    log("直播间校验超时：未采集到卡片标题候选，恢复列表点击流程");
-                } else {
-                    logFlow("直播间校验中：等待卡片标题候选");
-                }
-                return;
-            }
-            if (TextUtils.isEmpty(liveRoomTitle)) {
-                if (now - getLastCardClickAt() > UiComponentConfig.ENTER_TOGETHER_TIMEOUT_MS) {
-                    resetAwaitingLiveRoomFlag();
-                    log("直播间校验超时：直播间title为空，恢复列表点击流程");
-                } else {
-                    logFlow("直播间校验中：等待直播间title加载");
-                }
-                return;
-            }
-            if (!isStringInList(titleCandidates, liveRoomTitle)) {
-                liveRoomScriptHandledInSession = true;
-                markLiveRoomScriptFinished();
-                log("直播间校验失败：title不匹配。liveTitle=" + liveRoomTitle
-                        + " candidates=" + titleCandidates + "，执行返回");
-                handler.postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        if (resolveEffectiveEngineStatus() != ModuleSettings.EngineStatus.RUNNING) {
-                            return;
-                        }
-                        try {
-                            activity.onBackPressed();
-                            markLiveRoomReturned(System.currentTimeMillis());
-                        } catch (Throwable e) {
-                            log("直播间返回失败: " + e);
-                        }
-                    }
-                }, UiComponentConfig.LIVE_ROOM_SCRIPT_BACK_DELAY_MS);
-                return;
-            }
-            liveRoomScriptHandledInSession = true;
-            log("直播间校验通过，开始执行直播间任务。liveTitle=" + liveRoomTitle
-                    + " candidates=" + titleCandidates);
-            long scriptWaitMs = LiveRoomTaskScriptRunner.runLiveRoomEnterTask(activity);
-            markLiveRoomScriptFinished();
-            long backDelayMs = Math.max(UiComponentConfig.LIVE_ROOM_SCRIPT_BACK_DELAY_MS, scriptWaitMs);
-            handler.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    if (resolveEffectiveEngineStatus() != ModuleSettings.EngineStatus.RUNNING) {
-                        return;
-                    }
-                    try {
-                        activity.onBackPressed();
-                        markLiveRoomReturned(System.currentTimeMillis());
-                        log("直播间任务完成，执行返回退出直播间");
-                    } catch (Throwable e) {
-                        log("直播间返回失败: " + e);
-                    }
-                }
-            }, backDelayMs);
+            liveRoomScriptHandledInSession = LiveRoomRuntimeModule.run(
+                    now,
+                    activity,
+                    liveRoomScriptHandledInSession,
+                    liveRoomRuntimeBridge
+            );
         }
 
         private void logFlow(String msg) {
@@ -944,33 +1325,70 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                     + ", bounds=" + rect.toShortString();
         }
 
-        private TogetherCard findNextTogetherCard(View root) {
+        private CardPickResult pickNextTogetherCard(View root) {
             View container = findFirstNode(root, UiComponentConfig.TOGETHER_ROOM_LIST_CONTAINER_NODE);
             if (container == null) {
-                return null;
+                return new CardPickResult(null, 0, 0, 0, "");
             }
             List<TogetherCard> cards = collectTogetherCards(container);
             if (cards.isEmpty()) {
-                return null;
+                return new CardPickResult(null, 0, 0, 0, "");
             }
+            TogetherCard firstUnprocessed = null;
+            int processed = 0;
+            int unprocessed = 0;
             for (TogetherCard card : cards) {
                 if (!isCardProcessed(card.key)) {
-                    return card;
+                    unprocessed++;
+                    if (firstUnprocessed == null) {
+                        firstUnprocessed = card;
+                    }
+                    continue;
+                }
+                processed++;
+            }
+            return new CardPickResult(
+                    firstUnprocessed,
+                    cards.size(),
+                    processed,
+                    unprocessed,
+                    buildVisibleCardSignature(cards)
+            );
+        }
+
+        private String buildVisibleCardSignature(List<TogetherCard> cards) {
+            if (cards == null || cards.isEmpty()) {
+                return "";
+            }
+            StringBuilder sb = new StringBuilder();
+            int count = 0;
+            for (TogetherCard card : cards) {
+                if (card == null || TextUtils.isEmpty(card.key)) {
+                    continue;
+                }
+                if (count > 0) {
+                    sb.append("||");
+                }
+                sb.append(card.key);
+                count++;
+                if (count >= 8) {
+                    break;
                 }
             }
-            return null;
+            return safeTrim(sb.toString());
         }
 
         private List<TogetherCard> collectTogetherCards(View container) {
             LinkedHashMap<String, TogetherCard> deduped = new LinkedHashMap<String, TogetherCard>(16);
+            int rootHeight = resolveRootHeight(container);
             ArrayDeque<View> stack = new ArrayDeque<View>();
             stack.push(container);
             while (!stack.isEmpty()) {
                 View current = stack.pop();
-                if (isTogetherCardView(current)) {
+                if (isTogetherCardView(current) && isCardInSafeClickArea(current, rootHeight)) {
                     List<String> texts = collectCardTexts(current);
-                    String key = buildCardKey(current, texts);
                     List<String> titleCandidates = collectCardTitleCandidates(current, texts);
+                    String key = buildCardKey(current, texts, titleCandidates);
                     if (!TextUtils.isEmpty(key) && !deduped.containsKey(key)) {
                         deduped.put(key, new TogetherCard(current, key, titleCandidates));
                     }
@@ -988,6 +1406,41 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             return new ArrayList<TogetherCard>(deduped.values());
         }
 
+        private int resolveRootHeight(View container) {
+            if (container != null) {
+                View root = container.getRootView();
+                if (root != null && root.getHeight() > 0) {
+                    return root.getHeight();
+                }
+            }
+            try {
+                View root = getRootView();
+                if (root != null && root.getHeight() > 0) {
+                    return root.getHeight();
+                }
+            } catch (Throwable ignore) {
+            }
+            return 0;
+        }
+
+        private boolean isCardInSafeClickArea(View card, int rootHeight) {
+            if (card == null) {
+                return false;
+            }
+            if (rootHeight <= 0) {
+                return true;
+            }
+            Rect rect = new Rect();
+            if (!card.getGlobalVisibleRect(rect)) {
+                return false;
+            }
+            if (rect.width() <= 0 || rect.height() <= 0) {
+                return false;
+            }
+            float safeBottom = rootHeight * UiComponentConfig.TOGETHER_CARD_SAFE_BOTTOM_Y_RATIO;
+            return rect.bottom <= safeBottom;
+        }
+
         private boolean isTogetherCardView(View view) {
             if (view == null || !view.isShown() || !view.isClickable()) {
                 return false;
@@ -995,7 +1448,20 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             return view instanceof ViewGroup;
         }
 
-        private String buildCardKey(View card, List<String> texts) {
+        private String buildCardKey(View card, List<String> texts, List<String> titleCandidates) {
+            if (titleCandidates != null && !titleCandidates.isEmpty()) {
+                StringBuilder sb = new StringBuilder();
+                for (int i = 0; i < titleCandidates.size() && i < 2; i++) {
+                    if (i > 0) {
+                        sb.append('|');
+                    }
+                    sb.append(titleCandidates.get(i));
+                }
+                String key = safeTrim(sb.toString());
+                if (!TextUtils.isEmpty(key)) {
+                    return key;
+                }
+            }
             if (!texts.isEmpty()) {
                 StringBuilder sb = new StringBuilder();
                 for (int i = 0; i < texts.size() && i < 2; i++) {
@@ -1196,8 +1662,9 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             int depth = 0;
             while (current != null && depth < 5) {
                 if (current.isShown()) {
+                    boolean hasValidBounds = hasUsableVisibleBounds(current);
                     try {
-                        if (current.isClickable() && current.performClick()) {
+                        if (hasValidBounds && current.isClickable() && current.performClick()) {
                             return new ClickResult(
                                     true,
                                     clickName + " via=performClick depth=" + depth
@@ -1207,7 +1674,7 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                     } catch (Throwable ignore) {
                     }
                     try {
-                        if (current.isClickable() && current.callOnClick()) {
+                        if (hasValidBounds && current.isClickable() && current.callOnClick()) {
                             return new ClickResult(
                                     true,
                                     clickName + " via=callOnClick depth=" + depth
@@ -1217,7 +1684,8 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                     } catch (Throwable ignore) {
                     }
                     try {
-                        if (tapViewCenter(current)) {
+                        boolean allowTapCenter = current.isClickable() || depth == 0;
+                        if (hasValidBounds && allowTapCenter && tapViewCenter(current)) {
                             return new ClickResult(
                                     true,
                                     clickName + " via=tap_center depth=" + depth
@@ -1237,6 +1705,17 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                     false,
                     clickName + " fallback_failed start=" + describeViewForLog(start)
             );
+        }
+
+        private boolean hasUsableVisibleBounds(View target) {
+            if (target == null || !target.isShown()) {
+                return false;
+            }
+            Rect rect = new Rect();
+            if (!target.getGlobalVisibleRect(rect)) {
+                return false;
+            }
+            return rect.width() > 2 && rect.height() > 2;
         }
 
         private boolean tapViewCenter(View target) {
@@ -1400,6 +1879,28 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                         : new ArrayList<String>(titleCandidates);
             }
         }
+
+        private final class CardPickResult {
+            final TogetherCard next;
+            final int visibleTotal;
+            final int processedCount;
+            final int unprocessedCount;
+            final String visibleKeySignature;
+
+            CardPickResult(
+                    TogetherCard next,
+                    int visibleTotal,
+                    int processedCount,
+                    int unprocessedCount,
+                    String visibleKeySignature
+            ) {
+                this.next = next;
+                this.visibleTotal = Math.max(0, visibleTotal);
+                this.processedCount = Math.max(0, processedCount);
+                this.unprocessedCount = Math.max(0, unprocessedCount);
+                this.visibleKeySignature = visibleKeySignature == null ? "" : visibleKeySignature;
+            }
+        }
     }
 
     private static void resetGlobalCardFlowState() {
@@ -1441,9 +1942,28 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             sRealtimeCommand = safeTrimStatic(command);
             sRealtimeStatus = status;
             sRealtimeCommandSeq = seq;
+            if (status == ModuleSettings.EngineStatus.RUNNING) {
+                sAutoRunConsumedForProcess = true;
+            }
             if (status != ModuleSettings.EngineStatus.RUNNING) {
                 sAwaitingLiveRoomScript = false;
             }
+        }
+    }
+
+    private static boolean tryConsumeAutoRunForProcess() {
+        synchronized (FLOW_STATE_LOCK) {
+            if (sAutoRunConsumedForProcess) {
+                return false;
+            }
+            sAutoRunConsumedForProcess = true;
+            return true;
+        }
+    }
+
+    private static void markAutoRunConsumedForProcess() {
+        synchronized (FLOW_STATE_LOCK) {
+            sAutoRunConsumedForProcess = true;
         }
     }
 
@@ -1508,6 +2028,12 @@ public class LookHookEntry implements IXposedHookLoadPackage {
     private static boolean isCardProcessed(String key) {
         synchronized (FLOW_STATE_LOCK) {
             return !TextUtils.isEmpty(key) && PROCESSED_CARD_KEYS.contains(key);
+        }
+    }
+
+    private static int getProcessedCardCount() {
+        synchronized (FLOW_STATE_LOCK) {
+            return PROCESSED_CARD_KEYS.size();
         }
     }
 

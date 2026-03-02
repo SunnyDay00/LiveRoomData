@@ -2,7 +2,10 @@ package com.oodbye.looklspmodule;
 
 import android.app.Activity;
 import android.content.Context;
+import android.graphics.Rect;
+import android.os.SystemClock;
 import android.text.TextUtils;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
@@ -67,11 +70,30 @@ final class CustomRulesAdProcessor {
             }
             if (executeAction(rule.actionPattern, nodes, trigger)) {
                 rule.lastHandleAt = nowMs;
+                AdHandledNotifier.show(activity, buildAdHint(rule));
                 log("命中规则: id=" + rule.idPattern + " action=" + rule.actionPattern);
                 return true;
             }
+            if (nowMs - rule.lastFailLogAt > 2000L) {
+                rule.lastFailLogAt = nowMs;
+                log("命中规则但动作失败: id=" + rule.idPattern + " action=" + rule.actionPattern);
+            }
         }
         return false;
+    }
+
+    private String buildAdHint(PopupRule rule) {
+        if (rule == null) {
+            return "";
+        }
+        String action = safeTrim(rule.actionPattern);
+        if ("GLOBAL_ACTION_BACK".equalsIgnoreCase(action)) {
+            return "已返回关闭";
+        }
+        if (TextUtils.isEmpty(action)) {
+            return "已点击关闭";
+        }
+        return "已执行规则动作";
     }
 
     private boolean executeAction(String actionPattern, List<View> nodes, View triggerView) {
@@ -277,24 +299,91 @@ final class CustomRulesAdProcessor {
         return out;
     }
 
-    private static boolean clickWithParentFallback(View start) {
+    private boolean clickWithParentFallback(View start) {
         View current = start;
-        int depth = 0;
-        while (current != null && depth < 4) {
-            if (current.isShown() && current.isClickable()) {
+        for (int depth = 0; current != null && depth < 5; depth++) {
+            if (current.isShown()) {
                 try {
-                    return current.performClick();
+                    if (current.isClickable() && current.performClick()) {
+                        return true;
+                    }
                 } catch (Throwable ignore) {
-                    return false;
+                }
+                try {
+                    if (current.isClickable() && current.callOnClick()) {
+                        return true;
+                    }
+                } catch (Throwable ignore) {
+                }
+                try {
+                    if (tapViewCenter(current)) {
+                        return true;
+                    }
+                } catch (Throwable ignore) {
                 }
             }
             if (!(current.getParent() instanceof View)) {
                 break;
             }
             current = (View) current.getParent();
-            depth++;
         }
         return false;
+    }
+
+    private boolean tapViewCenter(View target) {
+        return tapViewAtRatio(target, 0.5f, 0.5f);
+    }
+
+    private boolean tapViewAtRatio(View target, float xRatio, float yRatio) {
+        if (target == null || !target.isShown()) {
+            return false;
+        }
+        Rect rect = new Rect();
+        if (!target.getGlobalVisibleRect(rect)) {
+            return false;
+        }
+        if (rect.width() <= 0 || rect.height() <= 0) {
+            return false;
+        }
+        float safeXRatio = clamp(xRatio, 0.05f, 0.95f);
+        float safeYRatio = clamp(yRatio, 0.05f, 0.95f);
+        float x = rect.left + rect.width() * safeXRatio;
+        float y = rect.top + rect.height() * safeYRatio;
+        return dispatchTapGlobal(x, y);
+    }
+
+    private float clamp(float value, float min, float max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private boolean dispatchTapGlobal(float x, float y) {
+        long downTime = SystemClock.uptimeMillis();
+        MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, x, y, 0);
+        MotionEvent up = MotionEvent.obtain(downTime, downTime + 45L, MotionEvent.ACTION_UP, x, y, 0);
+        boolean handledDown = false;
+        boolean handledUp = false;
+        try {
+            handledDown = activity.dispatchTouchEvent(down);
+            handledUp = activity.dispatchTouchEvent(up);
+        } finally {
+            down.recycle();
+            up.recycle();
+        }
+        if (!(handledDown || handledUp) && activity.getWindow() != null) {
+            MotionEvent down2 = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, x, y, 0);
+            MotionEvent up2 = MotionEvent.obtain(downTime, downTime + 45L, MotionEvent.ACTION_UP, x, y, 0);
+            try {
+                View decor = activity.getWindow().getDecorView();
+                if (decor != null) {
+                    handledDown = decor.dispatchTouchEvent(down2);
+                    handledUp = decor.dispatchTouchEvent(up2);
+                }
+            } finally {
+                down2.recycle();
+                up2.recycle();
+            }
+        }
+        return handledDown || handledUp;
     }
 
     private static List<PopupRule> loadRulesForTargetPackage(Context context) {
@@ -471,12 +560,14 @@ final class CustomRulesAdProcessor {
         final String actionPattern;
         final int delayPopupMs;
         long lastHandleAt;
+        long lastFailLogAt;
 
         PopupRule(String idPattern, String actionPattern, int delayPopupMs) {
             this.idPattern = idPattern;
             this.actionPattern = actionPattern;
             this.delayPopupMs = Math.max(delayPopupMs, 0);
             this.lastHandleAt = 0L;
+            this.lastFailLogAt = 0L;
         }
     }
 }
