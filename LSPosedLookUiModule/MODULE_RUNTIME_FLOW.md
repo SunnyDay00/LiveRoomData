@@ -1,6 +1,6 @@
 # LSPosedLookUiModule 运行逻辑说明
 
-最后更新：2026-03-02（v1.5.6）
+最后更新：2026-03-02（v1.6.1）
 
 ## 1. 长期维护约定
 
@@ -133,6 +133,23 @@
   - 修复 `LookHookEntry` 在目标进程回读运行态统计时误读 `com.netease.play` 本地 `SharedPreferences` 的问题。
   - 新增 `ModuleSettings` 的 `runtime_*` XSharedPreferences 读取接口，统一从模块侧配置回读 `runStartAt/completed/entered`。
   - 每次 Activity/session 切换到 `RUNNING` 时先恢复 `runtime` 共享计数，再继续累加，避免“已进房始终为1、运行时间进入直播间后重置”。
+- 全局悬浮层显示屏绑定修复（v1.5.7）：
+  - `GlobalFloatService` 的全局层和镜像层改为基于目标 `displayId` 创建 `WindowContext`（Android 11+）并绑定对应 `WindowManager`。
+  - 修复多显示环境下“全局层实际挂在 LOOK 显示屏，导致桌面/其他应用不显示”的问题。
+  - 增加挂载显示屏日志：全局层与镜像层分别输出实际 `displayId`，便于排查显示异常。
+- 全屏多实例悬浮层（v1.5.8）：
+  - 新增“额外显示屏悬浮层”机制：对当前在线屏幕逐个创建悬浮层实例，不再仅限全局层 + LOOK 镜像层。
+  - 每个屏幕上的 `运行/暂停/停止` 与信息窗口状态实时同步，任一屏幕操作都会作用于同一引擎状态。
+  - 屏幕上下线时自动增删对应悬浮层实例，避免某些屏幕切换后悬浮按钮缺失。
+- 多屏 WindowContext 绑定增强（v1.5.9）：
+  - `resolveOverlayContext` 优先使用 `createWindowContext(display, TYPE_APPLICATION_OVERLAY, null)` 直接按目标屏创建窗口上下文。
+  - 新增上下文显示屏日志（`contextDisplay`），用于定位“目标 display 与实际挂载 display 不一致”的环境问题。
+- 多屏悬浮层重建抖动修复（v1.6.0）：
+  - 修复 `view.getDisplay()` 在部分环境返回 `null` 导致的误判重建（每 2 秒移除/重加悬浮层）。
+  - 仅当已解析到有效 `displayId` 且与目标屏不一致时才重建，避免闪烁与性能损耗。
+- 多屏 WindowManager 误判重建修复（v1.6.1）：
+  - 修复每轮刷新中 `WindowManager` 实例引用变化导致的“总是 remove/add”问题。
+  - 改为仅在未初始化或目标显示屏确实变化时重建，减少闪烁并提升稳定性。
 
 ## 4. 当前主流程
 
