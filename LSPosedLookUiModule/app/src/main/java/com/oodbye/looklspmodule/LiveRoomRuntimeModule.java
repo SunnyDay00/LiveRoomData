@@ -69,7 +69,7 @@ final class LiveRoomRuntimeModule {
         boolean verifyTimedOut = elapsedMs > UiComponentConfig.LIVE_ROOM_VERIFY_TIMEOUT_MS;
         if (!bridge.isAwaitingLiveRoomTask()) {
             bridge.logFlow("直播间页：当前无待执行任务，isLiveActivity=" + bridge.isLiveRoomActivity());
-            return handledInSession;
+            return false;
         }
         if (handledInSession) {
             return true;

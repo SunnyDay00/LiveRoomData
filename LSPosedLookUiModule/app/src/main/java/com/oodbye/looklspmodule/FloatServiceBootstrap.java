@@ -37,8 +37,10 @@ final class FloatServiceBootstrap {
                     false
             );
         }
-        if (hasDisplayExtra || requestRestart) {
+        if (hasDisplayExtra && displayId >= 0) {
             GlobalFloatService.startServiceCompat(context, displayId, requestRestart);
+        } else if (requestRestart) {
+            GlobalFloatService.startServiceCompat(context, true);
         } else {
             GlobalFloatService.startServiceCompat(context);
         }

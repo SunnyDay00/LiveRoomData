@@ -17,6 +17,10 @@ final class ModuleSettings {
     static final String KEY_AUTO_RUN_ON_APP_START_ENABLED = "auto_run_on_app_start_enabled";
     static final String KEY_TOGETHER_CYCLE_LIMIT = "together_cycle_limit";
     static final String KEY_TOGETHER_CYCLE_WAIT_SECONDS = "together_cycle_wait_seconds";
+    static final String KEY_FLOAT_INFO_WINDOW_ENABLED = "float_info_window_enabled";
+    static final String KEY_RUNTIME_RUN_START_AT = "runtime_run_start_at";
+    static final String KEY_RUNTIME_CYCLE_COMPLETED = "runtime_cycle_completed";
+    static final String KEY_RUNTIME_CYCLE_ENTERED = "runtime_cycle_entered";
     static final String KEY_ENGINE_STATUS = "engine_status";
     static final String KEY_ENGINE_COMMAND = "engine_command";
     static final String KEY_ENGINE_COMMAND_SEQ = "engine_command_seq";
@@ -24,12 +28,16 @@ final class ModuleSettings {
     static final String ACTION_SYNC_FLOAT_SERVICE = MODULE_PACKAGE + ".ACTION_SYNC_FLOAT_SERVICE";
     static final String ACTION_ENGINE_STATUS_REPORT = MODULE_PACKAGE + ".ACTION_ENGINE_STATUS_REPORT";
     static final String ACTION_CYCLE_COMPLETE_NOTICE = MODULE_PACKAGE + ".ACTION_CYCLE_COMPLETE_NOTICE";
+    static final String ACTION_RUNTIME_STATS_REPORT = MODULE_PACKAGE + ".ACTION_RUNTIME_STATS_REPORT";
     static final String EXTRA_ENGINE_COMMAND = "engine_command";
     static final String EXTRA_ENGINE_STATUS = "engine_status";
     static final String EXTRA_ENGINE_COMMAND_SEQ = "engine_command_seq";
     static final String EXTRA_TARGET_DISPLAY_ID = "target_display_id";
     static final String EXTRA_REQUEST_RESTART_TARGET_APP = "request_restart_target_app";
     static final String EXTRA_CYCLE_COMPLETE_MESSAGE = "cycle_complete_message";
+    static final String EXTRA_RUNTIME_RUN_START_AT = "runtime_run_start_at";
+    static final String EXTRA_RUNTIME_CYCLE_COMPLETED = "runtime_cycle_completed";
+    static final String EXTRA_RUNTIME_CYCLE_ENTERED = "runtime_cycle_entered";
 
     static final String ENGINE_CMD_RUN = "RUN";
     static final String ENGINE_CMD_PAUSE = "PAUSE";
@@ -41,6 +49,7 @@ final class ModuleSettings {
     static final boolean DEFAULT_AUTO_RUN_ON_APP_START_ENABLED = false;
     static final int DEFAULT_TOGETHER_CYCLE_LIMIT = 0;
     static final int DEFAULT_TOGETHER_CYCLE_WAIT_SECONDS = 0;
+    static final boolean DEFAULT_FLOAT_INFO_WINDOW_ENABLED = false;
     static final String DEFAULT_ENGINE_STATUS = EngineStatus.STOPPED.name();
 
     private static final long XSP_RELOAD_INTERVAL_MS = 1000L;
@@ -129,6 +138,14 @@ final class ModuleSettings {
         );
     }
 
+    static synchronized boolean isFloatInfoWindowEnabled() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return DEFAULT_FLOAT_INFO_WINDOW_ENABLED;
+        }
+        return xsp.getBoolean(KEY_FLOAT_INFO_WINDOW_ENABLED, DEFAULT_FLOAT_INFO_WINDOW_ENABLED);
+    }
+
     static synchronized String getEngineCommand() {
         XSharedPreferences xsp = getXsp();
         if (xsp == null) {
@@ -143,6 +160,30 @@ final class ModuleSettings {
             return 0L;
         }
         return xsp.getLong(KEY_ENGINE_COMMAND_SEQ, 0L);
+    }
+
+    static synchronized long getRuntimeRunStartAt() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return 0L;
+        }
+        return Math.max(0L, xsp.getLong(KEY_RUNTIME_RUN_START_AT, 0L));
+    }
+
+    static synchronized int getRuntimeCycleCompleted() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return 0;
+        }
+        return sanitizeNonNegativeInt(xsp.getInt(KEY_RUNTIME_CYCLE_COMPLETED, 0));
+    }
+
+    static synchronized int getRuntimeCycleEntered() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return 0;
+        }
+        return sanitizeNonNegativeInt(xsp.getInt(KEY_RUNTIME_CYCLE_ENTERED, 0));
     }
 
     static synchronized boolean getGlobalFloatButtonEnabled(SharedPreferences prefs) {
@@ -202,6 +243,34 @@ final class ModuleSettings {
         return sanitizeNonNegativeInt(
                 prefs.getInt(KEY_TOGETHER_CYCLE_WAIT_SECONDS, DEFAULT_TOGETHER_CYCLE_WAIT_SECONDS)
         );
+    }
+
+    static synchronized boolean getFloatInfoWindowEnabled(SharedPreferences prefs) {
+        if (prefs == null) {
+            return DEFAULT_FLOAT_INFO_WINDOW_ENABLED;
+        }
+        return prefs.getBoolean(KEY_FLOAT_INFO_WINDOW_ENABLED, DEFAULT_FLOAT_INFO_WINDOW_ENABLED);
+    }
+
+    static synchronized long getRuntimeRunStartAt(SharedPreferences prefs) {
+        if (prefs == null) {
+            return 0L;
+        }
+        return Math.max(0L, prefs.getLong(KEY_RUNTIME_RUN_START_AT, 0L));
+    }
+
+    static synchronized int getRuntimeCycleCompleted(SharedPreferences prefs) {
+        if (prefs == null) {
+            return 0;
+        }
+        return sanitizeNonNegativeInt(prefs.getInt(KEY_RUNTIME_CYCLE_COMPLETED, 0));
+    }
+
+    static synchronized int getRuntimeCycleEntered(SharedPreferences prefs) {
+        if (prefs == null) {
+            return 0;
+        }
+        return sanitizeNonNegativeInt(prefs.getInt(KEY_RUNTIME_CYCLE_ENTERED, 0));
     }
 
     static synchronized String getEngineCommand(SharedPreferences prefs) {
@@ -274,6 +343,15 @@ final class ModuleSettings {
         ensurePrefsReadable(context);
     }
 
+    static synchronized void setFloatInfoWindowEnabled(Context context, boolean enabled) {
+        if (context == null) {
+            return;
+        }
+        SharedPreferences prefs = appPrefs(context);
+        prefs.edit().putBoolean(KEY_FLOAT_INFO_WINDOW_ENABLED, enabled).commit();
+        ensurePrefsReadable(context);
+    }
+
     static synchronized long pushEngineCommand(Context context, String command, EngineStatus status) {
         if (context == null) {
             return 0L;
@@ -300,7 +378,17 @@ final class ModuleSettings {
         }
         SharedPreferences prefs = appPrefs(context);
         long storedSeq = prefs.getLong(KEY_ENGINE_COMMAND_SEQ, 0L);
-        long finalSeq = seq > 0L ? Math.max(storedSeq, seq) : storedSeq;
+        if (seq > 0L) {
+            if (seq < storedSeq) {
+                return;
+            }
+            if (seq == storedSeq) {
+                return;
+            }
+        } else if (storedSeq > 0L) {
+            return;
+        }
+        long finalSeq = seq > 0L ? seq : storedSeq;
         String cmd = safeTrim(command);
         if (cmd.length() == 0) {
             cmd = commandForStatus(status);
@@ -311,6 +399,42 @@ final class ModuleSettings {
                 .putLong(KEY_ENGINE_COMMAND_SEQ, finalSeq)
                 .commit();
         ensurePrefsReadable(context);
+    }
+
+    static synchronized void syncRuntimeStats(
+            Context context,
+            long runStartAt,
+            int cycleCompleted,
+            int cycleEntered
+    ) {
+        if (context == null) {
+            return;
+        }
+        SharedPreferences prefs = appPrefs(context);
+        prefs.edit()
+                .putLong(KEY_RUNTIME_RUN_START_AT, Math.max(0L, runStartAt))
+                .putInt(KEY_RUNTIME_CYCLE_COMPLETED, sanitizeNonNegativeInt(cycleCompleted))
+                .putInt(KEY_RUNTIME_CYCLE_ENTERED, sanitizeNonNegativeInt(cycleEntered))
+                .commit();
+        ensurePrefsReadable(context);
+    }
+
+    static synchronized long forceStopAndResetRuntime(Context context) {
+        if (context == null) {
+            return 0L;
+        }
+        SharedPreferences prefs = appPrefs(context);
+        long nextSeq = prefs.getLong(KEY_ENGINE_COMMAND_SEQ, 0L) + 1L;
+        prefs.edit()
+                .putString(KEY_ENGINE_COMMAND, ENGINE_CMD_STOP)
+                .putString(KEY_ENGINE_STATUS, EngineStatus.STOPPED.name())
+                .putLong(KEY_ENGINE_COMMAND_SEQ, nextSeq)
+                .putLong(KEY_RUNTIME_RUN_START_AT, 0L)
+                .putInt(KEY_RUNTIME_CYCLE_COMPLETED, 0)
+                .putInt(KEY_RUNTIME_CYCLE_ENTERED, 0)
+                .commit();
+        ensurePrefsReadable(context);
+        return nextSeq;
     }
 
     static synchronized EngineStatus parseStatusName(String value) {
@@ -356,6 +480,18 @@ final class ModuleSettings {
         }
         if (!prefs.contains(KEY_TOGETHER_CYCLE_WAIT_SECONDS)) {
             editor.putInt(KEY_TOGETHER_CYCLE_WAIT_SECONDS, DEFAULT_TOGETHER_CYCLE_WAIT_SECONDS);
+        }
+        if (!prefs.contains(KEY_FLOAT_INFO_WINDOW_ENABLED)) {
+            editor.putBoolean(KEY_FLOAT_INFO_WINDOW_ENABLED, DEFAULT_FLOAT_INFO_WINDOW_ENABLED);
+        }
+        if (!prefs.contains(KEY_RUNTIME_RUN_START_AT)) {
+            editor.putLong(KEY_RUNTIME_RUN_START_AT, 0L);
+        }
+        if (!prefs.contains(KEY_RUNTIME_CYCLE_COMPLETED)) {
+            editor.putInt(KEY_RUNTIME_CYCLE_COMPLETED, 0);
+        }
+        if (!prefs.contains(KEY_RUNTIME_CYCLE_ENTERED)) {
+            editor.putInt(KEY_RUNTIME_CYCLE_ENTERED, 0);
         }
         if (!prefs.contains(KEY_ENGINE_STATUS)) {
             editor.putString(KEY_ENGINE_STATUS, DEFAULT_ENGINE_STATUS);

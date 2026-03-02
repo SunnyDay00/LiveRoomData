@@ -95,6 +95,43 @@ public class ModuleSettingsActivity extends Activity {
         floatHint.setLayoutParams(floatHintLp);
         container.addView(floatHint);
 
+        final Switch floatInfoSwitch = new Switch(this);
+        floatInfoSwitch.setText("悬浮信息窗口");
+        floatInfoSwitch.setChecked(ModuleSettings.getFloatInfoWindowEnabled(prefs));
+        LinearLayout.LayoutParams floatInfoLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        floatInfoLp.topMargin = dp(12);
+        floatInfoSwitch.setLayoutParams(floatInfoLp);
+        floatInfoSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                ModuleSettings.setFloatInfoWindowEnabled(ModuleSettingsActivity.this, isChecked);
+                if (ModuleSettings.getGlobalFloatButtonEnabled(ModuleSettings.appPrefs(ModuleSettingsActivity.this))
+                        && canDrawOverlaysCompat()) {
+                    GlobalFloatService.startServiceCompat(ModuleSettingsActivity.this);
+                }
+                Toast.makeText(
+                        ModuleSettingsActivity.this,
+                        isChecked ? "已开启悬浮信息窗口" : "已关闭悬浮信息窗口",
+                        Toast.LENGTH_SHORT
+                ).show();
+            }
+        });
+        container.addView(floatInfoSwitch);
+
+        TextView floatInfoHint = new TextView(this);
+        floatInfoHint.setText("开启后会在悬浮按钮上方显示：循环(当前/剩余)、本轮直播间进入数、运行时长。");
+        floatInfoHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        LinearLayout.LayoutParams floatInfoHintLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        floatInfoHintLp.topMargin = dp(6);
+        floatInfoHint.setLayoutParams(floatInfoHintLp);
+        container.addView(floatInfoHint);
+
         final Switch adSwitch = new Switch(this);
         adSwitch.setText("广告处理");
         adSwitch.setChecked(ModuleSettings.getAdProcessEnabled(prefs));

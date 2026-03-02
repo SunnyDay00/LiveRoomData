@@ -55,6 +55,9 @@ public class LookHookEntry implements IXposedHookLoadPackage {
     private static long sLastLiveRoomReturnAt = 0L;
     private static long sLastFloatSyncRequestAt = 0L;
     private static boolean sAutoRunConsumedForProcess = false;
+    private static long sRuntimeRunStartedAt = 0L;
+    private static int sRuntimeCycleCompletedCount = 0;
+    private static int sRuntimeCycleEnteredCount = 0;
 
     static {
         log("LookHookEntry class loaded");
@@ -483,11 +486,18 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             reportEngineStatusToModule(to);
             if (to == ModuleSettings.EngineStatus.RUNNING) {
                 long seq = resolveEffectiveCommandSeq();
-                if (!markRunSeqInitialized(seq)) {
+                boolean isNewRunSeq = markRunSeqInitialized(seq);
+                if (!isNewRunSeq) {
+                    runStartedAt = resolveRuntimeRunStartedAtFromShared();
+                    togetherCycleCompletedCount = resolveRuntimeCycleCompletedFromShared();
+                    togetherCycleLiveRoomEnteredCount = resolveRuntimeCycleEnteredFromShared();
+                    setRuntimeCycleCompletedCountShared(togetherCycleCompletedCount);
+                    setRuntimeCycleEnteredCountShared(togetherCycleLiveRoomEnteredCount);
                     return;
                 }
                 ModuleRunFileLogger.prepareForNewRun(activity.getApplicationContext(), seq);
                 runStartedAt = System.currentTimeMillis();
+                setRuntimeRunStartedAtShared(runStartedAt);
                 flowState = RunFlowState.WAIT_HOME;
                 togetherEnterStartAt = 0L;
                 lastEnterTogetherAttemptAt = 0L;
@@ -503,6 +513,8 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                 togetherNoNewSameSignatureStreak = 0;
                 togetherCycleCompletedCount = 0;
                 togetherCycleLiveRoomEnteredCount = 0;
+                setRuntimeCycleCompletedCountShared(0);
+                setRuntimeCycleEnteredCountShared(0);
                 togetherLastNoNewSignature = "";
                 togetherLastCycleCompleteAt = 0L;
                 togetherCycleRestartRequested = false;
@@ -514,6 +526,11 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                 if (!TextUtils.isEmpty(logPath)) {
                     log("本次运行日志文件=" + logPath);
                 }
+                reportRuntimeStatsToModule(
+                        resolveRuntimeRunStartedAtFromShared(),
+                        getRuntimeCycleCompletedCountShared(),
+                        getRuntimeCycleEnteredCountShared()
+                );
                 return;
             }
             if (from == ModuleSettings.EngineStatus.RUNNING && to != ModuleSettings.EngineStatus.RUNNING) {
@@ -529,6 +546,9 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                 togetherNoNewSameSignatureStreak = 0;
                 togetherCycleCompletedCount = 0;
                 togetherCycleLiveRoomEnteredCount = 0;
+                setRuntimeRunStartedAtShared(0L);
+                setRuntimeCycleCompletedCountShared(0);
+                setRuntimeCycleEnteredCountShared(0);
                 togetherLastNoNewSignature = "";
                 togetherLastCycleCompleteAt = 0L;
                 togetherCycleRestartRequested = false;
@@ -537,6 +557,7 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                 liveRoomScriptHandledInSession = false;
                 lastFlowLogMessage = "";
                 resetAwaitingLiveRoomFlag();
+                reportRuntimeStatsToModule(0L, 0, 0);
             }
         }
 
@@ -806,12 +827,19 @@ public class LookHookEntry implements IXposedHookLoadPackage {
         private void requestRestartForNextTogetherCycle(final long now) {
             int completed = togetherCycleCompletedCount + 1;
             togetherCycleCompletedCount = completed;
+            setRuntimeCycleCompletedCountShared(completed);
             int cycleLimit = resolveTogetherCycleLimit();
             long restartDelayMs = resolveTogetherCycleRestartDelayMs();
-            int enteredCount = Math.max(0, togetherCycleLiveRoomEnteredCount);
+            int enteredCount = Math.max(0, getRuntimeCycleEnteredCountShared());
             String cycleCompleteMessage = buildCycleCompleteMessage(enteredCount, completed, cycleLimit);
             notifyCycleCompleteToModule(cycleCompleteMessage);
             togetherCycleLiveRoomEnteredCount = 0;
+            setRuntimeCycleEnteredCountShared(0);
+            reportRuntimeStatsToModule(
+                    resolveRuntimeRunStartedAtFromShared(),
+                    getRuntimeCycleCompletedCountShared(),
+                    getRuntimeCycleEnteredCountShared()
+            );
             togetherLastCycleCompleteAt = now;
             if (cycleLimit > 0 && completed >= cycleLimit) {
                 stopEngineAfterCycleLimitReached(completed, cycleLimit);
@@ -867,13 +895,33 @@ public class LookHookEntry implements IXposedHookLoadPackage {
         }
 
         private void onLiveRoomEntered(String liveRoomTitle) {
-            togetherCycleLiveRoomEnteredCount++;
+            if (runStartedAt <= 0L) {
+                runStartedAt = resolveRuntimeRunStartedAtFromShared();
+                if (runStartedAt <= 0L) {
+                    runStartedAt = System.currentTimeMillis();
+                    setRuntimeRunStartedAtShared(runStartedAt);
+                    log("直播间进入时发现 runStartedAt=0，已自动补齐当前时间戳");
+                }
+            }
+            int recoveredEntered = resolveRuntimeCycleEnteredFromShared();
+            if (recoveredEntered > getRuntimeCycleEnteredCountShared()) {
+                setRuntimeCycleEnteredCountShared(recoveredEntered);
+            }
+            int entered = incrementRuntimeCycleEnteredShared();
+            togetherCycleLiveRoomEnteredCount = entered;
+            togetherCycleCompletedCount = resolveRuntimeCycleCompletedFromShared();
+            setRuntimeCycleCompletedCountShared(togetherCycleCompletedCount);
             String title = safeTrim(liveRoomTitle);
             if (!TextUtils.isEmpty(title)) {
                 log("直播间进入计数+1，本轮累计=" + togetherCycleLiveRoomEnteredCount + " title=" + title);
             } else {
                 log("直播间进入计数+1，本轮累计=" + togetherCycleLiveRoomEnteredCount);
             }
+            reportRuntimeStatsToModule(
+                    resolveRuntimeRunStartedAtFromShared(),
+                    getRuntimeCycleCompletedCountShared(),
+                    getRuntimeCycleEnteredCountShared()
+            );
         }
 
         private String buildCycleCompleteMessage(int enteredCount, int completedCycles, int cycleLimit) {
@@ -900,6 +948,58 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             } catch (Throwable e) {
                 log("循环完成提示广播发送失败: " + e);
             }
+        }
+
+        private void reportRuntimeStatsToModule(long runStartAt, int cycleCompleted, int cycleEntered) {
+            Context appContext = activity.getApplicationContext();
+            if (appContext == null) {
+                return;
+            }
+            try {
+                Intent intent = new Intent(ModuleSettings.ACTION_RUNTIME_STATS_REPORT);
+                intent.setPackage(ModuleSettings.MODULE_PACKAGE);
+                intent.putExtra(ModuleSettings.EXTRA_RUNTIME_RUN_START_AT, Math.max(0L, runStartAt));
+                intent.putExtra(
+                        ModuleSettings.EXTRA_RUNTIME_CYCLE_COMPLETED,
+                        Math.max(0, cycleCompleted)
+                );
+                intent.putExtra(
+                        ModuleSettings.EXTRA_RUNTIME_CYCLE_ENTERED,
+                        Math.max(0, cycleEntered)
+                );
+                appContext.sendBroadcast(intent);
+            } catch (Throwable e) {
+                log("report runtime stats failed: " + e);
+            }
+        }
+
+        private long resolveRuntimeRunStartedAtFromShared() {
+            long shared = getRuntimeRunStartedAtShared();
+            if (shared > 0L) {
+                return shared;
+            }
+            long persisted = ModuleSettings.getRuntimeRunStartAt();
+            if (persisted > 0L) {
+                setRuntimeRunStartedAtShared(persisted);
+                return persisted;
+            }
+            return 0L;
+        }
+
+        private int resolveRuntimeCycleCompletedFromShared() {
+            int shared = getRuntimeCycleCompletedCountShared();
+            if (shared > 0) {
+                return shared;
+            }
+            return ModuleSettings.getRuntimeCycleCompleted();
+        }
+
+        private int resolveRuntimeCycleEnteredFromShared() {
+            int shared = getRuntimeCycleEnteredCountShared();
+            if (shared > 0) {
+                return shared;
+            }
+            return ModuleSettings.getRuntimeCycleEntered();
         }
 
         private void stopEngineAfterCycleLimitReached(int completed, int cycleLimit) {
@@ -1947,7 +2047,53 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             }
             if (status != ModuleSettings.EngineStatus.RUNNING) {
                 sAwaitingLiveRoomScript = false;
+                sRuntimeRunStartedAt = 0L;
+                sRuntimeCycleCompletedCount = 0;
+                sRuntimeCycleEnteredCount = 0;
             }
+        }
+    }
+
+    private static long getRuntimeRunStartedAtShared() {
+        synchronized (FLOW_STATE_LOCK) {
+            return Math.max(0L, sRuntimeRunStartedAt);
+        }
+    }
+
+    private static void setRuntimeRunStartedAtShared(long value) {
+        synchronized (FLOW_STATE_LOCK) {
+            sRuntimeRunStartedAt = Math.max(0L, value);
+        }
+    }
+
+    private static int getRuntimeCycleCompletedCountShared() {
+        synchronized (FLOW_STATE_LOCK) {
+            return Math.max(0, sRuntimeCycleCompletedCount);
+        }
+    }
+
+    private static void setRuntimeCycleCompletedCountShared(int value) {
+        synchronized (FLOW_STATE_LOCK) {
+            sRuntimeCycleCompletedCount = Math.max(0, value);
+        }
+    }
+
+    private static int getRuntimeCycleEnteredCountShared() {
+        synchronized (FLOW_STATE_LOCK) {
+            return Math.max(0, sRuntimeCycleEnteredCount);
+        }
+    }
+
+    private static void setRuntimeCycleEnteredCountShared(int value) {
+        synchronized (FLOW_STATE_LOCK) {
+            sRuntimeCycleEnteredCount = Math.max(0, value);
+        }
+    }
+
+    private static int incrementRuntimeCycleEnteredShared() {
+        synchronized (FLOW_STATE_LOCK) {
+            sRuntimeCycleEnteredCount = Math.max(0, sRuntimeCycleEnteredCount) + 1;
+            return sRuntimeCycleEnteredCount;
         }
     }
 

@@ -21,6 +21,7 @@ import android.util.Log;
 import android.util.TypedValue;
 import android.view.Display;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.LinearLayout;
@@ -36,6 +37,7 @@ public class GlobalFloatService extends Service {
     private static final int NOTIFICATION_ID = 2026030101;
     private static final long DISPLAY_REFRESH_INTERVAL_MS = 2000L;
     private static final long PERMISSION_TOAST_MIN_INTERVAL_MS = 6000L;
+    private static final long CYCLE_NOTICE_SHOW_MS = 3000L;
 
     private SharedPreferences prefs;
     private Handler handler;
@@ -45,10 +47,28 @@ public class GlobalFloatService extends Service {
     private LinearLayout rootLayout;
     private LinearLayout actionPanel;
     private TextView mainButton;
+    private TextView infoWindow;
+    private TextView cycleNoticeWindow;
     private boolean overlayAdded;
+    private WindowManager mirrorWindowManager;
+    private LinearLayout mirrorRootLayout;
+    private LinearLayout mirrorActionPanel;
+    private TextView mirrorMainButton;
+    private TextView mirrorInfoWindow;
+    private TextView mirrorCycleNoticeWindow;
+    private boolean mirrorOverlayAdded;
     private long lastPermissionToastAt;
     private int preferredDisplayId = -1;
     private int attachedDisplayId = -1;
+    private int mirrorAttachedDisplayId = -1;
+    private long runtimeStartFallbackAt = 0L;
+    private final Runnable hideCycleNoticeTask = new Runnable() {
+        @Override
+        public void run() {
+            hideCycleNoticeView(cycleNoticeWindow);
+            hideCycleNoticeView(mirrorCycleNoticeWindow);
+        }
+    };
     private final Runnable refreshTask = new Runnable() {
         @Override
         public void run() {
@@ -58,11 +78,19 @@ public class GlobalFloatService extends Service {
     };
 
     public static void startServiceCompat(Context context) {
-        startServiceCompat(context, -1, false);
+        startServiceCompatInternal(context, null, false, null);
     }
 
     public static void startServiceCompat(Context context, int targetDisplayId) {
-        startServiceCompat(context, targetDisplayId, false);
+        startServiceCompatInternal(context, Integer.valueOf(targetDisplayId), false, null);
+    }
+
+    public static void startServiceCompat(Context context, boolean requestRestartTargetApp) {
+        startServiceCompatInternal(context, null, requestRestartTargetApp, null);
+    }
+
+    public static void startServiceCompatWithNotice(Context context, String noticeMessage) {
+        startServiceCompatInternal(context, null, false, noticeMessage);
     }
 
     public static void startServiceCompat(
@@ -70,15 +98,33 @@ public class GlobalFloatService extends Service {
             int targetDisplayId,
             boolean requestRestartTargetApp
     ) {
+        startServiceCompatInternal(
+                context,
+                Integer.valueOf(targetDisplayId),
+                requestRestartTargetApp,
+                null
+        );
+    }
+
+    private static void startServiceCompatInternal(
+            Context context,
+            Integer targetDisplayId,
+            boolean requestRestartTargetApp,
+            String noticeMessage
+    ) {
         if (context == null) {
             return;
         }
         Intent intent = new Intent(context, GlobalFloatService.class);
-        intent.putExtra(ModuleSettings.EXTRA_TARGET_DISPLAY_ID, targetDisplayId);
-        intent.putExtra(
-                ModuleSettings.EXTRA_REQUEST_RESTART_TARGET_APP,
-                requestRestartTargetApp
-        );
+        if (targetDisplayId != null) {
+            intent.putExtra(ModuleSettings.EXTRA_TARGET_DISPLAY_ID, targetDisplayId.intValue());
+        }
+        if (requestRestartTargetApp) {
+            intent.putExtra(ModuleSettings.EXTRA_REQUEST_RESTART_TARGET_APP, true);
+        }
+        if (!TextUtils.isEmpty(noticeMessage)) {
+            intent.putExtra(ModuleSettings.EXTRA_CYCLE_COMPLETE_MESSAGE, noticeMessage);
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             context.startForegroundService(intent);
         } else {
@@ -103,6 +149,7 @@ public class GlobalFloatService extends Service {
         lastRealtimeSyncAt = 0L;
         lastRealtimeSyncedSeq = -1L;
         overlayAdded = false;
+        mirrorOverlayAdded = false;
         lastPermissionToastAt = 0L;
         startForegroundInternal();
         refreshOverlayState();
@@ -115,6 +162,7 @@ public class GlobalFloatService extends Service {
         int targetDisplayId = preferredDisplayId;
         boolean hasDisplayExtra = false;
         boolean requestRestartTargetApp = false;
+        String cycleNoticeMessage = "";
         if (intent != null) {
             hasDisplayExtra = intent.hasExtra(ModuleSettings.EXTRA_TARGET_DISPLAY_ID);
             if (hasDisplayExtra) {
@@ -127,15 +175,22 @@ public class GlobalFloatService extends Service {
                     ModuleSettings.EXTRA_REQUEST_RESTART_TARGET_APP,
                     false
             );
+            cycleNoticeMessage = intent.getStringExtra(ModuleSettings.EXTRA_CYCLE_COMPLETE_MESSAGE);
         }
-        if (hasDisplayExtra && targetDisplayId != preferredDisplayId) {
+        if (hasDisplayExtra && targetDisplayId >= 0 && targetDisplayId != preferredDisplayId) {
             preferredDisplayId = targetDisplayId;
-            removeOverlay();
-            windowManager = null;
-            attachedDisplayId = -1;
             log("switch target displayId=" + preferredDisplayId);
+            removeMirrorOverlay();
+            mirrorWindowManager = null;
+            mirrorRootLayout = null;
+            mirrorActionPanel = null;
+            mirrorMainButton = null;
+            mirrorInfoWindow = null;
+            mirrorCycleNoticeWindow = null;
+            mirrorAttachedDisplayId = -1;
         }
         refreshOverlayState();
+        showCycleCompleteNotice(cycleNoticeMessage);
         if (requestRestartTargetApp) {
             restartTargetAppForNextCycle();
         }
@@ -146,12 +201,22 @@ public class GlobalFloatService extends Service {
     public void onDestroy() {
         if (handler != null) {
             handler.removeCallbacks(refreshTask);
+            handler.removeCallbacks(hideCycleNoticeTask);
         }
         removeOverlay();
+        removeMirrorOverlay();
         windowManager = null;
+        mirrorWindowManager = null;
         rootLayout = null;
+        mirrorRootLayout = null;
         actionPanel = null;
+        mirrorActionPanel = null;
         mainButton = null;
+        mirrorMainButton = null;
+        infoWindow = null;
+        mirrorInfoWindow = null;
+        cycleNoticeWindow = null;
+        mirrorCycleNoticeWindow = null;
         log("service destroyed");
         super.onDestroy();
     }
@@ -165,6 +230,7 @@ public class GlobalFloatService extends Service {
         boolean enabled = ModuleSettings.getGlobalFloatButtonEnabled(prefs);
         if (!enabled) {
             removeOverlay();
+            removeMirrorOverlay();
             log("float button disabled, stop self");
             stopSelf();
             return;
@@ -172,10 +238,13 @@ public class GlobalFloatService extends Service {
         if (!Settings.canDrawOverlays(this)) {
             maybeShowOverlayPermissionToast();
             removeOverlay();
+            removeMirrorOverlay();
             return;
         }
         ensureOverlay();
+        ensureMirrorOverlay();
         updateMainButtonStatus();
+        updateInfoWindowStatus();
         syncEngineStateBroadcastIfNeeded();
     }
 
@@ -189,14 +258,15 @@ public class GlobalFloatService extends Service {
     }
 
     private void ensureOverlay() {
+        Context overlayContext = resolveOverlayContext(0);
         if (windowManager == null) {
-            windowManager = resolveWindowManagerForDisplay(preferredDisplayId);
+            windowManager = (WindowManager) overlayContext.getSystemService(WINDOW_SERVICE);
         }
         if (windowManager == null) {
             return;
         }
         if (rootLayout == null) {
-            buildOverlayView();
+            buildOverlayView(overlayContext);
         }
         if (isOverlayAttached()) {
             return;
@@ -221,66 +291,174 @@ public class GlobalFloatService extends Service {
         try {
             windowManager.addView(rootLayout, params);
             overlayAdded = true;
-            attachedDisplayId = preferredDisplayId;
-            log("overlay added on displayId=" + attachedDisplayId);
+            attachedDisplayId = 0;
+            log("overlay added on displayId=0 (global)");
         } catch (Throwable e) {
             overlayAdded = false;
             attachedDisplayId = -1;
-            log("overlay add failed on displayId=" + preferredDisplayId + ": " + e);
+            log("overlay add failed on displayId=0 (global): " + e);
         }
     }
 
-    private WindowManager resolveWindowManagerForDisplay(int displayId) {
+    private void ensureMirrorOverlay() {
+        if (preferredDisplayId < 0) {
+            removeMirrorOverlay();
+            mirrorWindowManager = null;
+            mirrorAttachedDisplayId = -1;
+            return;
+        }
+        if (preferredDisplayId == 0) {
+            removeMirrorOverlay();
+            mirrorWindowManager = null;
+            mirrorAttachedDisplayId = -1;
+            return;
+        }
+        if (mirrorAttachedDisplayId != preferredDisplayId) {
+            removeMirrorOverlay();
+            mirrorWindowManager = null;
+        }
+        if (mirrorWindowManager == null) {
+            Context mirrorContext = resolveOverlayContext(preferredDisplayId);
+            mirrorWindowManager = (WindowManager) mirrorContext.getSystemService(WINDOW_SERVICE);
+        }
+        if (mirrorWindowManager == null) {
+            return;
+        }
+        if (mirrorRootLayout == null) {
+            buildMirrorOverlayView(resolveOverlayContext(preferredDisplayId));
+        }
+        if (isMirrorOverlayAttached()) {
+            return;
+        }
+        removeMirrorOverlay();
+
+        int type = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                : WindowManager.LayoutParams.TYPE_PHONE;
+        int flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
+        WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                type,
+                flags,
+                PixelFormat.TRANSLUCENT
+        );
+        params.gravity = Gravity.END | Gravity.CENTER_VERTICAL;
+        params.x = dp(12);
+        params.y = 0;
+        try {
+            mirrorWindowManager.addView(mirrorRootLayout, params);
+            mirrorOverlayAdded = true;
+            mirrorAttachedDisplayId = preferredDisplayId;
+            log("overlay added on displayId=" + mirrorAttachedDisplayId + " (mirror)");
+        } catch (Throwable e) {
+            mirrorOverlayAdded = false;
+            mirrorAttachedDisplayId = -1;
+            log("overlay add failed on displayId=" + preferredDisplayId + " (mirror): " + e);
+        }
+    }
+
+    private Context resolveOverlayContext(int displayId) {
         if (displayId >= 0) {
             try {
                 DisplayManager dm = (DisplayManager) getSystemService(DISPLAY_SERVICE);
                 if (dm != null) {
                     Display display = dm.getDisplay(displayId);
                     if (display != null) {
-                        Context displayContext = createDisplayContext(display);
-                        WindowManager wm = (WindowManager) displayContext.getSystemService(WINDOW_SERVICE);
-                        if (wm != null) {
-                            return wm;
-                        }
+                        return createDisplayContext(display);
                     }
                 }
             } catch (Throwable e) {
-                log("resolve display window manager failed, displayId=" + displayId + " err=" + e);
+                log("resolve display context failed, displayId=" + displayId + " err=" + e);
             }
         }
-        return (WindowManager) getSystemService(WINDOW_SERVICE);
+        return this;
     }
 
-    private void buildOverlayView() {
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.HORIZONTAL);
-        root.setGravity(Gravity.CENTER_VERTICAL);
+    private void buildOverlayView(Context overlayContext) {
+        LinearLayout root = new LinearLayout(overlayContext);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setGravity(Gravity.END);
         root.setPadding(dp(6), dp(6), dp(6), dp(6));
         root.setBackgroundColor(Color.parseColor("#33222222"));
         rootLayout = root;
 
-        TextView toggleButton = createActionButton(this, "LSP", "#1E88E5");
+        TextView cycleNotice = createCycleNoticeTextView(overlayContext);
+        cycleNoticeWindow = cycleNotice;
+        cycleNotice.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                toggleActionPanel();
+            }
+        });
+        root.addView(cycleNotice);
+
+        TextView info = createInfoTextView(overlayContext);
+        infoWindow = info;
+        infoWindow.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                toggleActionPanel();
+            }
+        });
+        root.addView(info);
+
+        LinearLayout row = new LinearLayout(overlayContext);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        row.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                toggleActionPanel();
+            }
+        });
+        root.addView(row);
+
+        TextView toggleButton = createActionButton(overlayContext, "LSP", "#1E88E5");
         mainButton = toggleButton;
+        LinearLayout.LayoutParams mainLp = (LinearLayout.LayoutParams) mainButton.getLayoutParams();
+        mainLp.leftMargin = 0;
+        mainButton.setLayoutParams(mainLp);
+        mainButton.setMinWidth(dp(92));
+        mainButton.setGravity(Gravity.CENTER);
+        mainButton.setSingleLine(true);
         mainButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (actionPanel == null) {
-                    return;
-                }
-                actionPanel.setVisibility(
-                        actionPanel.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE
-                );
+                toggleActionPanel();
             }
         });
-        root.addView(toggleButton);
+        mainButton.setOnTouchListener(new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(View v, MotionEvent event) {
+                if (event == null) {
+                    return false;
+                }
+                int action = event.getActionMasked();
+                if (action == MotionEvent.ACTION_UP) {
+                    v.performClick();
+                    return true;
+                }
+                return action == MotionEvent.ACTION_DOWN;
+            }
+        });
+        row.addView(toggleButton);
 
-        LinearLayout actionPanel = new LinearLayout(this);
-        actionPanel.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout actionPanel = new LinearLayout(overlayContext);
+        actionPanel.setOrientation(LinearLayout.VERTICAL);
         actionPanel.setVisibility(View.GONE);
-        actionPanel.setPadding(dp(6), 0, 0, 0);
+        actionPanel.setPadding(0, dp(6), 0, 0);
+        actionPanel.setGravity(Gravity.END);
+        LinearLayout.LayoutParams panelLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        panelLp.gravity = Gravity.END;
+        actionPanel.setLayoutParams(panelLp);
         this.actionPanel = actionPanel;
 
-        TextView runBtn = createActionButton(this, "运行", "#2E7D32");
+        TextView runBtn = createActionButton(overlayContext, "运行", "#2E7D32");
         runBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -289,7 +467,7 @@ public class GlobalFloatService extends Service {
         });
         actionPanel.addView(runBtn);
 
-        TextView pauseBtn = createActionButton(this, "暂停", "#EF6C00");
+        TextView pauseBtn = createActionButton(overlayContext, "暂停", "#EF6C00");
         pauseBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -310,7 +488,7 @@ public class GlobalFloatService extends Service {
         });
         actionPanel.addView(pauseBtn);
 
-        TextView stopBtn = createActionButton(this, "停止", "#C62828");
+        TextView stopBtn = createActionButton(overlayContext, "停止", "#C62828");
         stopBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -334,6 +512,142 @@ public class GlobalFloatService extends Service {
         root.addView(actionPanel);
     }
 
+    private void buildMirrorOverlayView(Context overlayContext) {
+        LinearLayout root = new LinearLayout(overlayContext);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setGravity(Gravity.END);
+        root.setPadding(dp(6), dp(6), dp(6), dp(6));
+        root.setBackgroundColor(Color.parseColor("#33222222"));
+        mirrorRootLayout = root;
+
+        TextView cycleNotice = createCycleNoticeTextView(overlayContext);
+        mirrorCycleNoticeWindow = cycleNotice;
+        cycleNotice.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                toggleActionPanel(mirrorActionPanel);
+            }
+        });
+        root.addView(cycleNotice);
+
+        TextView info = createInfoTextView(overlayContext);
+        mirrorInfoWindow = info;
+        info.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                toggleActionPanel(mirrorActionPanel);
+            }
+        });
+        root.addView(info);
+
+        LinearLayout row = new LinearLayout(overlayContext);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        row.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                toggleActionPanel(mirrorActionPanel);
+            }
+        });
+        root.addView(row);
+
+        TextView toggleButton = createActionButton(overlayContext, "LSP", "#1E88E5");
+        mirrorMainButton = toggleButton;
+        LinearLayout.LayoutParams mainLp = (LinearLayout.LayoutParams) toggleButton.getLayoutParams();
+        mainLp.leftMargin = 0;
+        toggleButton.setLayoutParams(mainLp);
+        toggleButton.setMinWidth(dp(92));
+        toggleButton.setGravity(Gravity.CENTER);
+        toggleButton.setSingleLine(true);
+        toggleButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                toggleActionPanel(mirrorActionPanel);
+            }
+        });
+        toggleButton.setOnTouchListener(new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(View v, MotionEvent event) {
+                if (event == null) {
+                    return false;
+                }
+                int action = event.getActionMasked();
+                if (action == MotionEvent.ACTION_UP) {
+                    v.performClick();
+                    return true;
+                }
+                return action == MotionEvent.ACTION_DOWN;
+            }
+        });
+        row.addView(toggleButton);
+
+        LinearLayout panel = new LinearLayout(overlayContext);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setVisibility(View.GONE);
+        panel.setPadding(0, dp(6), 0, 0);
+        panel.setGravity(Gravity.END);
+        LinearLayout.LayoutParams panelLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        panelLp.gravity = Gravity.END;
+        panel.setLayoutParams(panelLp);
+        mirrorActionPanel = panel;
+
+        TextView runBtn = createActionButton(overlayContext, "运行", "#2E7D32");
+        runBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                onRunClicked();
+            }
+        });
+        panel.addView(runBtn);
+
+        TextView pauseBtn = createActionButton(overlayContext, "暂停", "#EF6C00");
+        pauseBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                long seq = ModuleSettings.pushEngineCommand(
+                        GlobalFloatService.this,
+                        ModuleSettings.ENGINE_CMD_PAUSE,
+                        ModuleSettings.EngineStatus.PAUSED
+                );
+                dispatchEngineCommandBroadcast(
+                        ModuleSettings.ENGINE_CMD_PAUSE,
+                        ModuleSettings.EngineStatus.PAUSED,
+                        seq
+                );
+                collapseActionPanel();
+                updateMainButtonStatus();
+                Toast.makeText(GlobalFloatService.this, "模块已暂停", Toast.LENGTH_SHORT).show();
+            }
+        });
+        panel.addView(pauseBtn);
+
+        TextView stopBtn = createActionButton(overlayContext, "停止", "#C62828");
+        stopBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                long seq = ModuleSettings.pushEngineCommand(
+                        GlobalFloatService.this,
+                        ModuleSettings.ENGINE_CMD_STOP,
+                        ModuleSettings.EngineStatus.STOPPED
+                );
+                dispatchEngineCommandBroadcast(
+                        ModuleSettings.ENGINE_CMD_STOP,
+                        ModuleSettings.EngineStatus.STOPPED,
+                        seq
+                );
+                collapseActionPanel();
+                updateMainButtonStatus();
+                Toast.makeText(GlobalFloatService.this, "模块已停止", Toast.LENGTH_SHORT).show();
+            }
+        });
+        panel.addView(stopBtn);
+
+        root.addView(panel);
+    }
+
     private boolean isOverlayAttached() {
         if (!overlayAdded || rootLayout == null) {
             return false;
@@ -342,6 +656,16 @@ public class GlobalFloatService extends Service {
             return rootLayout.isAttachedToWindow();
         }
         return rootLayout.getWindowToken() != null;
+    }
+
+    private boolean isMirrorOverlayAttached() {
+        if (!mirrorOverlayAdded || mirrorRootLayout == null) {
+            return false;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+            return mirrorRootLayout.isAttachedToWindow();
+        }
+        return mirrorRootLayout.getWindowToken() != null;
     }
 
     private void removeOverlay() {
@@ -360,6 +684,24 @@ public class GlobalFloatService extends Service {
         }
         overlayAdded = false;
         attachedDisplayId = -1;
+    }
+
+    private void removeMirrorOverlay() {
+        if (!mirrorOverlayAdded && (mirrorRootLayout == null || mirrorRootLayout.getParent() == null)) {
+            return;
+        }
+        if (mirrorWindowManager == null || mirrorRootLayout == null) {
+            mirrorOverlayAdded = false;
+            return;
+        }
+        try {
+            mirrorWindowManager.removeViewImmediate(mirrorRootLayout);
+            log("overlay removed (mirror)");
+        } catch (Throwable e) {
+            log("overlay remove failed (mirror): " + e);
+        }
+        mirrorOverlayAdded = false;
+        mirrorAttachedDisplayId = -1;
     }
 
     private void onRunClicked() {
@@ -477,20 +819,141 @@ public class GlobalFloatService extends Service {
     }
 
     private void updateMainButtonStatus() {
-        if (mainButton == null) {
+        ModuleSettings.EngineStatus status = ModuleSettings.getEngineStatus(prefs);
+        applyMainButtonStatus(mainButton, status);
+        applyMainButtonStatus(mirrorMainButton, status);
+    }
+
+    private void updateInfoWindowStatus() {
+        boolean enabled = ModuleSettings.getFloatInfoWindowEnabled(prefs);
+        ModuleSettings.EngineStatus status = ModuleSettings.getEngineStatus(prefs);
+        int cycleLimit = ModuleSettings.getTogetherCycleLimit(prefs);
+        int completed = ModuleSettings.getRuntimeCycleCompleted(prefs);
+        int entered = ModuleSettings.getRuntimeCycleEntered(prefs);
+        long runStartAt = ModuleSettings.getRuntimeRunStartAt(prefs);
+        int currentCycle = status == ModuleSettings.EngineStatus.RUNNING
+                ? Math.max(1, completed + 1)
+                : Math.max(0, completed);
+        String remaining = cycleLimit <= 0
+                ? "无限"
+                : String.valueOf(Math.max(0, cycleLimit - completed));
+        long elapsedMs = 0L;
+        if (status == ModuleSettings.EngineStatus.RUNNING) {
+            boolean targetRunning = isPackageRunning(UiComponentConfig.TARGET_PACKAGE);
+            if (!targetRunning) {
+                runtimeStartFallbackAt = 0L;
+                elapsedMs = 0L;
+            } else {
+            long effectiveStartAt = runStartAt;
+            if (effectiveStartAt <= 0L) {
+                if (runtimeStartFallbackAt <= 0L) {
+                    runtimeStartFallbackAt = System.currentTimeMillis();
+                }
+                effectiveStartAt = runtimeStartFallbackAt;
+            } else {
+                runtimeStartFallbackAt = effectiveStartAt;
+            }
+            elapsedMs = Math.max(0L, System.currentTimeMillis() - effectiveStartAt);
+            }
+        } else {
+            runtimeStartFallbackAt = 0L;
+        }
+        String text = "循环: " + currentCycle + "/" + remaining
+                + "\n已进房: " + Math.max(0, entered)
+                + "\n运行: " + formatElapsed(elapsedMs);
+        applyInfoWindowStatus(infoWindow, enabled, text);
+        applyInfoWindowStatus(mirrorInfoWindow, enabled, text);
+    }
+
+    private void showCycleCompleteNotice(String message) {
+        String text = message == null ? "" : message.trim();
+        if (TextUtils.isEmpty(text)) {
             return;
         }
-        ModuleSettings.EngineStatus status = ModuleSettings.getEngineStatus(prefs);
-        if (status == ModuleSettings.EngineStatus.RUNNING) {
-            mainButton.setText("LSP-运行中");
-            mainButton.setBackgroundColor(Color.parseColor("#2E7D32"));
-        } else if (status == ModuleSettings.EngineStatus.PAUSED) {
-            mainButton.setText("LSP-已暂停");
-            mainButton.setBackgroundColor(Color.parseColor("#EF6C00"));
-        } else {
-            mainButton.setText("LSP-未运行");
-            mainButton.setBackgroundColor(Color.parseColor("#C62828"));
+        ensureOverlay();
+        ensureMirrorOverlay();
+        showCycleNoticeView(cycleNoticeWindow, text);
+        showCycleNoticeView(mirrorCycleNoticeWindow, text);
+        if (handler != null) {
+            handler.removeCallbacks(hideCycleNoticeTask);
+            handler.postDelayed(hideCycleNoticeTask, CYCLE_NOTICE_SHOW_MS);
         }
+        try {
+            Toast.makeText(this, text, Toast.LENGTH_LONG).show();
+        } catch (Throwable ignore) {
+        }
+        log("show cycle complete notice: " + text);
+    }
+
+    private void applyMainButtonStatus(TextView button, ModuleSettings.EngineStatus status) {
+        if (button == null) {
+            return;
+        }
+        if (status == ModuleSettings.EngineStatus.RUNNING) {
+            button.setText("LSP-运行中");
+            button.setBackgroundColor(Color.parseColor("#2E7D32"));
+        } else if (status == ModuleSettings.EngineStatus.PAUSED) {
+            button.setText("LSP-已暂停");
+            button.setBackgroundColor(Color.parseColor("#EF6C00"));
+        } else {
+            button.setText("LSP-未运行");
+            button.setBackgroundColor(Color.parseColor("#C62828"));
+        }
+    }
+
+    private void applyInfoWindowStatus(TextView view, boolean enabled, String text) {
+        if (view == null) {
+            return;
+        }
+        if (!enabled) {
+            view.setVisibility(View.GONE);
+            return;
+        }
+        view.setVisibility(View.VISIBLE);
+        view.setText(text);
+    }
+
+    private void showCycleNoticeView(TextView view, String text) {
+        if (view == null) {
+            return;
+        }
+        view.setText(text);
+        view.setAlpha(1f);
+        view.setVisibility(View.VISIBLE);
+    }
+
+    private void hideCycleNoticeView(TextView view) {
+        if (view == null) {
+            return;
+        }
+        try {
+            view.animate().alpha(0f).setDuration(280L).withEndAction(new Runnable() {
+                @Override
+                public void run() {
+                    view.setVisibility(View.GONE);
+                    view.setAlpha(1f);
+                }
+            }).start();
+        } catch (Throwable ignore) {
+            view.setVisibility(View.GONE);
+            view.setAlpha(1f);
+        }
+    }
+
+    private String formatElapsed(long elapsedMs) {
+        long totalSeconds = Math.max(0L, elapsedMs / 1000L);
+        long hours = totalSeconds / 3600L;
+        long minutes = (totalSeconds % 3600L) / 60L;
+        long seconds = totalSeconds % 60L;
+        return twoDigits(hours) + ":" + twoDigits(minutes) + ":" + twoDigits(seconds);
+    }
+
+    private String twoDigits(long value) {
+        long safe = Math.max(0L, value);
+        if (safe < 10L) {
+            return "0" + safe;
+        }
+        return String.valueOf(safe);
     }
 
     private void launchTargetApp(String packageName) {
@@ -603,6 +1066,27 @@ public class GlobalFloatService extends Service {
         if (actionPanel != null) {
             actionPanel.setVisibility(View.GONE);
         }
+        if (mirrorActionPanel != null) {
+            mirrorActionPanel.setVisibility(View.GONE);
+        }
+    }
+
+    private void toggleActionPanel() {
+        toggleActionPanel(actionPanel);
+    }
+
+    private void toggleActionPanel(LinearLayout panel) {
+        if (panel == null) {
+            return;
+        }
+        if (panel == actionPanel && mirrorActionPanel != null) {
+            mirrorActionPanel.setVisibility(View.GONE);
+        } else if (panel == mirrorActionPanel && actionPanel != null) {
+            actionPanel.setVisibility(View.GONE);
+        }
+        boolean show = panel.getVisibility() != View.VISIBLE;
+        panel.setVisibility(show ? View.VISIBLE : View.GONE);
+        log("toggle actionPanel -> " + (show ? "VISIBLE" : "GONE"));
     }
 
     private TextView createActionButton(Context context, String text, String colorHex) {
@@ -616,7 +1100,45 @@ public class GlobalFloatService extends Service {
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
         );
-        lp.leftMargin = dp(4);
+        lp.topMargin = dp(4);
+        lp.gravity = Gravity.END;
+        tv.setLayoutParams(lp);
+        return tv;
+    }
+
+    private TextView createInfoTextView(Context context) {
+        TextView tv = new TextView(context);
+        tv.setTextColor(Color.parseColor("#EDEDED"));
+        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
+        tv.setPadding(dp(8), dp(4), dp(8), dp(4));
+        tv.setBackgroundColor(Color.parseColor("#66333333"));
+        tv.setSingleLine(false);
+        tv.setMaxWidth(dp(168));
+        tv.setMinWidth(dp(132));
+        tv.setGravity(Gravity.START);
+        tv.setText("循环: 0/无限\n已进房: 0\n运行: 00:00:00");
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        lp.bottomMargin = dp(6);
+        tv.setLayoutParams(lp);
+        return tv;
+    }
+
+    private TextView createCycleNoticeTextView(Context context) {
+        TextView tv = new TextView(context);
+        tv.setTextColor(Color.WHITE);
+        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        tv.setPadding(dp(8), dp(5), dp(8), dp(5));
+        tv.setBackgroundColor(Color.parseColor("#CC1B5E20"));
+        tv.setVisibility(View.GONE);
+        tv.setAlpha(1f);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        lp.bottomMargin = dp(6);
         tv.setLayoutParams(lp);
         return tv;
     }

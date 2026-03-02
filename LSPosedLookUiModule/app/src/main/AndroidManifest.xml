@@ -54,6 +54,7 @@
                 <action android:name="android.intent.action.USER_UNLOCKED" />
                 <action android:name="com.oodbye.looklspmodule.ACTION_SYNC_FLOAT_SERVICE" />
                 <action android:name="com.oodbye.looklspmodule.ACTION_ENGINE_STATUS_REPORT" />
+                <action android:name="com.oodbye.looklspmodule.ACTION_RUNTIME_STATS_REPORT" />
                 <action android:name="com.oodbye.looklspmodule.ACTION_CYCLE_COMPLETE_NOTICE" />
             </intent-filter>
         </receiver>
