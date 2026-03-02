@@ -29,6 +29,7 @@ final class ModuleSettings {
     static final String ACTION_SYNC_FLOAT_SERVICE = MODULE_PACKAGE + ".ACTION_SYNC_FLOAT_SERVICE";
     static final String ACTION_ENGINE_STATUS_REPORT = MODULE_PACKAGE + ".ACTION_ENGINE_STATUS_REPORT";
     static final String ACTION_CYCLE_COMPLETE_NOTICE = MODULE_PACKAGE + ".ACTION_CYCLE_COMPLETE_NOTICE";
+    static final String ACTION_CYCLE_LIMIT_FINISHED = MODULE_PACKAGE + ".ACTION_CYCLE_LIMIT_FINISHED";
     static final String ACTION_RUNTIME_STATS_REPORT = MODULE_PACKAGE + ".ACTION_RUNTIME_STATS_REPORT";
     static final String EXTRA_ENGINE_COMMAND = "engine_command";
     static final String EXTRA_ENGINE_STATUS = "engine_status";
@@ -38,6 +39,9 @@ final class ModuleSettings {
     static final String EXTRA_TARGET_DISPLAY_ID = "target_display_id";
     static final String EXTRA_REQUEST_RESTART_TARGET_APP = "request_restart_target_app";
     static final String EXTRA_CYCLE_COMPLETE_MESSAGE = "cycle_complete_message";
+    static final String EXTRA_FINISHED_CYCLES = "finished_cycles";
+    static final String EXTRA_FINISHED_CYCLE_LIMIT = "finished_cycle_limit";
+    static final String EXTRA_FINISHED_DURATION_MS = "finished_duration_ms";
     static final String EXTRA_RUNTIME_RUN_START_AT = "runtime_run_start_at";
     static final String EXTRA_RUNTIME_CYCLE_COMPLETED = "runtime_cycle_completed";
     static final String EXTRA_RUNTIME_CYCLE_ENTERED = "runtime_cycle_entered";

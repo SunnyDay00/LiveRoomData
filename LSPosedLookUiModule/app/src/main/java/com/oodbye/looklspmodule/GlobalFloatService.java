@@ -55,6 +55,7 @@ public class GlobalFloatService extends Service {
     private TextView mainButton;
     private TextView infoWindow;
     private TextView cycleNoticeWindow;
+    private LinearLayout cycleLimitDialogWindow;
     private boolean overlayAdded;
     private WindowManager mirrorWindowManager;
     private LinearLayout mirrorRootLayout;
@@ -62,6 +63,7 @@ public class GlobalFloatService extends Service {
     private TextView mirrorMainButton;
     private TextView mirrorInfoWindow;
     private TextView mirrorCycleNoticeWindow;
+    private LinearLayout mirrorCycleLimitDialogWindow;
     private boolean mirrorOverlayAdded;
     private final Map<Integer, ExtraOverlay> extraOverlays = new HashMap<Integer, ExtraOverlay>();
     private long lastPermissionToastAt;
@@ -69,6 +71,8 @@ public class GlobalFloatService extends Service {
     private int attachedDisplayId = -1;
     private int mirrorAttachedDisplayId = -1;
     private long runtimeStartFallbackAt = 0L;
+    private String cycleLimitDialogMessage = "";
+    private boolean cycleLimitDialogVisible = false;
 
     private static final class ExtraOverlay {
         int targetDisplayId = -1;
@@ -78,6 +82,7 @@ public class GlobalFloatService extends Service {
         TextView mainButton;
         TextView infoWindow;
         TextView cycleNoticeWindow;
+        LinearLayout cycleLimitDialogWindow;
         boolean overlayAdded;
     }
 
@@ -116,6 +121,26 @@ public class GlobalFloatService extends Service {
 
     public static void startServiceCompatWithNotice(Context context, String noticeMessage) {
         startServiceCompatInternal(context, null, false, noticeMessage);
+    }
+
+    public static void startServiceCompatWithCycleLimitDialog(
+            Context context,
+            int completedCycles,
+            int cycleLimit,
+            long durationMs
+    ) {
+        if (context == null) {
+            return;
+        }
+        Intent intent = new Intent(context, GlobalFloatService.class);
+        intent.putExtra(ModuleSettings.EXTRA_FINISHED_CYCLES, Math.max(0, completedCycles));
+        intent.putExtra(ModuleSettings.EXTRA_FINISHED_CYCLE_LIMIT, Math.max(0, cycleLimit));
+        intent.putExtra(ModuleSettings.EXTRA_FINISHED_DURATION_MS, Math.max(0L, durationMs));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(intent);
+        } else {
+            context.startService(intent);
+        }
     }
 
     public static void startServiceCompat(
@@ -188,6 +213,10 @@ public class GlobalFloatService extends Service {
         boolean hasDisplayExtra = false;
         boolean requestRestartTargetApp = false;
         String cycleNoticeMessage = "";
+        boolean hasCycleLimitDialog = false;
+        int finishedCycles = 0;
+        int finishedCycleLimit = 0;
+        long finishedDurationMs = 0L;
         if (intent != null) {
             hasDisplayExtra = intent.hasExtra(ModuleSettings.EXTRA_TARGET_DISPLAY_ID);
             if (hasDisplayExtra) {
@@ -201,6 +230,14 @@ public class GlobalFloatService extends Service {
                     false
             );
             cycleNoticeMessage = intent.getStringExtra(ModuleSettings.EXTRA_CYCLE_COMPLETE_MESSAGE);
+            hasCycleLimitDialog = intent.hasExtra(ModuleSettings.EXTRA_FINISHED_CYCLES)
+                    || intent.hasExtra(ModuleSettings.EXTRA_FINISHED_CYCLE_LIMIT)
+                    || intent.hasExtra(ModuleSettings.EXTRA_FINISHED_DURATION_MS);
+            if (hasCycleLimitDialog) {
+                finishedCycles = intent.getIntExtra(ModuleSettings.EXTRA_FINISHED_CYCLES, 0);
+                finishedCycleLimit = intent.getIntExtra(ModuleSettings.EXTRA_FINISHED_CYCLE_LIMIT, 0);
+                finishedDurationMs = intent.getLongExtra(ModuleSettings.EXTRA_FINISHED_DURATION_MS, 0L);
+            }
         }
         if (hasDisplayExtra && targetDisplayId >= 0 && targetDisplayId != preferredDisplayId) {
             preferredDisplayId = targetDisplayId;
@@ -216,6 +253,9 @@ public class GlobalFloatService extends Service {
         }
         refreshOverlayState();
         showCycleCompleteNotice(cycleNoticeMessage);
+        if (hasCycleLimitDialog) {
+            showCycleLimitFinishedDialog(finishedCycles, finishedCycleLimit, finishedDurationMs);
+        }
         if (requestRestartTargetApp) {
             restartTargetAppForNextCycle();
         }
@@ -243,6 +283,10 @@ public class GlobalFloatService extends Service {
         mirrorInfoWindow = null;
         cycleNoticeWindow = null;
         mirrorCycleNoticeWindow = null;
+        cycleLimitDialogWindow = null;
+        mirrorCycleLimitDialogWindow = null;
+        cycleLimitDialogVisible = false;
+        cycleLimitDialogMessage = "";
         log("service destroyed");
         super.onDestroy();
     }
@@ -274,6 +318,7 @@ public class GlobalFloatService extends Service {
         ensureExtraOverlays();
         updateMainButtonStatus();
         updateInfoWindowStatus();
+        updateCycleLimitDialogStatus();
         syncEngineStateBroadcastIfNeeded();
     }
 
@@ -580,6 +625,9 @@ public class GlobalFloatService extends Service {
         root.setBackgroundColor(Color.parseColor("#33222222"));
         rootLayout = root;
 
+        cycleLimitDialogWindow = createCycleLimitDialogView(overlayContext);
+        root.addView(cycleLimitDialogWindow);
+
         TextView cycleNotice = createCycleNoticeTextView(overlayContext);
         cycleNoticeWindow = cycleNotice;
         cycleNotice.setOnClickListener(new View.OnClickListener() {
@@ -715,6 +763,9 @@ public class GlobalFloatService extends Service {
         root.setPadding(dp(6), dp(6), dp(6), dp(6));
         root.setBackgroundColor(Color.parseColor("#33222222"));
         mirrorRootLayout = root;
+
+        mirrorCycleLimitDialogWindow = createCycleLimitDialogView(overlayContext);
+        root.addView(mirrorCycleLimitDialogWindow);
 
         TextView cycleNotice = createCycleNoticeTextView(overlayContext);
         mirrorCycleNoticeWindow = cycleNotice;
@@ -858,6 +909,9 @@ public class GlobalFloatService extends Service {
         root.setPadding(dp(6), dp(6), dp(6), dp(6));
         root.setBackgroundColor(Color.parseColor("#33222222"));
         overlay.rootLayout = root;
+
+        overlay.cycleLimitDialogWindow = createCycleLimitDialogView(overlayContext);
+        root.addView(overlay.cycleLimitDialogWindow);
 
         TextView cycleNotice = createCycleNoticeTextView(overlayContext);
         overlay.cycleNoticeWindow = cycleNotice;
@@ -1092,6 +1146,7 @@ public class GlobalFloatService extends Service {
     }
 
     private void onRunClicked() {
+        hideCycleLimitFinishedDialog();
         long seq = ModuleSettings.pushEngineCommand(
                 this,
                 ModuleSettings.ENGINE_CMD_RUN,
@@ -1111,6 +1166,23 @@ public class GlobalFloatService extends Service {
         dispatchRunCommandAfterLaunch(seq);
         updateMainButtonStatus();
         Toast.makeText(this, "模块运行中", Toast.LENGTH_SHORT).show();
+    }
+
+    private void onCycleLimitDialogEndClicked() {
+        long seq = ModuleSettings.pushEngineCommand(
+                this,
+                ModuleSettings.ENGINE_CMD_STOP,
+                ModuleSettings.EngineStatus.STOPPED
+        );
+        dispatchEngineCommandBroadcast(
+                ModuleSettings.ENGINE_CMD_STOP,
+                ModuleSettings.EngineStatus.STOPPED,
+                seq
+        );
+        hideCycleLimitFinishedDialog();
+        collapseActionPanel();
+        updateMainButtonStatus();
+        Toast.makeText(this, "模块已结束", Toast.LENGTH_SHORT).show();
     }
 
     private void restartTargetAppForNextCycle() {
@@ -1288,6 +1360,67 @@ public class GlobalFloatService extends Service {
             }
             applyInfoWindowStatus(overlay.infoWindow, enabled, text);
         }
+    }
+
+    private void updateCycleLimitDialogStatus() {
+        applyCycleLimitDialogStatus(cycleLimitDialogWindow, cycleLimitDialogVisible, cycleLimitDialogMessage);
+        applyCycleLimitDialogStatus(
+                mirrorCycleLimitDialogWindow,
+                cycleLimitDialogVisible,
+                cycleLimitDialogMessage
+        );
+        for (ExtraOverlay overlay : extraOverlays.values()) {
+            if (overlay == null) {
+                continue;
+            }
+            applyCycleLimitDialogStatus(
+                    overlay.cycleLimitDialogWindow,
+                    cycleLimitDialogVisible,
+                    cycleLimitDialogMessage
+            );
+        }
+    }
+
+    private void applyCycleLimitDialogStatus(LinearLayout dialog, boolean visible, String message) {
+        if (dialog == null) {
+            return;
+        }
+        if (!visible || TextUtils.isEmpty(message)) {
+            dialog.setVisibility(View.GONE);
+            return;
+        }
+        Object tagView = dialog.getTag();
+        if (tagView instanceof TextView) {
+            ((TextView) tagView).setText(message);
+        }
+        dialog.setVisibility(View.VISIBLE);
+    }
+
+    private void showCycleLimitFinishedDialog(int completedCycles, int cycleLimit, long durationMs) {
+        int safeCompleted = Math.max(0, completedCycles);
+        int safeLimit = Math.max(0, cycleLimit);
+        long safeDuration = Math.max(0L, durationMs);
+        String totalText = safeLimit <= 0 ? "无限" : String.valueOf(safeLimit);
+        cycleLimitDialogMessage = "一起聊直播间循环点击次数已运行完成"
+                + "\n已完成循环: " + safeCompleted + "/" + totalText
+                + "\n运行时长: " + formatElapsed(safeDuration)
+                + "\n请选择“重新运行”或“结束”";
+        cycleLimitDialogVisible = true;
+        ensureOverlay();
+        ensureMirrorOverlay();
+        ensureExtraOverlays();
+        updateCycleLimitDialogStatus();
+        log("show cycle limit dialog: completed=" + safeCompleted
+                + " limit=" + safeLimit + " durationMs=" + safeDuration);
+    }
+
+    private void hideCycleLimitFinishedDialog() {
+        if (!cycleLimitDialogVisible && TextUtils.isEmpty(cycleLimitDialogMessage)) {
+            return;
+        }
+        cycleLimitDialogVisible = false;
+        cycleLimitDialogMessage = "";
+        updateCycleLimitDialogStatus();
     }
 
     private void showCycleCompleteNotice(String message) {
@@ -1546,6 +1679,77 @@ public class GlobalFloatService extends Service {
         );
         lp.topMargin = dp(4);
         lp.gravity = Gravity.END;
+        tv.setLayoutParams(lp);
+        return tv;
+    }
+
+    private LinearLayout createCycleLimitDialogView(Context context) {
+        LinearLayout container = new LinearLayout(context);
+        container.setOrientation(LinearLayout.VERTICAL);
+        container.setPadding(dp(10), dp(8), dp(10), dp(8));
+        container.setBackgroundColor(Color.parseColor("#D91B1B1B"));
+        container.setVisibility(View.GONE);
+        LinearLayout.LayoutParams containerLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        containerLp.bottomMargin = dp(8);
+        container.setLayoutParams(containerLp);
+
+        TextView message = new TextView(context);
+        message.setTextColor(Color.WHITE);
+        message.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        message.setSingleLine(false);
+        message.setMaxWidth(dp(220));
+        message.setMinWidth(dp(180));
+        message.setText("一起聊直播间循环点击次数已运行完成");
+        container.addView(message);
+        container.setTag(message);
+
+        LinearLayout actions = new LinearLayout(context);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams actionsLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        actionsLp.topMargin = dp(8);
+        actions.setLayoutParams(actionsLp);
+        container.addView(actions);
+
+        TextView rerunBtn = createDialogActionButton(context, "重新运行", "#2E7D32");
+        rerunBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                onRunClicked();
+            }
+        });
+        actions.addView(rerunBtn);
+
+        TextView endBtn = createDialogActionButton(context, "结束", "#C62828");
+        LinearLayout.LayoutParams endLp = (LinearLayout.LayoutParams) endBtn.getLayoutParams();
+        endLp.leftMargin = dp(8);
+        endBtn.setLayoutParams(endLp);
+        endBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                onCycleLimitDialogEndClicked();
+            }
+        });
+        actions.addView(endBtn);
+        return container;
+    }
+
+    private TextView createDialogActionButton(Context context, String text, String colorHex) {
+        TextView tv = new TextView(context);
+        tv.setText(text);
+        tv.setTextColor(Color.WHITE);
+        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        tv.setPadding(dp(12), dp(6), dp(12), dp(6));
+        tv.setBackgroundColor(Color.parseColor(colorHex));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
         tv.setLayoutParams(lp);
         return tv;
     }

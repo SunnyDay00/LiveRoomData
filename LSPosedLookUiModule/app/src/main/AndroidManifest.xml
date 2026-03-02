@@ -56,6 +56,7 @@
                 <action android:name="com.oodbye.looklspmodule.ACTION_ENGINE_STATUS_REPORT" />
                 <action android:name="com.oodbye.looklspmodule.ACTION_RUNTIME_STATS_REPORT" />
                 <action android:name="com.oodbye.looklspmodule.ACTION_CYCLE_COMPLETE_NOTICE" />
+                <action android:name="com.oodbye.looklspmodule.ACTION_CYCLE_LIMIT_FINISHED" />
             </intent-filter>
         </receiver>
 

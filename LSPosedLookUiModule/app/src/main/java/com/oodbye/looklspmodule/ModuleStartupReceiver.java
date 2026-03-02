@@ -51,6 +51,19 @@ public class ModuleStartupReceiver extends BroadcastReceiver {
             GlobalFloatService.startServiceCompatWithNotice(context, message);
             Log.i(TAG, "[ModuleReceiver] cycle complete notice dispatched, message=" + message);
             shouldSyncFloatService = false;
+        } else if (ModuleSettings.ACTION_CYCLE_LIMIT_FINISHED.equals(action)) {
+            int completedCycles = intent.getIntExtra(ModuleSettings.EXTRA_FINISHED_CYCLES, 0);
+            int cycleLimit = intent.getIntExtra(ModuleSettings.EXTRA_FINISHED_CYCLE_LIMIT, 0);
+            long durationMs = intent.getLongExtra(ModuleSettings.EXTRA_FINISHED_DURATION_MS, 0L);
+            GlobalFloatService.startServiceCompatWithCycleLimitDialog(
+                    context,
+                    completedCycles,
+                    cycleLimit,
+                    durationMs
+            );
+            Log.i(TAG, "[ModuleReceiver] cycle limit finished dispatched: completed="
+                    + completedCycles + " limit=" + cycleLimit + " durationMs=" + durationMs);
+            shouldSyncFloatService = false;
         }
         if (shouldSyncFloatService) {
             FloatServiceBootstrap.syncFloatServiceState(context, intent);

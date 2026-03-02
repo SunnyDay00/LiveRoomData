@@ -1075,6 +1075,10 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             } else {
                 nextSeq += 1L;
             }
+            long runStartAt = resolveRuntimeRunStartedAtFromShared();
+            long durationMs = runStartAt > 0L
+                    ? Math.max(0L, System.currentTimeMillis() - runStartAt)
+                    : 0L;
             updateRealtimeEngineState(
                     ModuleSettings.ENGINE_CMD_STOP,
                     ModuleSettings.EngineStatus.STOPPED,
@@ -1086,8 +1090,26 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                     -1
             );
             reportEngineStatusToModule(ModuleSettings.EngineStatus.STOPPED);
+            notifyCycleLimitFinishedToModule(completed, cycleLimit, durationMs);
             log("一起聊页：已完成循环次数上限，自动停止模块。completedCycles="
-                    + completed + " cycleLimit=" + cycleLimit);
+                    + completed + " cycleLimit=" + cycleLimit + " durationMs=" + durationMs);
+        }
+
+        private void notifyCycleLimitFinishedToModule(int completed, int cycleLimit, long durationMs) {
+            Context appContext = activity.getApplicationContext();
+            if (appContext == null) {
+                return;
+            }
+            try {
+                Intent intent = new Intent(ModuleSettings.ACTION_CYCLE_LIMIT_FINISHED);
+                intent.setPackage(ModuleSettings.MODULE_PACKAGE);
+                intent.putExtra(ModuleSettings.EXTRA_FINISHED_CYCLES, Math.max(0, completed));
+                intent.putExtra(ModuleSettings.EXTRA_FINISHED_CYCLE_LIMIT, Math.max(0, cycleLimit));
+                intent.putExtra(ModuleSettings.EXTRA_FINISHED_DURATION_MS, Math.max(0L, durationMs));
+                appContext.sendBroadcast(intent);
+            } catch (Throwable e) {
+                log("循环上限完成广播发送失败: " + e);
+            }
         }
 
         private void requestModuleRestartTargetApp(Context appContext, Activity activity) {
