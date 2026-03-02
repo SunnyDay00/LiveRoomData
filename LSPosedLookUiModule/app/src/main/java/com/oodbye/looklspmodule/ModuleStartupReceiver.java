@@ -32,9 +32,18 @@ public class ModuleStartupReceiver extends BroadcastReceiver {
             long runStartAt = intent.getLongExtra(ModuleSettings.EXTRA_RUNTIME_RUN_START_AT, 0L);
             int cycleCompleted = intent.getIntExtra(ModuleSettings.EXTRA_RUNTIME_CYCLE_COMPLETED, 0);
             int cycleEntered = intent.getIntExtra(ModuleSettings.EXTRA_RUNTIME_CYCLE_ENTERED, 0);
-            ModuleSettings.syncRuntimeStats(context, runStartAt, cycleCompleted, cycleEntered);
+            long runtimeSeq = intent.getLongExtra(ModuleSettings.EXTRA_RUNTIME_COMMAND_SEQ, -1L);
+            ModuleSettings.syncRuntimeStats(
+                    context,
+                    runStartAt,
+                    cycleCompleted,
+                    cycleEntered,
+                    runtimeSeq
+            );
             Log.i(TAG, "[ModuleReceiver] runtime stats synced: runStartAt=" + runStartAt
-                    + " completed=" + cycleCompleted + " entered=" + cycleEntered);
+                    + " completed=" + cycleCompleted
+                    + " entered=" + cycleEntered
+                    + " runtimeSeq=" + runtimeSeq);
             shouldSyncFloatService = false;
         } else if (ModuleSettings.ACTION_CYCLE_COMPLETE_NOTICE.equals(action)) {
             String message = intent.getStringExtra(ModuleSettings.EXTRA_CYCLE_COMPLETE_MESSAGE);

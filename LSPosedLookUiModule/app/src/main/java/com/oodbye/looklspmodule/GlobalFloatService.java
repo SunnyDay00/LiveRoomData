@@ -42,7 +42,7 @@ public class GlobalFloatService extends Service {
     private static final int NOTIFICATION_ID = 2026030101;
     private static final long DISPLAY_REFRESH_INTERVAL_MS = 2000L;
     private static final long PERMISSION_TOAST_MIN_INTERVAL_MS = 6000L;
-    private static final long CYCLE_NOTICE_SHOW_MS = 3000L;
+    private static final long CYCLE_NOTICE_SHOW_MS = 6000L;
     private static final int GLOBAL_DISPLAY_ID = 0;
 
     private SharedPreferences prefs;
@@ -1122,11 +1122,14 @@ public class GlobalFloatService extends Service {
             log("ignore cycle restart request: engine status=" + status);
             return;
         }
-        long seq = ModuleSettings.pushEngineCommand(
-                this,
-                ModuleSettings.ENGINE_CMD_RUN,
-                ModuleSettings.EngineStatus.RUNNING
-        );
+        long seq = ModuleSettings.getEngineCommandSeq(prefs);
+        if (seq <= 0L) {
+            seq = ModuleSettings.pushEngineCommand(
+                    this,
+                    ModuleSettings.ENGINE_CMD_RUN,
+                    ModuleSettings.EngineStatus.RUNNING
+            );
+        }
         dispatchEngineCommandBroadcast(
                 ModuleSettings.ENGINE_CMD_RUN,
                 ModuleSettings.EngineStatus.RUNNING,
@@ -1139,7 +1142,7 @@ public class GlobalFloatService extends Service {
         launchTargetApp(UiComponentConfig.TARGET_PACKAGE);
         dispatchRunCommandAfterLaunch(seq);
         updateMainButtonStatus();
-        log("cycle restart requested: relaunched target app, seq=" + seq);
+        log("cycle restart requested: relaunched target app with existing run seq=" + seq);
     }
 
     private void dispatchRunCommandAfterLaunch(final long seq) {
@@ -1172,6 +1175,26 @@ public class GlobalFloatService extends Service {
             intent.putExtra(ModuleSettings.EXTRA_ENGINE_COMMAND, command);
             intent.putExtra(ModuleSettings.EXTRA_ENGINE_STATUS, status == null ? "" : status.name());
             intent.putExtra(ModuleSettings.EXTRA_ENGINE_COMMAND_SEQ, seq);
+            intent.putExtra(
+                    ModuleSettings.EXTRA_TOGETHER_CYCLE_LIMIT,
+                    ModuleSettings.getTogetherCycleLimit(prefs)
+            );
+            intent.putExtra(
+                    ModuleSettings.EXTRA_TOGETHER_CYCLE_WAIT_SECONDS,
+                    ModuleSettings.getTogetherCycleWaitSeconds(prefs)
+            );
+            intent.putExtra(
+                    ModuleSettings.EXTRA_RUNTIME_RUN_START_AT,
+                    ModuleSettings.getRuntimeRunStartAt(prefs)
+            );
+            intent.putExtra(
+                    ModuleSettings.EXTRA_RUNTIME_CYCLE_COMPLETED,
+                    ModuleSettings.getRuntimeCycleCompleted(prefs)
+            );
+            intent.putExtra(
+                    ModuleSettings.EXTRA_RUNTIME_CYCLE_ENTERED,
+                    ModuleSettings.getRuntimeCycleEntered(prefs)
+            );
             sendBroadcast(intent);
         } catch (Throwable ignore) {
         }
@@ -1227,9 +1250,12 @@ public class GlobalFloatService extends Service {
         int currentCycle = status == ModuleSettings.EngineStatus.RUNNING
                 ? Math.max(1, completed + 1)
                 : Math.max(0, completed);
-        String remaining = cycleLimit <= 0
+        if (cycleLimit > 0) {
+            currentCycle = Math.min(cycleLimit, currentCycle);
+        }
+        String total = cycleLimit <= 0
                 ? "无限"
-                : String.valueOf(Math.max(0, cycleLimit - completed));
+                : String.valueOf(cycleLimit);
         long elapsedMs = 0L;
         if (status == ModuleSettings.EngineStatus.RUNNING) {
             boolean targetRunning = isPackageRunning(UiComponentConfig.TARGET_PACKAGE);
@@ -1251,7 +1277,7 @@ public class GlobalFloatService extends Service {
         } else {
             runtimeStartFallbackAt = 0L;
         }
-        String text = "循环: " + currentCycle + "/" + remaining
+        String text = "循环: " + currentCycle + "/" + total
                 + "\n已进房: " + Math.max(0, entered)
                 + "\n运行: " + formatElapsed(elapsedMs);
         applyInfoWindowStatus(infoWindow, enabled, text);

@@ -350,7 +350,7 @@ public class ModuleSettingsActivity extends Activity {
         final EditText cycleWaitInput = new EditText(this);
         cycleWaitInput.setSingleLine(true);
         cycleWaitInput.setInputType(InputType.TYPE_CLASS_NUMBER);
-        cycleWaitInput.setHint("0");
+        cycleWaitInput.setHint("10");
         cycleWaitInput.setText(String.valueOf(ModuleSettings.getTogetherCycleWaitSeconds(prefs)));
         LinearLayout.LayoutParams cycleWaitInputLp = new LinearLayout.LayoutParams(
                 0,
@@ -404,7 +404,7 @@ public class ModuleSettingsActivity extends Activity {
         cycleWaitRow.addView(cycleWaitSaveBtn);
 
         TextView cycleWaitHint = new TextView(this);
-        cycleWaitHint.setText("每完成一次完整循环后，等待该秒数再启动下一轮；默认 0 秒（不额外等待）。");
+        cycleWaitHint.setText("每完成一次完整循环后，等待该秒数再启动下一轮；默认 10 秒。");
         cycleWaitHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         LinearLayout.LayoutParams cycleWaitHintLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,

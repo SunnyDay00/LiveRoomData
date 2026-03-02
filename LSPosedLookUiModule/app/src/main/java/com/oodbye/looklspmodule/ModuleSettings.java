@@ -21,6 +21,7 @@ final class ModuleSettings {
     static final String KEY_RUNTIME_RUN_START_AT = "runtime_run_start_at";
     static final String KEY_RUNTIME_CYCLE_COMPLETED = "runtime_cycle_completed";
     static final String KEY_RUNTIME_CYCLE_ENTERED = "runtime_cycle_entered";
+    static final String KEY_RUNTIME_COMMAND_SEQ = "runtime_command_seq";
     static final String KEY_ENGINE_STATUS = "engine_status";
     static final String KEY_ENGINE_COMMAND = "engine_command";
     static final String KEY_ENGINE_COMMAND_SEQ = "engine_command_seq";
@@ -32,12 +33,15 @@ final class ModuleSettings {
     static final String EXTRA_ENGINE_COMMAND = "engine_command";
     static final String EXTRA_ENGINE_STATUS = "engine_status";
     static final String EXTRA_ENGINE_COMMAND_SEQ = "engine_command_seq";
+    static final String EXTRA_TOGETHER_CYCLE_LIMIT = "together_cycle_limit";
+    static final String EXTRA_TOGETHER_CYCLE_WAIT_SECONDS = "together_cycle_wait_seconds";
     static final String EXTRA_TARGET_DISPLAY_ID = "target_display_id";
     static final String EXTRA_REQUEST_RESTART_TARGET_APP = "request_restart_target_app";
     static final String EXTRA_CYCLE_COMPLETE_MESSAGE = "cycle_complete_message";
     static final String EXTRA_RUNTIME_RUN_START_AT = "runtime_run_start_at";
     static final String EXTRA_RUNTIME_CYCLE_COMPLETED = "runtime_cycle_completed";
     static final String EXTRA_RUNTIME_CYCLE_ENTERED = "runtime_cycle_entered";
+    static final String EXTRA_RUNTIME_COMMAND_SEQ = "runtime_command_seq";
 
     static final String ENGINE_CMD_RUN = "RUN";
     static final String ENGINE_CMD_PAUSE = "PAUSE";
@@ -48,7 +52,7 @@ final class ModuleSettings {
     static final boolean DEFAULT_ACCESSIBILITY_AD_SERVICE_ENABLED = true;
     static final boolean DEFAULT_AUTO_RUN_ON_APP_START_ENABLED = false;
     static final int DEFAULT_TOGETHER_CYCLE_LIMIT = 0;
-    static final int DEFAULT_TOGETHER_CYCLE_WAIT_SECONDS = 0;
+    static final int DEFAULT_TOGETHER_CYCLE_WAIT_SECONDS = 10;
     static final boolean DEFAULT_FLOAT_INFO_WINDOW_ENABLED = false;
     static final String DEFAULT_ENGINE_STATUS = EngineStatus.STOPPED.name();
 
@@ -405,16 +409,45 @@ final class ModuleSettings {
             Context context,
             long runStartAt,
             int cycleCompleted,
-            int cycleEntered
+            int cycleEntered,
+            long runtimeCommandSeq
     ) {
         if (context == null) {
             return;
         }
         SharedPreferences prefs = appPrefs(context);
+        long incomingSeq = Math.max(0L, runtimeCommandSeq);
+        long storedRuntimeSeq = Math.max(0L, prefs.getLong(KEY_RUNTIME_COMMAND_SEQ, 0L));
+        long storedEngineSeq = Math.max(0L, prefs.getLong(KEY_ENGINE_COMMAND_SEQ, 0L));
+        long finalSeq = incomingSeq > 0L ? incomingSeq : storedRuntimeSeq;
+        if (incomingSeq > 0L && storedRuntimeSeq > 0L && incomingSeq < storedRuntimeSeq) {
+            return;
+        }
+        int safeCompleted = sanitizeNonNegativeInt(cycleCompleted);
+        int safeEntered = sanitizeNonNegativeInt(cycleEntered);
+        long safeRunStartAt = Math.max(0L, runStartAt);
+        if (incomingSeq > 0L
+                && incomingSeq == storedRuntimeSeq
+                && incomingSeq == storedEngineSeq
+                && EngineStatus.RUNNING == getEngineStatus(prefs)) {
+            int storedCompleted = sanitizeNonNegativeInt(
+                    prefs.getInt(KEY_RUNTIME_CYCLE_COMPLETED, 0)
+            );
+            safeCompleted = Math.max(storedCompleted, safeCompleted);
+            long storedRunStartAt = Math.max(0L, prefs.getLong(KEY_RUNTIME_RUN_START_AT, 0L));
+            if (storedRunStartAt > 0L) {
+                if (safeRunStartAt <= 0L) {
+                    safeRunStartAt = storedRunStartAt;
+                } else {
+                    safeRunStartAt = Math.min(storedRunStartAt, safeRunStartAt);
+                }
+            }
+        }
         prefs.edit()
-                .putLong(KEY_RUNTIME_RUN_START_AT, Math.max(0L, runStartAt))
-                .putInt(KEY_RUNTIME_CYCLE_COMPLETED, sanitizeNonNegativeInt(cycleCompleted))
-                .putInt(KEY_RUNTIME_CYCLE_ENTERED, sanitizeNonNegativeInt(cycleEntered))
+                .putLong(KEY_RUNTIME_RUN_START_AT, safeRunStartAt)
+                .putInt(KEY_RUNTIME_CYCLE_COMPLETED, safeCompleted)
+                .putInt(KEY_RUNTIME_CYCLE_ENTERED, safeEntered)
+                .putLong(KEY_RUNTIME_COMMAND_SEQ, finalSeq)
                 .commit();
         ensurePrefsReadable(context);
     }
@@ -432,6 +465,7 @@ final class ModuleSettings {
                 .putLong(KEY_RUNTIME_RUN_START_AT, 0L)
                 .putInt(KEY_RUNTIME_CYCLE_COMPLETED, 0)
                 .putInt(KEY_RUNTIME_CYCLE_ENTERED, 0)
+                .putLong(KEY_RUNTIME_COMMAND_SEQ, nextSeq)
                 .commit();
         ensurePrefsReadable(context);
         return nextSeq;
@@ -492,6 +526,9 @@ final class ModuleSettings {
         }
         if (!prefs.contains(KEY_RUNTIME_CYCLE_ENTERED)) {
             editor.putInt(KEY_RUNTIME_CYCLE_ENTERED, 0);
+        }
+        if (!prefs.contains(KEY_RUNTIME_COMMAND_SEQ)) {
+            editor.putLong(KEY_RUNTIME_COMMAND_SEQ, 0L);
         }
         if (!prefs.contains(KEY_ENGINE_STATUS)) {
             editor.putString(KEY_ENGINE_STATUS, DEFAULT_ENGINE_STATUS);

@@ -49,6 +49,8 @@ public class LookHookEntry implements IXposedHookLoadPackage {
     private static String sRealtimeCommand = "";
     private static ModuleSettings.EngineStatus sRealtimeStatus = null;
     private static long sRealtimeCommandSeq = -1L;
+    private static int sRealtimeTogetherCycleLimit = -1;
+    private static int sRealtimeTogetherCycleWaitSeconds = -1;
     private static boolean sHookInstalled = false;
     private static boolean sAwaitingLiveRoomScript = false;
     private static long sLastCardClickAt = 0L;
@@ -137,9 +139,43 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                     String command = safeTrimStatic(intent.getStringExtra(ModuleSettings.EXTRA_ENGINE_COMMAND));
                     String statusName = safeTrimStatic(intent.getStringExtra(ModuleSettings.EXTRA_ENGINE_STATUS));
                     long seq = intent.getLongExtra(ModuleSettings.EXTRA_ENGINE_COMMAND_SEQ, -1L);
+                    int cycleLimit = intent.getIntExtra(
+                            ModuleSettings.EXTRA_TOGETHER_CYCLE_LIMIT,
+                            -1
+                    );
+                    int cycleWaitSeconds = intent.getIntExtra(
+                            ModuleSettings.EXTRA_TOGETHER_CYCLE_WAIT_SECONDS,
+                            -1
+                    );
+                    long runtimeRunStartAt = intent.getLongExtra(
+                            ModuleSettings.EXTRA_RUNTIME_RUN_START_AT,
+                            -1L
+                    );
+                    int runtimeCompleted = intent.getIntExtra(
+                            ModuleSettings.EXTRA_RUNTIME_CYCLE_COMPLETED,
+                            -1
+                    );
+                    int runtimeEntered = intent.getIntExtra(
+                            ModuleSettings.EXTRA_RUNTIME_CYCLE_ENTERED,
+                            -1
+                    );
                     ModuleSettings.EngineStatus status = parseEngineStatusStatic(statusName);
-                    updateRealtimeEngineState(command, status, seq);
-                    log("receive realtime command: cmd=" + command + " status=" + status.name() + " seq=" + seq);
+                    updateRealtimeEngineState(
+                            command,
+                            status,
+                            seq,
+                            cycleLimit,
+                            cycleWaitSeconds,
+                            runtimeRunStartAt,
+                            runtimeCompleted,
+                            runtimeEntered
+                    );
+                    log("receive realtime command: cmd=" + command
+                            + " status=" + status.name()
+                            + " seq=" + seq
+                            + " cycleLimit=" + cycleLimit
+                            + " waitSeconds=" + cycleWaitSeconds
+                            + " runtimeCompleted=" + runtimeCompleted);
                 }
             };
             try {
@@ -487,12 +523,27 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             if (to == ModuleSettings.EngineStatus.RUNNING) {
                 long seq = resolveEffectiveCommandSeq();
                 boolean isNewRunSeq = markRunSeqInitialized(seq);
-                if (!isNewRunSeq) {
-                    runStartedAt = resolveRuntimeRunStartedAtFromShared();
-                    togetherCycleCompletedCount = resolveRuntimeCycleCompletedFromShared();
-                    togetherCycleLiveRoomEnteredCount = resolveRuntimeCycleEnteredFromShared();
+                long persistedRunStartedAt = resolveRuntimeRunStartedAtFromShared();
+                int persistedCompleted = resolveRuntimeCycleCompletedFromShared();
+                int persistedEntered = resolveRuntimeCycleEnteredFromShared();
+                boolean shouldRecoverRuntime = (!isNewRunSeq)
+                        || persistedRunStartedAt > 0L
+                        || persistedCompleted > 0
+                        || persistedEntered > 0;
+                if (shouldRecoverRuntime) {
+                    runStartedAt = persistedRunStartedAt;
+                    togetherCycleCompletedCount = Math.max(0, persistedCompleted);
+                    togetherCycleLiveRoomEnteredCount = Math.max(0, persistedEntered);
+                    setRuntimeRunStartedAtShared(runStartedAt);
                     setRuntimeCycleCompletedCountShared(togetherCycleCompletedCount);
                     setRuntimeCycleEnteredCountShared(togetherCycleLiveRoomEnteredCount);
+                    flowState = RunFlowState.WAIT_HOME;
+                    if (isNewRunSeq) {
+                        log("RUN 状态续跑恢复：seq=" + seq
+                                + " runStartedAt=" + runStartedAt
+                                + " completedCycles=" + togetherCycleCompletedCount
+                                + " enteredInCycle=" + togetherCycleLiveRoomEnteredCount);
+                    }
                     return;
                 }
                 ModuleRunFileLogger.prepareForNewRun(activity.getApplicationContext(), seq);
@@ -825,7 +876,11 @@ public class LookHookEntry implements IXposedHookLoadPackage {
         }
 
         private void requestRestartForNextTogetherCycle(final long now) {
-            int completed = togetherCycleCompletedCount + 1;
+            int baseCompleted = Math.max(
+                    togetherCycleCompletedCount,
+                    resolveRuntimeCycleCompletedFromShared()
+            );
+            int completed = baseCompleted + 1;
             togetherCycleCompletedCount = completed;
             setRuntimeCycleCompletedCountShared(completed);
             int cycleLimit = resolveTogetherCycleLimit();
@@ -880,11 +935,16 @@ public class LookHookEntry implements IXposedHookLoadPackage {
         }
 
         private int resolveTogetherCycleLimit() {
+            int realtime = getRealtimeTogetherCycleLimit();
+            if (realtime >= 0) {
+                return realtime;
+            }
             return ModuleSettings.getTogetherCycleLimit();
         }
 
         private long resolveTogetherCycleRestartDelayMs() {
-            long seconds = ModuleSettings.getTogetherCycleWaitSeconds();
+            int realtime = getRealtimeTogetherCycleWaitSeconds();
+            long seconds = realtime >= 0 ? realtime : ModuleSettings.getTogetherCycleWaitSeconds();
             if (seconds < 0L) {
                 seconds = 0L;
             }
@@ -927,8 +987,10 @@ public class LookHookEntry implements IXposedHookLoadPackage {
         private String buildCycleCompleteMessage(int enteredCount, int completedCycles, int cycleLimit) {
             int remaining = cycleLimit <= 0 ? -1 : Math.max(0, cycleLimit - completedCycles);
             String remainingText = remaining < 0 ? "无限" : String.valueOf(remaining);
-            return "本轮进入直播间 " + Math.max(0, enteredCount)
-                    + " 个，还有 " + remainingText + " 次循环";
+            String totalText = cycleLimit <= 0 ? "无限" : String.valueOf(cycleLimit);
+            return "第 " + Math.max(0, completedCycles) + "/" + totalText
+                    + " 轮完成，本轮进入直播间 " + Math.max(0, enteredCount)
+                    + " 个，剩余 " + remainingText + " 轮";
         }
 
         private void notifyCycleCompleteToModule(String message) {
@@ -966,6 +1028,10 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                 intent.putExtra(
                         ModuleSettings.EXTRA_RUNTIME_CYCLE_ENTERED,
                         Math.max(0, cycleEntered)
+                );
+                intent.putExtra(
+                        ModuleSettings.EXTRA_RUNTIME_COMMAND_SEQ,
+                        Math.max(0L, resolveEffectiveCommandSeq())
                 );
                 appContext.sendBroadcast(intent);
             } catch (Throwable e) {
@@ -1012,7 +1078,12 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             updateRealtimeEngineState(
                     ModuleSettings.ENGINE_CMD_STOP,
                     ModuleSettings.EngineStatus.STOPPED,
-                    nextSeq
+                    nextSeq,
+                    -1,
+                    -1,
+                    -1L,
+                    -1,
+                    -1
             );
             reportEngineStatusToModule(ModuleSettings.EngineStatus.STOPPED);
             log("一起聊页：已完成循环次数上限，自动停止模块。completedCycles="
@@ -2036,12 +2107,36 @@ public class LookHookEntry implements IXposedHookLoadPackage {
     private static void updateRealtimeEngineState(
             String command,
             ModuleSettings.EngineStatus status,
-            long seq
+            long seq,
+            int cycleLimit,
+            int cycleWaitSeconds,
+            long runtimeRunStartAt,
+            int runtimeCompleted,
+            int runtimeEntered
     ) {
         synchronized (FLOW_STATE_LOCK) {
             sRealtimeCommand = safeTrimStatic(command);
             sRealtimeStatus = status;
             sRealtimeCommandSeq = seq;
+            if (cycleLimit >= 0) {
+                sRealtimeTogetherCycleLimit = cycleLimit;
+            }
+            if (cycleWaitSeconds >= 0) {
+                sRealtimeTogetherCycleWaitSeconds = cycleWaitSeconds;
+            }
+            if (runtimeRunStartAt > 0L) {
+                if (sRuntimeRunStartedAt <= 0L) {
+                    sRuntimeRunStartedAt = runtimeRunStartAt;
+                } else {
+                    sRuntimeRunStartedAt = Math.min(sRuntimeRunStartedAt, runtimeRunStartAt);
+                }
+            }
+            if (runtimeCompleted >= 0) {
+                sRuntimeCycleCompletedCount = Math.max(sRuntimeCycleCompletedCount, runtimeCompleted);
+            }
+            if (runtimeEntered >= 0) {
+                sRuntimeCycleEnteredCount = Math.max(0, runtimeEntered);
+            }
             if (status == ModuleSettings.EngineStatus.RUNNING) {
                 sAutoRunConsumedForProcess = true;
             }
@@ -2122,6 +2217,18 @@ public class LookHookEntry implements IXposedHookLoadPackage {
     private static long getRealtimeCommandSeq() {
         synchronized (FLOW_STATE_LOCK) {
             return sRealtimeCommandSeq;
+        }
+    }
+
+    private static int getRealtimeTogetherCycleLimit() {
+        synchronized (FLOW_STATE_LOCK) {
+            return sRealtimeTogetherCycleLimit;
+        }
+    }
+
+    private static int getRealtimeTogetherCycleWaitSeconds() {
+        synchronized (FLOW_STATE_LOCK) {
+            return sRealtimeTogetherCycleWaitSeconds;
         }
     }
 
