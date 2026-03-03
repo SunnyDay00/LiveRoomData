@@ -7,17 +7,24 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.graphics.Path;
 import android.graphics.Rect;
 import android.os.Build;
 import android.os.Handler;
+import android.os.IBinder;
 import android.os.Looper;
+import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.text.TextUtils;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityWindowInfo;
 
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -26,10 +33,16 @@ import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
+import moe.shizuku.server.IRemoteProcess;
+import moe.shizuku.server.IShizukuService;
+import rikka.shizuku.Shizuku;
+
 public class LookAccessibilityAdService extends AccessibilityService {
     private static final String TAG = "LOOKA11yAd";
     private static final String LOG_PREFIX = "[LOOKA11yAd]";
     private static final long PANEL_SNAPSHOT_LOG_INTERVAL_MS = 3000L;
+    private static final long SHIZUKU_PERMISSION_REQUEST_INTERVAL_MS = 30_000L;
+    private static final int SHIZUKU_PERMISSION_REQUEST_CODE = 1201;
 
     private Handler handler;
     private AccessibilityCustomRulesAdEngine adEngine;
@@ -44,6 +57,7 @@ public class LookAccessibilityAdService extends AccessibilityService {
     private boolean panelClickRequestReceiverRegistered;
     private final Object rankCollectLock = new Object();
     private long activeRankCollectRequestId = -1L;
+    private long lastShizukuPermissionRequestAt = 0L;
     private final Runnable realtimeLoopTask = new Runnable() {
         @Override
         public void run() {
@@ -578,7 +592,7 @@ public class LookAccessibilityAdService extends AccessibilityService {
             AccessibilityNodeInfo scrollRoot = obtainTargetRoot();
             boolean scrolled = false;
             try {
-                scrolled = performRankListScroll(scrollRoot, rankType, nextRank);
+                scrolled = performRankListScroll(scrollRoot, rankType, nextRank, scrollCount);
             } finally {
                 safeRecycle(scrollRoot);
             }
@@ -591,6 +605,59 @@ public class LookAccessibilityAdService extends AccessibilityService {
                     after = Math.max(after, scanRankRows(rootAfter, rankType, -1).maxRank);
                 } finally {
                     safeRecycle(rootAfter);
+                }
+            }
+            if (after <= before) {
+                int compensateMaxTry = Math.max(
+                        0,
+                        UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_ACTION_COMPENSATE_MAX_TRY
+                );
+                for (int compensateTry = 1; compensateTry <= compensateMaxTry; compensateTry++) {
+                    AccessibilityNodeInfo compensateRoot = obtainTargetRoot();
+                    boolean compensateSuccess;
+                    String compensateDetail;
+                    try {
+                        compensateSuccess = performRankListScroll(
+                                compensateRoot,
+                                rankType,
+                                nextRank,
+                                scrollCount + compensateTry
+                        );
+                        compensateDetail = compensateSuccess ? "ok" : "failed";
+                    } finally {
+                        safeRecycle(compensateRoot);
+                    }
+                    log("榜单采集上滑补偿: type=" + safeTrim(rankType)
+                            + " nextRank=" + nextRank
+                            + " try=" + compensateTry + "/" + compensateMaxTry
+                            + " success=" + compensateSuccess
+                            + " detail=" + safeTrim(compensateDetail));
+                    if (!compensateSuccess) {
+                        continue;
+                    }
+                    scrolled = true;
+                    SystemClock.sleep(
+                            Math.max(
+                                    120L,
+                                    UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_ACTION_COMPENSATE_WAIT_MS
+                            )
+                    );
+                    AccessibilityNodeInfo compensateAfterRoot = obtainTargetRoot();
+                    int compensateAfter = after;
+                    if (compensateAfterRoot != null) {
+                        try {
+                            compensateAfter = Math.max(
+                                    compensateAfter,
+                                    scanRankRows(compensateAfterRoot, rankType, -1).maxRank
+                            );
+                        } finally {
+                            safeRecycle(compensateAfterRoot);
+                        }
+                    }
+                    after = Math.max(after, compensateAfter);
+                    if (after > before) {
+                        break;
+                    }
                 }
             }
             highestObservedRank = Math.max(highestObservedRank, after);
@@ -611,16 +678,37 @@ public class LookAccessibilityAdService extends AccessibilityService {
             success = false;
             failDetail = "rank_no_data_collected";
         }
-        int flushedCount = flushQueuedRankRows(rankType, contributionRows, charmRows);
-        boolean flushOk = flushedCount >= collectedCount;
+        boolean countMatched = safeTargetCount <= 0 || collectedCount >= safeTargetCount;
+        if (success && !countMatched) {
+            success = false;
+            failDetail = "rank_target_not_reached(target=" + safeTargetCount
+                    + ",actual=" + collectedCount
+                    + ",highestObserved=" + highestObservedRank + ")";
+        }
+        RankFlushResult flushResult = flushQueuedRankRows(rankType, contributionRows, charmRows);
+        boolean flushOk = flushResult.ioSuccess && flushResult.acceptedCount >= collectedCount;
+        log("榜单采集数量核对: type=" + safeTrim(rankType)
+                + " target=" + safeTargetCount
+                + " actual=" + collectedCount
+                + " matched=" + countMatched
+                + " maxRank=" + maxCollectedRank
+                + " highestObserved=" + highestObservedRank
+                + " scrollCount=" + scrollCount
+                + " noProgress=" + noProgressScrollCount);
         log("榜单采集写入汇总: type=" + safeTrim(rankType)
                 + " queued=" + collectedCount
-                + " flushed=" + flushedCount
+                + " accepted=" + flushResult.acceptedCount
+                + " written=" + flushResult.writtenCount
+                + " dedupSkipped=" + flushResult.duplicateSkippedCount
+                + " ioSuccess=" + flushResult.ioSuccess
                 + " flushOk=" + flushOk
                 + " detailMode=" + (collectDetailEnabled ? "detail" : "list"));
         String detail = (success ? "collect_done" : safeTrim(failDetail)) + "(target=" + safeTargetCount
                 + ",count=" + collectedCount
-                + ",flushed=" + flushedCount
+                + ",matched=" + countMatched
+                + ",accepted=" + flushResult.acceptedCount
+                + ",written=" + flushResult.writtenCount
+                + ",dedupSkipped=" + flushResult.duplicateSkippedCount
                 + ",maxRank=" + maxCollectedRank
                 + ",highestObserved=" + highestObservedRank + ")";
         return new RankCollectSummary(success && flushOk, detail, collectedCount, maxCollectedRank);
@@ -1082,33 +1170,241 @@ public class LookAccessibilityAdService extends AccessibilityService {
         return true;
     }
 
-    private int flushQueuedRankRows(
+    private RankFlushResult flushQueuedRankRows(
             String rankType,
             List<LiveRoomRankCsvStore.ContributionCsvRow> contributionRows,
             List<LiveRoomRankCsvStore.CharmCsvRow> charmRows
     ) {
         if (isContributionCollectType(rankType)) {
-            return LiveRoomRankCsvStore.appendContributionRows(this, contributionRows);
+            LiveRoomRankCsvStore.AppendResult result =
+                    LiveRoomRankCsvStore.appendContributionRowsWithResult(this, contributionRows);
+            return new RankFlushResult(
+                    result.acceptedCount,
+                    result.writtenCount,
+                    result.duplicateSkippedCount,
+                    result.ioSuccess
+            );
         }
-        return LiveRoomRankCsvStore.appendCharmRows(this, charmRows);
+        LiveRoomRankCsvStore.AppendResult result =
+                LiveRoomRankCsvStore.appendCharmRowsWithResult(this, charmRows);
+        return new RankFlushResult(
+                result.acceptedCount,
+                result.writtenCount,
+                result.duplicateSkippedCount,
+                result.ioSuccess
+        );
     }
 
     private boolean performRankListScroll(
             AccessibilityNodeInfo root,
             String rankType,
-            int nextRank
+            int nextRank,
+            int attemptIndex
     ) {
-        ClickResult actionResult = performRankListScrollByAction(root);
-        if (actionResult.success) {
-            log("榜单上滑执行: mode=scroll_action type=" + safeTrim(rankType)
+        ClickResult shellResult = performRankListScrollByShellInput(rankType, nextRank, attemptIndex);
+        if (shellResult.success) {
+            log("榜单上滑执行: mode=shizuku_shell type=" + safeTrim(rankType)
                     + " nextRank=" + nextRank
-                    + " detail=" + safeTrim(actionResult.detail));
+                    + " detail=" + safeTrim(shellResult.detail));
             return true;
         }
-        log("榜单上滑动作失败，改用手势: type=" + safeTrim(rankType)
+        if (!TextUtils.isEmpty(shellResult.detail) && !"disabled".equals(shellResult.detail)) {
+            log("榜单上滑shell未命中，回退手势: type=" + safeTrim(rankType)
+                    + " nextRank=" + nextRank
+                    + " detail=" + safeTrim(shellResult.detail));
+        }
+        ClickResult gestureResult = performRankListScrollGesture(
+                root,
+                rankType,
+                nextRank,
+                attemptIndex
+        );
+        if (gestureResult.success) {
+            log("榜单上滑执行: mode=gesture_direct type=" + safeTrim(rankType)
+                    + " nextRank=" + nextRank
+                    + " detail=" + safeTrim(gestureResult.detail));
+            return true;
+        }
+        log("榜单上滑失败: mode=gesture_direct type=" + safeTrim(rankType)
                 + " nextRank=" + nextRank
-                + " detail=" + safeTrim(actionResult.detail));
-        return performRankListScrollGesture(root, rankType, nextRank);
+                + " detail=" + safeTrim(gestureResult.detail));
+        return false;
+    }
+
+    private ClickResult performRankListScrollByShellInput(
+            String rankType,
+            int nextRank,
+            int attemptIndex
+    ) {
+        if (!UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_PREFER_SHIZUKU_SHELL) {
+            return new ClickResult(false, "disabled");
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return new ClickResult(false, "sdk<23");
+        }
+        if (!Shizuku.pingBinder()) {
+            return new ClickResult(false, "shizuku_binder_unavailable");
+        }
+        if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+            maybeRequestShizukuPermission();
+            return new ClickResult(false, "shizuku_permission_denied");
+        }
+        int width = getResources() == null ? 0 : getResources().getDisplayMetrics().widthPixels;
+        int height = getResources() == null ? 0 : getResources().getDisplayMetrics().heightPixels;
+        if (width <= 0 || height <= 0) {
+            return new ClickResult(false, "display_invalid");
+        }
+        int profile = Math.floorMod(Math.max(0, attemptIndex), 3);
+        float xRatio = UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_X_RATIO;
+        if (profile == 1) {
+            xRatio = UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_X_LEFT_RATIO;
+        } else if (profile == 2) {
+            xRatio = UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_X_RIGHT_RATIO;
+        }
+        float extraDistanceRatio = profile == 0
+                ? 0f
+                : UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_EXTRA_DISTANCE_RATIO;
+        int x = Math.round(clampFloat(
+                width * xRatio,
+                1f,
+                Math.max(1f, width - 1f)
+        ));
+        float startYRaw = clampFloat(
+                height * UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_START_Y_RATIO,
+                1f,
+                Math.max(1f, height - 1f)
+        );
+        float endYRaw = clampFloat(
+                height * Math.max(
+                        0.05f,
+                        UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_END_Y_RATIO - extraDistanceRatio
+                ),
+                1f,
+                Math.max(1f, height - 1f)
+        );
+        float minDistance = clampFloat(
+                height * UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_MIN_DISTANCE_RATIO,
+                100f,
+                Math.max(120f, height - 1f)
+        );
+        if (startYRaw <= endYRaw || startYRaw - endYRaw < minDistance) {
+            endYRaw = clampFloat(
+                    startYRaw - minDistance,
+                    1f,
+                    Math.max(1f, height - 1f)
+            );
+        }
+        int startY = Math.round(startYRaw);
+        int endY = Math.round(endYRaw);
+        long duration = Math.max(
+                120L,
+                UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SHELL_INPUT_DURATION_MS
+        );
+        String command = "input swipe "
+                + x + " "
+                + startY + " "
+                + x + " "
+                + endY + " "
+                + duration;
+        try {
+            IBinder binder = Shizuku.getBinder();
+            if (binder == null || !binder.pingBinder()) {
+                return new ClickResult(false, "shizuku_binder_dead");
+            }
+            IShizukuService service = IShizukuService.Stub.asInterface(binder);
+            if (service == null) {
+                return new ClickResult(false, "shizuku_service_null");
+            }
+            IRemoteProcess remoteProcess = service.newProcess(
+                    new String[]{"sh", "-c", command},
+                    null,
+                    null
+            );
+            if (remoteProcess == null) {
+                return new ClickResult(false, "shizuku_remote_process_null");
+            }
+            InputStream outStream = null;
+            InputStream errStream = null;
+            try {
+                ParcelFileDescriptor outFd = remoteProcess.getInputStream();
+                if (outFd != null) {
+                    outStream = new ParcelFileDescriptor.AutoCloseInputStream(outFd);
+                }
+            } catch (Throwable ignore) {
+                outStream = null;
+            }
+            try {
+                ParcelFileDescriptor errFd = remoteProcess.getErrorStream();
+                if (errFd != null) {
+                    errStream = new ParcelFileDescriptor.AutoCloseInputStream(errFd);
+                }
+            } catch (Throwable ignore) {
+                errStream = null;
+            }
+            int code = remoteProcess.waitFor();
+            String err = readProcessStream(errStream);
+            String out = readProcessStream(outStream);
+            try {
+                remoteProcess.destroy();
+            } catch (Throwable ignore) {
+            }
+            if (code == 0) {
+                return new ClickResult(true, "cmd_ok profile=" + profile
+                        + " x=" + x
+                        + " startY=" + startY
+                        + " endY=" + endY
+                        + " out=" + safeTrim(out));
+            }
+            return new ClickResult(false, "cmd_exit_" + code
+                    + " err=" + safeTrim(err)
+                    + " out=" + safeTrim(out));
+        } catch (Throwable e) {
+            return new ClickResult(false, "shizuku_exception:" + safeTrim(e.toString()));
+        }
+    }
+
+    private void maybeRequestShizukuPermission() {
+        long now = SystemClock.uptimeMillis();
+        if (now - lastShizukuPermissionRequestAt < SHIZUKU_PERMISSION_REQUEST_INTERVAL_MS) {
+            return;
+        }
+        lastShizukuPermissionRequestAt = now;
+        try {
+            Shizuku.requestPermission(SHIZUKU_PERMISSION_REQUEST_CODE);
+            log("Shizuku授权请求已发起: requestCode=" + SHIZUKU_PERMISSION_REQUEST_CODE);
+        } catch (Throwable e) {
+            log("Shizuku授权请求失败: " + e);
+        }
+    }
+
+    private String readProcessStream(InputStream inputStream) {
+        if (inputStream == null) {
+            return "";
+        }
+        BufferedReader reader = null;
+        try {
+            reader = new BufferedReader(new InputStreamReader(inputStream));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            int lineCount = 0;
+            while ((line = reader.readLine()) != null && lineCount < 6) {
+                if (sb.length() > 0) {
+                    sb.append(" | ");
+                }
+                sb.append(line);
+                lineCount++;
+            }
+            return sb.toString();
+        } catch (Throwable ignore) {
+            return "";
+        } finally {
+            if (reader != null) {
+                try {
+                    reader.close();
+                } catch (Throwable ignore) {
+                }
+            }
+        }
     }
 
     private ClickResult performRankListScrollByAction(AccessibilityNodeInfo root) {
@@ -1117,30 +1413,57 @@ public class LookAccessibilityAdService extends AccessibilityService {
         }
         AccessibilityNodeInfo scrollNode = findRankScrollableNode(root);
         if (scrollNode == null) {
-            return new ClickResult(false, "scroll_node_missing");
+            ClickResult rootResult = performRootScrollFallback(root);
+            if (rootResult.success) {
+                return new ClickResult(true, "scroll_node_missing_root_fallback " + safeTrim(rootResult.detail));
+            }
+            return new ClickResult(false, "scroll_node_missing|" + safeTrim(rootResult.detail));
         }
         boolean actionDone = false;
         String usedAction = "";
+        String actionState = buildNodeScrollActionState(scrollNode);
+        log("榜单上滑动作节点: " + describeNodeForLog(scrollNode)
+                + " actionState=" + actionState);
         try {
-            if (hasAccessibilityAction(scrollNode, AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) {
-                actionDone = scrollNode.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD);
-                usedAction = "ACTION_SCROLL_FORWARD";
+            if (!actionDone && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                int actionDown = AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.getId();
+                if (hasAccessibilityAction(scrollNode, actionDown)) {
+                    actionDone = scrollNode.performAction(actionDown);
+                    if (actionDone) {
+                        usedAction = "ACTION_SCROLL_DOWN";
+                    }
+                }
+                if (!actionDone) {
+                    actionDone = scrollNode.performAction(actionDown);
+                    if (actionDone) {
+                        usedAction = "ACTION_SCROLL_DOWN(force)";
+                    }
+                }
             }
-            if (!actionDone) {
+            if (!actionDone && canUseForwardAsVertical(scrollNode)) {
                 actionDone = scrollNode.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD);
                 if (actionDone) {
-                    usedAction = "ACTION_SCROLL_FORWARD(force)";
+                    usedAction = "ACTION_SCROLL_FORWARD(vertical)";
+                }
+                if (!actionDone) {
+                    actionDone = scrollNode.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD);
+                    if (actionDone) {
+                        usedAction = "ACTION_SCROLL_FORWARD(vertical_force)";
+                    }
                 }
             }
             if (actionDone) {
                 return new ClickResult(
                         true,
-                        "node=" + describeNodeForLog(scrollNode) + " action=" + safeTrim(usedAction)
+                        "node=" + describeNodeForLog(scrollNode)
+                                + " action=" + safeTrim(usedAction)
+                                + " actionState=" + actionState
                 );
             }
             return new ClickResult(
                     false,
                     "perform_action_false node=" + describeNodeForLog(scrollNode)
+                            + " actionState=" + actionState
             );
         } catch (Throwable e) {
             return new ClickResult(
@@ -1152,9 +1475,45 @@ public class LookAccessibilityAdService extends AccessibilityService {
         }
     }
 
+    private ClickResult performRootScrollFallback(AccessibilityNodeInfo root) {
+        if (root == null) {
+            return new ClickResult(false, "root_missing");
+        }
+        try {
+            String actionState = buildNodeScrollActionState(root);
+            boolean ok = false;
+            String action = "";
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                int actionDown = AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.getId();
+                if (hasAccessibilityAction(root, actionDown)) {
+                    ok = root.performAction(actionDown);
+                    action = "ACTION_SCROLL_DOWN";
+                }
+            }
+            if (!ok && hasAccessibilityAction(root, AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) {
+                ok = root.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD);
+                action = "ACTION_SCROLL_FORWARD";
+            }
+            if (ok) {
+                log("榜单上滑根节点兜底成功: action=" + safeTrim(action)
+                        + " actionState=" + actionState);
+                return new ClickResult(true, "root_fallback_" + safeTrim(action));
+            }
+            log("榜单上滑根节点兜底失败: actionState=" + actionState);
+            return new ClickResult(false, "root_fallback_false actionState=" + actionState);
+        } catch (Throwable e) {
+            log("榜单上滑根节点兜底异常: " + e);
+            return new ClickResult(false, "root_fallback_exception:" + safeTrim(e.toString()));
+        }
+    }
+
     private AccessibilityNodeInfo findRankScrollableNode(AccessibilityNodeInfo root) {
         if (root == null) {
             return null;
+        }
+        AccessibilityNodeInfo rankRelatedNode = findRankRowRelatedScrollableNode(root);
+        if (rankRelatedNode != null) {
+            return rankRelatedNode;
         }
         ArrayDeque<AccessibilityNodeInfo> queue = new ArrayDeque<AccessibilityNodeInfo>();
         ArrayDeque<AccessibilityNodeInfo> allNodes = new ArrayDeque<AccessibilityNodeInfo>();
@@ -1169,16 +1528,18 @@ public class LookAccessibilityAdService extends AccessibilityService {
                 if (current == null) {
                     continue;
                 }
-                if (isNodeVisible(current) && supportsScrollAction(current)) {
+                if (isNodeVisible(current) && supportsVerticalScrollAction(current)) {
                     Rect rect = new Rect();
                     current.getBoundsInScreen(rect);
                     long area = Math.max(0, rect.width()) * Math.max(0, rect.height());
                     String className = safeTrim(current.getClassName());
                     long bonus = 0L;
                     if (className.contains("RecyclerView")) {
-                        bonus = 3_000_000L;
+                        bonus = 5_000_000L;
                     } else if (className.contains("ListView") || className.contains("ScrollView")) {
-                        bonus = 2_000_000L;
+                        bonus = 3_000_000L;
+                    } else if (className.contains("ViewPager")) {
+                        bonus = -4_000_000L;
                     }
                     long score = area + bonus;
                     if (score > bestScore) {
@@ -1206,12 +1567,186 @@ public class LookAccessibilityAdService extends AccessibilityService {
                 safeRecycle(allNodes.poll());
             }
         }
+        if (bestNode == null) {
+            bestNode = findRankRowRelatedScrollableNodeRelaxed(root);
+            if (bestNode != null) {
+                log("榜单上滑节点回退命中: " + describeNodeForLog(bestNode)
+                        + " actionState=" + buildNodeScrollActionState(bestNode));
+            }
+        }
         return bestNode;
     }
 
-    private boolean supportsScrollAction(AccessibilityNodeInfo node) {
+    private AccessibilityNodeInfo findRankRowRelatedScrollableNode(AccessibilityNodeInfo root) {
+        if (root == null) {
+            return null;
+        }
+        ArrayDeque<AccessibilityNodeInfo> queue = new ArrayDeque<AccessibilityNodeInfo>();
+        ArrayDeque<AccessibilityNodeInfo> allNodes = new ArrayDeque<AccessibilityNodeInfo>();
+        AccessibilityNodeInfo rootCopy = AccessibilityNodeInfo.obtain(root);
+        queue.offer(rootCopy);
+        allNodes.offer(rootCopy);
+        AccessibilityNodeInfo bestNode = null;
+        long bestScore = Long.MIN_VALUE;
+        try {
+            while (!queue.isEmpty()) {
+                AccessibilityNodeInfo current = queue.poll();
+                if (current == null) {
+                    continue;
+                }
+                if (isRankRowCandidateNode(current)) {
+                    AccessibilityNodeInfo parent = null;
+                    try {
+                        parent = current.getParent();
+                    } catch (Throwable ignore) {
+                        parent = null;
+                    }
+                    int depth = 0;
+                    while (parent != null && depth < 8) {
+                        AccessibilityNodeInfo nextParent = null;
+                        try {
+                            nextParent = parent.getParent();
+                        } catch (Throwable ignore) {
+                            nextParent = null;
+                        }
+                        if (isNodeVisible(parent) && supportsVerticalScrollAction(parent)) {
+                            Rect rect = new Rect();
+                            parent.getBoundsInScreen(rect);
+                            long area = Math.max(0, rect.width()) * Math.max(0, rect.height());
+                            String className = safeTrim(parent.getClassName());
+                            long bonus = 6_000_000L;
+                            if (className.contains("RecyclerView")) {
+                                bonus += 3_000_000L;
+                            } else if (className.contains("ListView") || className.contains("ScrollView")) {
+                                bonus += 2_000_000L;
+                            } else if (className.contains("ViewPager")) {
+                                bonus -= 5_000_000L;
+                            }
+                            long score = area + bonus - depth * 100_000L;
+                            if (score > bestScore) {
+                                safeRecycle(bestNode);
+                                bestNode = AccessibilityNodeInfo.obtain(parent);
+                                bestScore = score;
+                            }
+                        }
+                        safeRecycle(parent);
+                        parent = nextParent;
+                        depth++;
+                    }
+                    safeRecycle(parent);
+                }
+                int childCount = Math.max(0, current.getChildCount());
+                for (int i = 0; i < childCount; i++) {
+                    AccessibilityNodeInfo child = null;
+                    try {
+                        child = current.getChild(i);
+                    } catch (Throwable ignore) {
+                        child = null;
+                    }
+                    if (child != null) {
+                        queue.offer(child);
+                        allNodes.offer(child);
+                    }
+                }
+            }
+        } finally {
+            while (!allNodes.isEmpty()) {
+                safeRecycle(allNodes.poll());
+            }
+        }
+        return bestNode;
+    }
+
+    private AccessibilityNodeInfo findRankRowRelatedScrollableNodeRelaxed(AccessibilityNodeInfo root) {
+        if (root == null) {
+            return null;
+        }
+        ArrayDeque<AccessibilityNodeInfo> queue = new ArrayDeque<AccessibilityNodeInfo>();
+        ArrayDeque<AccessibilityNodeInfo> allNodes = new ArrayDeque<AccessibilityNodeInfo>();
+        AccessibilityNodeInfo rootCopy = AccessibilityNodeInfo.obtain(root);
+        queue.offer(rootCopy);
+        allNodes.offer(rootCopy);
+        AccessibilityNodeInfo bestNode = null;
+        long bestScore = Long.MIN_VALUE;
+        try {
+            while (!queue.isEmpty()) {
+                AccessibilityNodeInfo current = queue.poll();
+                if (current == null) {
+                    continue;
+                }
+                if (isRankRowCandidateNode(current)) {
+                    AccessibilityNodeInfo parent = null;
+                    try {
+                        parent = current.getParent();
+                    } catch (Throwable ignore) {
+                        parent = null;
+                    }
+                    int depth = 0;
+                    while (parent != null && depth < 10) {
+                        AccessibilityNodeInfo nextParent = null;
+                        try {
+                            nextParent = parent.getParent();
+                        } catch (Throwable ignore) {
+                            nextParent = null;
+                        }
+                        if (isNodeVisible(parent) && supportsAnyScrollAction(parent)) {
+                            Rect rect = new Rect();
+                            parent.getBoundsInScreen(rect);
+                            long area = Math.max(0, rect.width()) * Math.max(0, rect.height());
+                            String className = safeTrim(parent.getClassName());
+                            boolean downUp = hasVerticalDirectionalAction(parent);
+                            boolean leftRight = hasHorizontalDirectionalAction(parent);
+                            long bonus = 1_000_000L;
+                            if (className.contains("RecyclerView")) {
+                                bonus += 3_000_000L;
+                            }
+                            if (downUp) {
+                                bonus += 2_000_000L;
+                            }
+                            if (leftRight) {
+                                bonus -= 2_000_000L;
+                            }
+                            long score = area + bonus - depth * 120_000L;
+                            if (score > bestScore) {
+                                safeRecycle(bestNode);
+                                bestNode = AccessibilityNodeInfo.obtain(parent);
+                                bestScore = score;
+                            }
+                        }
+                        safeRecycle(parent);
+                        parent = nextParent;
+                        depth++;
+                    }
+                    safeRecycle(parent);
+                }
+                int childCount = Math.max(0, current.getChildCount());
+                for (int i = 0; i < childCount; i++) {
+                    AccessibilityNodeInfo child = null;
+                    try {
+                        child = current.getChild(i);
+                    } catch (Throwable ignore) {
+                        child = null;
+                    }
+                    if (child != null) {
+                        queue.offer(child);
+                        allNodes.offer(child);
+                    }
+                }
+            }
+        } finally {
+            while (!allNodes.isEmpty()) {
+                safeRecycle(allNodes.poll());
+            }
+        }
+        return bestNode;
+    }
+
+    private boolean supportsVerticalScrollAction(AccessibilityNodeInfo node) {
         if (node == null) {
             return false;
+        }
+        if (hasAnyVerticalScrollAction(node)) {
+            return true;
         }
         boolean scrollable = false;
         try {
@@ -1219,10 +1754,103 @@ public class LookAccessibilityAdService extends AccessibilityService {
         } catch (Throwable ignore) {
             scrollable = false;
         }
-        if (scrollable) {
+        if (!scrollable) {
+            return false;
+        }
+        return isLikelyVerticalScrollClass(safeTrim(node.getClassName()));
+    }
+
+    private boolean hasAnyVerticalScrollAction(AccessibilityNodeInfo node) {
+        if (node == null) {
+            return false;
+        }
+        String className = safeTrim(node.getClassName());
+        boolean verticalClass = isLikelyVerticalScrollClass(className);
+        if (hasVerticalDirectionalAction(node)) {
             return true;
         }
-        return hasAccessibilityAction(node, AccessibilityNodeInfo.ACTION_SCROLL_FORWARD);
+        boolean hasForwardBackward = hasAccessibilityAction(node, AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                || hasAccessibilityAction(node, AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD);
+        if (!hasForwardBackward) {
+            return false;
+        }
+        if (!hasHorizontalDirectionalAction(node)) {
+            return true;
+        }
+        if (verticalClass && (hasAccessibilityAction(node, AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                || hasAccessibilityAction(node, AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD))) {
+            return true;
+        }
+        return false;
+    }
+
+    private boolean isLikelyVerticalScrollClass(String className) {
+        String cls = safeTrim(className);
+        if (TextUtils.isEmpty(cls)) {
+            return false;
+        }
+        return cls.contains("RecyclerView")
+                || cls.contains("ListView")
+                || cls.contains("ScrollView")
+                || cls.contains("NestedScrollView")
+                || cls.contains("AbsListView");
+    }
+
+    private boolean canUseForwardAsVertical(AccessibilityNodeInfo node) {
+        if (node == null) {
+            return false;
+        }
+        if (!hasAccessibilityAction(node, AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) {
+            return false;
+        }
+        if (isLikelyVerticalScrollClass(safeTrim(node.getClassName()))) {
+            return true;
+        }
+        return !hasHorizontalDirectionalAction(node);
+    }
+
+    private boolean supportsAnyScrollAction(AccessibilityNodeInfo node) {
+        if (node == null) {
+            return false;
+        }
+        if (hasAnyVerticalScrollAction(node)) {
+            return true;
+        }
+        boolean scrollable = false;
+        try {
+            scrollable = node.isScrollable();
+        } catch (Throwable ignore) {
+            scrollable = false;
+        }
+        return scrollable
+                || hasAccessibilityAction(node, AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                || hasAccessibilityAction(node, AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD);
+    }
+
+    private boolean hasVerticalDirectionalAction(AccessibilityNodeInfo node) {
+        if (node == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return false;
+        }
+        return hasAccessibilityAction(
+                node,
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.getId()
+        ) || hasAccessibilityAction(
+                node,
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP.getId()
+        );
+    }
+
+    private boolean hasHorizontalDirectionalAction(AccessibilityNodeInfo node) {
+        if (node == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return false;
+        }
+        return hasAccessibilityAction(
+                node,
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT.getId()
+        ) || hasAccessibilityAction(
+                node,
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT.getId()
+        );
     }
 
     private boolean hasAccessibilityAction(AccessibilityNodeInfo node, int actionId) {
@@ -1247,23 +1875,34 @@ public class LookAccessibilityAdService extends AccessibilityService {
         }
     }
 
-    private boolean performRankListScrollGesture(
+    private ClickResult performRankListScrollGesture(
             AccessibilityNodeInfo root,
             String rankType,
-            int nextRank
+            int nextRank,
+            int attemptIndex
     ) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
             log("榜单上滑跳过: sdk<24");
-            return false;
+            return new ClickResult(false, "sdk<24");
         }
         int width = getResources() == null ? 0 : getResources().getDisplayMetrics().widthPixels;
         int height = getResources() == null ? 0 : getResources().getDisplayMetrics().heightPixels;
         if (width <= 0 || height <= 0) {
             log("榜单上滑跳过: display_invalid width=" + width + " height=" + height);
-            return false;
+            return new ClickResult(false, "display_invalid");
         }
+        int profile = Math.floorMod(Math.max(0, attemptIndex), 3);
+        float xRatio = UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_X_RATIO;
+        if (profile == 1) {
+            xRatio = UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_X_LEFT_RATIO;
+        } else if (profile == 2) {
+            xRatio = UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_X_RIGHT_RATIO;
+        }
+        float extraDistanceRatio = profile == 0
+                ? 0f
+                : UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_EXTRA_DISTANCE_RATIO;
         float x = clampFloat(
-                width * UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_X_RATIO,
+                width * xRatio,
                 1f,
                 Math.max(1f, width - 1f)
         );
@@ -1273,56 +1912,80 @@ public class LookAccessibilityAdService extends AccessibilityService {
                 Math.max(1f, height - 1f)
         );
         float endY = clampFloat(
-                height * UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_END_Y_RATIO,
+                height * Math.max(
+                        0.05f,
+                        UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_END_Y_RATIO - extraDistanceRatio
+                ),
                 1f,
                 Math.max(1f, height - 1f)
         );
-        Rect anchor = resolveRankScrollAnchorBounds(root);
-        if (anchor != null && anchor.width() > 0 && anchor.height() > 0) {
-            float anchorCenterX = anchor.exactCenterX();
-            float anchorCenterY = anchor.exactCenterY();
-            float anchorSpan = Math.max(height * 0.22f, anchor.height() * 0.85f);
-            float anchorStartY = anchorCenterY + anchorSpan * 0.5f;
-            float anchorEndY = anchorCenterY - anchorSpan * 0.5f;
-            x = clampFloat(anchorCenterX, 1f, Math.max(1f, width - 1f));
-            startY = clampFloat(anchorStartY, 1f, Math.max(1f, height - 1f));
-            endY = clampFloat(anchorEndY, 1f, Math.max(1f, height - 1f));
-            if (startY <= endY + 16f) {
-                startY = clampFloat(
-                        height * UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_START_Y_RATIO,
-                        1f,
-                        Math.max(1f, height - 1f)
-                );
-                endY = clampFloat(
-                        height * UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_END_Y_RATIO,
-                        1f,
-                        Math.max(1f, height - 1f)
-                );
-            }
+        float minDistance = clampFloat(
+                height * UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_MIN_DISTANCE_RATIO,
+                80f,
+                Math.max(120f, height - 1f)
+        );
+        if (startY <= endY) {
+            endY = clampFloat(
+                    startY - minDistance,
+                    1f,
+                    Math.max(1f, height - 1f)
+            );
+        } else if (startY - endY < minDistance) {
+            endY = clampFloat(
+                    startY - minDistance,
+                    1f,
+                    Math.max(1f, height - 1f)
+            );
         }
         Path path = new Path();
         path.moveTo(x, startY);
         path.lineTo(x, endY);
         log("榜单上滑执行: mode=gesture type=" + safeTrim(rankType)
                 + " nextRank=" + nextRank
+                + " attemptIndex=" + Math.max(0, attemptIndex)
+                + " profile=" + profile
                 + " width=" + width
                 + " height=" + height
+                + " xRatio=" + xRatio
                 + " x=" + x
                 + " startY=" + startY
                 + " endY=" + endY
-                + " anchor=" + (anchor == null ? "none"
-                : ("[" + anchor.left + "," + anchor.top + "][" + anchor.right + "," + anchor.bottom + "]")));
+                + " directNoNode=true");
         GestureDescription.StrokeDescription stroke =
                 new GestureDescription.StrokeDescription(
                         path,
                         0L,
                         Math.max(120L, UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_GESTURE_DURATION_MS)
                 );
-        GestureDescription gesture = new GestureDescription.Builder()
-                .addStroke(stroke)
-                .build();
+        int targetDisplayId = resolveNodeDisplayId(root);
+        int serviceDisplayId = -1;
+        try {
+            serviceDisplayId = getDisplay() == null ? -1 : getDisplay().getDisplayId();
+        } catch (Throwable ignore) {
+            serviceDisplayId = -1;
+        }
+        GestureDescription.Builder gestureBuilder = new GestureDescription.Builder()
+                .addStroke(stroke);
+        boolean gestureDisplaySet = false;
+        if (UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_GESTURE_USE_ROOT_DISPLAY_ID
+                && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                && targetDisplayId >= 0) {
+            try {
+                gestureBuilder.setDisplayId(targetDisplayId);
+                gestureDisplaySet = true;
+            } catch (Throwable e) {
+                gestureDisplaySet = false;
+                log("榜单上滑手势绑定显示屏失败: targetDisplayId=" + targetDisplayId
+                        + " error=" + safeTrim(e.toString()));
+            }
+        }
+        GestureDescription gesture = gestureBuilder.build();
+        log("榜单上滑手势显示屏: targetDisplayId=" + targetDisplayId
+                + " serviceDisplayId=" + serviceDisplayId
+                + " displaySet=" + gestureDisplaySet);
         final CountDownLatch latch = new CountDownLatch(1);
         final boolean[] completed = new boolean[] { false };
+        final boolean[] cancelled = new boolean[] { false };
         boolean dispatched = false;
         try {
             dispatched = dispatchGesture(
@@ -1337,19 +2000,19 @@ public class LookAccessibilityAdService extends AccessibilityService {
 
                         @Override
                         public void onCancelled(GestureDescription gestureDescription) {
-                            completed[0] = false;
+                            cancelled[0] = true;
                             log("榜单上滑回调: cancelled");
                             latch.countDown();
                         }
                     },
-                    null
+                    handler
             );
         } catch (Throwable ignore) {
             dispatched = false;
         }
         if (!dispatched) {
             log("榜单上滑失败: dispatchGesture=false");
-            return false;
+            return new ClickResult(false, "dispatchGesture=false");
         }
         boolean awaitDone = false;
         try {
@@ -1363,14 +2026,17 @@ public class LookAccessibilityAdService extends AccessibilityService {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log("榜单上滑失败: await_interrupted");
-            return false;
+            return new ClickResult(false, "await_interrupted");
         }
         if (!awaitDone) {
-            log("榜单上滑失败: await_timeout");
-            return false;
+            log("榜单上滑回调超时，按已派发手势继续验证: await_timeout");
+            return new ClickResult(true, "dispatch_ok_callback_timeout");
+        }
+        if (cancelled[0]) {
+            return new ClickResult(false, "gesture_cancelled");
         }
         log("榜单上滑结果: success=" + completed[0]);
-        return completed[0];
+        return new ClickResult(completed[0], completed[0] ? "gesture_completed" : "gesture_not_completed");
     }
 
     private Rect resolveRankScrollAnchorBounds(AccessibilityNodeInfo root) {
@@ -1419,6 +2085,79 @@ public class LookAccessibilityAdService extends AccessibilityService {
             }
         }
         return bestRect;
+    }
+
+    private int resolveNodeDisplayId(AccessibilityNodeInfo node) {
+        if (node == null) {
+            return -1;
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return -1;
+        }
+        AccessibilityWindowInfo window = null;
+        try {
+            window = node.getWindow();
+            if (window == null) {
+                return -1;
+            }
+            return window.getDisplayId();
+        } catch (Throwable ignore) {
+            return -1;
+        } finally {
+            if (window != null) {
+                try {
+                    window.recycle();
+                } catch (Throwable ignore) {
+                }
+            }
+        }
+    }
+
+    private String buildNodeScrollActionState(AccessibilityNodeInfo node) {
+        if (node == null) {
+            return "node_null";
+        }
+        boolean scrollable = false;
+        try {
+            scrollable = node.isScrollable();
+        } catch (Throwable ignore) {
+            scrollable = false;
+        }
+        String cls = safeTrim(node.getClassName());
+        boolean verticalClass = isLikelyVerticalScrollClass(cls);
+        boolean forward = hasAccessibilityAction(node, AccessibilityNodeInfo.ACTION_SCROLL_FORWARD);
+        boolean backward = hasAccessibilityAction(node, AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD);
+        boolean down = false;
+        boolean up = false;
+        boolean left = false;
+        boolean right = false;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            down = hasAccessibilityAction(
+                    node,
+                    AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.getId()
+            );
+            up = hasAccessibilityAction(
+                    node,
+                    AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP.getId()
+            );
+            left = hasAccessibilityAction(
+                    node,
+                    AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT.getId()
+            );
+            right = hasAccessibilityAction(
+                    node,
+                    AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT.getId()
+            );
+        }
+        return "scrollable=" + scrollable
+                + ",class=" + cls
+                + ",verticalClass=" + verticalClass
+                + ",forward=" + forward
+                + ",backward=" + backward
+                + ",down=" + down
+                + ",up=" + up
+                + ",left=" + left
+                + ",right=" + right;
     }
 
     private String describeNodeForLog(AccessibilityNodeInfo node) {
@@ -2239,6 +2978,25 @@ public class LookAccessibilityAdService extends AccessibilityService {
         ClickResult(boolean success, String detail) {
             this.success = success;
             this.detail = safeTrim(detail);
+        }
+    }
+
+    private static final class RankFlushResult {
+        final int acceptedCount;
+        final int writtenCount;
+        final int duplicateSkippedCount;
+        final boolean ioSuccess;
+
+        RankFlushResult(
+                int acceptedCount,
+                int writtenCount,
+                int duplicateSkippedCount,
+                boolean ioSuccess
+        ) {
+            this.acceptedCount = Math.max(0, acceptedCount);
+            this.writtenCount = Math.max(0, writtenCount);
+            this.duplicateSkippedCount = Math.max(0, duplicateSkippedCount);
+            this.ioSuccess = ioSuccess;
         }
     }
 

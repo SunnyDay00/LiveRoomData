@@ -11,6 +11,7 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 
@@ -78,12 +79,20 @@ final class LiveRoomRankCsvStore {
     }
 
     static int appendContributionRows(Context context, List<ContributionCsvRow> rows) {
+        AppendResult result = appendContributionRowsWithResult(context, rows);
+        return result.acceptedCount;
+    }
+
+    static AppendResult appendContributionRowsWithResult(
+            Context context,
+            List<ContributionCsvRow> rows
+    ) {
         synchronized (LOCK) {
             if (!ensureFilesReadyLocked(context)) {
-                return 0;
+                return AppendResult.failed(0, 0);
             }
             if (rows == null || rows.isEmpty()) {
-                return 0;
+                return AppendResult.empty();
             }
             ArrayList<String[]> lines = new ArrayList<String[]>(rows.size());
             for (ContributionCsvRow row : rows) {
@@ -106,12 +115,20 @@ final class LiveRoomRankCsvStore {
     }
 
     static int appendCharmRows(Context context, List<CharmCsvRow> rows) {
+        AppendResult result = appendCharmRowsWithResult(context, rows);
+        return result.acceptedCount;
+    }
+
+    static AppendResult appendCharmRowsWithResult(
+            Context context,
+            List<CharmCsvRow> rows
+    ) {
         synchronized (LOCK) {
             if (!ensureFilesReadyLocked(context)) {
-                return 0;
+                return AppendResult.failed(0, 0);
             }
             if (rows == null || rows.isEmpty()) {
-                return 0;
+                return AppendResult.empty();
             }
             ArrayList<String[]> lines = new ArrayList<String[]>(rows.size());
             for (CharmCsvRow row : rows) {
@@ -231,39 +248,68 @@ final class LiveRoomRankCsvStore {
         }
         ArrayList<String[]> lines = new ArrayList<String[]>(1);
         lines.add(fields);
-        return appendCsvLinesLocked(file, lines) > 0;
+        return appendCsvLinesLocked(file, lines).writtenCount > 0;
     }
 
-    private static int appendCsvLinesLocked(File file, List<String[]> lines) {
+    private static AppendResult appendCsvLinesLocked(
+            File file,
+            List<String[]> lines
+    ) {
         if (file == null || lines == null || lines.isEmpty()) {
-            return 0;
+            return AppendResult.empty();
         }
-        StringBuilder sb = new StringBuilder(Math.max(256, lines.size() * 96));
-        int validLines = 0;
+        int requestedCount = lines.size();
+        int acceptedCount = 0;
+        int duplicateSkippedCount = 0;
+        ArrayList<String> pendingLines = new ArrayList<String>(Math.max(8, requestedCount));
+        HashSet<String> pendingLineSet = new HashSet<String>(Math.max(8, requestedCount));
         for (String[] fields : lines) {
             if (fields == null || fields.length == 0) {
                 continue;
             }
-            for (int i = 0; i < fields.length; i++) {
-                if (i > 0) {
-                    sb.append(',');
-                }
-                sb.append(escapeCsvField(fields[i]));
+            acceptedCount++;
+            String csvLine = buildCsvLine(fields);
+            if (pendingLineSet.contains(csvLine)) {
+                duplicateSkippedCount++;
+                continue;
             }
-            sb.append('\n');
-            validLines++;
+            pendingLineSet.add(csvLine);
+            pendingLines.add(csvLine);
         }
-        if (validLines <= 0) {
-            return 0;
+        int writeCount = pendingLines.size();
+        if (writeCount <= 0) {
+            return new AppendResult(
+                    requestedCount,
+                    acceptedCount,
+                    0,
+                    duplicateSkippedCount,
+                    true
+            );
+        }
+        StringBuilder sb = new StringBuilder(Math.max(256, writeCount * 96));
+        for (String line : pendingLines) {
+            sb.append(line).append('\n');
         }
         FileOutputStream fos = null;
         try {
             fos = new FileOutputStream(file, true);
             fos.write(sb.toString().getBytes(StandardCharsets.UTF_8));
             fos.flush();
-            return validLines;
+            return new AppendResult(
+                    requestedCount,
+                    acceptedCount,
+                    writeCount,
+                    duplicateSkippedCount,
+                    true
+            );
         } catch (Throwable ignore) {
-            return 0;
+            return new AppendResult(
+                    requestedCount,
+                    acceptedCount,
+                    0,
+                    duplicateSkippedCount,
+                    false
+            );
         } finally {
             closeQuietly(fos);
         }
@@ -299,6 +345,17 @@ final class LiveRoomRankCsvStore {
             return value;
         }
         return "\"" + value.replace("\"", "\"\"") + "\"";
+    }
+
+    private static String buildCsvLine(String[] fields) {
+        StringBuilder line = new StringBuilder(Math.max(48, fields.length * 12));
+        for (int i = 0; i < fields.length; i++) {
+            if (i > 0) {
+                line.append(',');
+            }
+            line.append(escapeCsvField(fields[i]));
+        }
+        return line.toString();
     }
 
     private static String formatFileDayToken() {
@@ -537,6 +594,36 @@ final class LiveRoomRankCsvStore {
             this.consumption = safeTrim(consumption);
             this.upIp = safeTrim(upIp);
             this.enterTimeMs = Math.max(0L, enterTimeMs);
+        }
+    }
+
+    static final class AppendResult {
+        final int requestedCount;
+        final int acceptedCount;
+        final int writtenCount;
+        final int duplicateSkippedCount;
+        final boolean ioSuccess;
+
+        AppendResult(
+                int requestedCount,
+                int acceptedCount,
+                int writtenCount,
+                int duplicateSkippedCount,
+                boolean ioSuccess
+        ) {
+            this.requestedCount = Math.max(0, requestedCount);
+            this.acceptedCount = Math.max(0, acceptedCount);
+            this.writtenCount = Math.max(0, writtenCount);
+            this.duplicateSkippedCount = Math.max(0, duplicateSkippedCount);
+            this.ioSuccess = ioSuccess;
+        }
+
+        static AppendResult empty() {
+            return new AppendResult(0, 0, 0, 0, true);
+        }
+
+        static AppendResult failed(int requestedCount, int acceptedCount) {
+            return new AppendResult(requestedCount, acceptedCount, 0, 0, false);
         }
     }
 }

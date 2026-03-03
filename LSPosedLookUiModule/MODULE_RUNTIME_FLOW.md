@@ -1,6 +1,6 @@
 # LSPosedLookUiModule 运行逻辑说明
 
-最后更新：2026-03-03（v1.9.7）
+最后更新：2026-03-03（v2.1.8）
 
 ## 1. 长期维护约定
 
@@ -333,6 +333,58 @@
     - 魅力榜支持 `查看规则` 与 `日榜` 组合判定。
   - 去除页面标记中的强制 `class/package` 约束，避免因节点实现差异导致误判“页面未就绪”。
   - 当采集结果失败原因为 `rank_page_not_ready` 时，任务侧会先重新点击对应榜单页签（贡献榜/魅力榜）再重启采集，不再仅盲目重发采集请求，减少“卡在贡献榜不动”的死循环。
+- 榜单无障碍上滑有效性修复（v2.0.4）：
+  - 上滑主路径改为“无障碍手势派发成功即进入结果验证”，不再因手势回调超时立即判失败并过早回退到 `scroll_action`。
+  - 手势回调改到服务主线程 `handler`，降低回调丢失导致的 `await_timeout` 误判。
+  - 上滑坐标改为“榜单锚点扩展 + 最小滑动距离”策略，优先执行更长距离的屏幕手势，提升实际翻页概率。
+  - `scroll_action` 兜底节点选择降权 `ViewPager`，优先“榜单行相关的可滚动父节点”，减少“动作成功但界面不动”的假上滑。
+  - 新增/调整日志细节：手势执行 detail、回调超时按已派发继续验证、滚动兜底节点详情。
+- 榜单上滑无进展补偿修复（v2.0.5）：
+  - 若手势上滑后 `maxRankAfter` 未提升，采集循环会在同一轮立即触发一次 `ACTION_SCROLL_FORWARD/SCROLL_DOWN` 补偿滚动并复检。
+  - 补偿滚动参数全部配置化（`LIVE_ROOM_TASK_RANK_SCROLL_ACTION_COMPENSATE_*`）。
+  - 新增日志 `榜单采集上滑补偿`，输出补偿尝试次数、动作详情与是否成功，便于定位“手势无效但 action 可滚动”的机型差异。
+- 榜单滚动节点与显示屏诊断增强（v2.0.6）：
+  - 滚动节点筛选收紧为“优先具备真实 scroll action 的节点”，避免将 `FrameLayout(isScrollable=true 但 performAction=false)` 误判为可滚动目标。
+  - `performRankListScrollByAction` 新增动作能力日志：`scrollable/forward/backward/down/up/left/right`，并在失败 detail 中回传能力状态。
+  - 手势滚动新增显示屏诊断日志：`targetDisplayId/serviceDisplayId/displaySet`，并在 Android 11+ 按 root window 的 displayId 设定手势目标屏幕，降低多显示环境下注入到错误屏导致“无反应”的概率。
+- 榜单滚动通道切换（v2.0.7）：
+  - 按要求将榜单滚动切为“仅无障碍节点动作”通道：`ACTION_SCROLL_FORWARD / ACTION_SCROLL_DOWN / ACTION_SCROLL_UP`。
+  - 默认关闭无障碍手势派发（`LIVE_ROOM_TASK_RANK_SCROLL_USE_A11Y_GESTURE=false`），避免手势在部分多屏设备上回调超时导致的无效滚动。
+  - 日志新增：`榜单上滑手势已禁用，使用无障碍动作滚动`，便于确认当前滚动通道。
+- 榜单滚动方向收敛（v2.0.8）：
+  - 仅允许“垂直滚动语义”节点参与榜单滚动：优先 `RecyclerView/ListView/ScrollView/NestedScrollView/AbsListView`。
+  - 禁止把 `ViewPager` 作为垂直滚动目标，避免出现左右翻页语义。
+  - 动作顺序调整为 `ACTION_SCROLL_DOWN` 优先，其次垂直容器上的 `ACTION_SCROLL_FORWARD`，不再执行 `ACTION_SCROLL_UP` 作为主滚动动作。
+  - 动作节点日志新增 `class/verticalClass`，用于确认是否命中垂直列表容器。
+- 榜单滚动节点缺失修复（v2.0.9）：
+  - 修复 `scroll_node_missing`：新增“榜单行父链宽松候选”回退选择，允许命中未知类但具备滚动能力的节点（排除明显横向动作优先节点）。
+  - 对 `ACTION_SCROLL_FORWARD` 的“竖向可用”判定放宽为：无左右动作时可视为竖向滚动候选，降低机型差异导致的漏选。
+  - 当仍未命中滚动节点时，新增“root 节点动作兜底”（`ACTION_SCROLL_DOWN/FORWARD`）并输出明确日志。
+- 榜单滚动改为直接无障碍手势（v2.1.0）：
+  - 榜单上滑不再依赖“可执行滚动动作节点”命中，统一走“直接无障碍手势上滑”。
+  - 上滑起点改为“底部上方”且滑动幅度缩小（参数统一在 `UiComponentConfig.java`）。
+  - 上滑补偿同样改为手势重试，不再走 `ACTION_SCROLL_FORWARD/SCROLL_DOWN` 节点动作。
+  - 新增日志 `mode=gesture_direct` 与 `directNoNode=true`，用于确认当前是纯手势链路。
+- 多显示屏手势绑定修复（v2.1.1）：
+  - 榜单上滑手势默认绑定 `rootInActiveWindow` 的目标显示屏（`setDisplayId(targetDisplayId)`），避免手势派发到错误屏幕导致“日志显示执行但界面不动”。
+  - 新增“手势绑定显示屏失败”日志，输出异常详情，便于排查机型兼容性问题。
+  - 轻微调整手势上滑幅度，保持“底部上方起滑”的同时提高实际触发翻页概率。
+- 榜单上滑增加 Shizuku shell 通道（v2.1.2）：
+  - 榜单上滑新增优先通道：`Shizuku + input swipe`（纯屏幕坐标滑动，不依赖节点滚动动作）。
+  - 手势轨迹改为多 profile（中/左/右）轮询，重试时自动切换横向轨迹以提高命中可滚动区域概率。
+  - 若 Shizuku 不可用或权限未授予，会自动回退到无障碍手势上滑；日志会输出 `shizuku_binder_unavailable` / `shizuku_permission_denied` 等原因。
+- Shizuku 授权自动请求（v2.1.3）：
+  - 检测到 `shizuku_permission_denied` 时会自动发起一次 Shizuku 授权请求（30 秒限频）。
+  - 便于首次接入时快速完成授权，减少“已安装 Shizuku 但模块未获授权”导致的无效上滑。
+- Shizuku Binder 接入修复（v2.1.4）：
+  - 在清单中显式声明 `rikka.shizuku.ShizukuProvider`（`exported=true`、`multiprocess=false`、`authorities=${applicationId}.shizuku`）。
+  - 修复因 Provider 缺失导致的持续 `shizuku_binder_unavailable`，确保榜单上滑可真正进入 `Shizuku input swipe` 通道。
+- 榜单上滑幅度收窄（v2.1.5）：
+  - 按反馈下调上滑位移：提高 `endY` 比例、降低 `extraDistance` 与 `minDistance`，减少单次翻页跨度。
+  - 保留中/左/右轨迹轮询与 Shizuku 优先通道，仅调整滑动距离参数，不改采集流程。
+- 榜单上滑幅度中档回调（v2.1.6）：
+  - 按反馈将上滑幅度从“偏小档”上调到“中间档”：适度降低 `endY`、提高 `extraDistance` 与 `minDistance`。
+  - 目标：保持稳定翻页，同时避免单次位移过大导致跨项过多。
 
 ## 4. 当前主流程
 
@@ -463,7 +515,7 @@
 - 入口文件与方法：
   - `app/src/main/java/com/oodbye/looklspmodule/LiveRoomTaskScriptRunner.java`
   - `runLiveRoomEnterTask(Activity activity, String homeId, long enterTimeMs, ...)`
-- 当前行为（v2.0.1）：
+- 当前行为（v2.1.6）：
   - 进入直播间并完成校验后，执行 `live_room_enter_task`。
   - 任务持续查找并点击 `com.netease.play:id/vflipper`，进入榜单面板。
   - 面板识别条件：`当前房间/贡献榜/魅力榜/贵族/粉团榜/在线`（命中数阈值可配置）。
@@ -474,7 +526,7 @@
     - 贡献榜：`日榜奖励？` + `日榜`
     - 魅力榜：`查看规则` + `日榜`
   - `贡献榜/魅力榜` 采集循环次数来自设置项（默认 5 / 20），目标排名不足时会自动上滑继续。
-  - 榜单上滑优先使用无障碍滚动动作（`ACTION_SCROLL_FORWARD`），仅在动作不可用时回退为手势滑动。
+  - 榜单上滑优先使用 `Shizuku input swipe`，失败时回退无障碍手势滑动（均不依赖滚动容器节点命中）。
   - 是否进入用户详情页由设置项 `采集用户详细界面` 控制（默认开启）。
   - 进入详情后若数据无效，会按 `1秒 * 最多3次` 进行重试采集。
   - 其中榜单点击与榜单采集均走无障碍服务全局树，不走 Activity 视角点击。
@@ -491,9 +543,22 @@
     - `click vflipper start` / `vflipper clicked`：明确记录每次 `vflipper` 点击发起与成功。
     - `vflipper panel detect: opened=...`：明确记录面板是否已打开与快照详情。
     - `贡献榜界面检测已打开`、`魅力榜界面检测已打开`：明确记录对应榜单页已命中页面标记。
+  - 新增采集数量核对日志：
+    - 每次贡献榜/魅力榜采集结束后输出 `榜单采集数量核对`，包含 `target/actual/matched/maxRank/highestObserved/scrollCount/noProgress`。
+    - 采集结果 detail 增加 `matched=` 字段，便于快速判断是否达到设置次数。
+  - 采集数量强约束：
+    - 若贡献榜或魅力榜实际采集条数小于对应设置次数，采集结果将标记失败（`rank_target_not_reached`）。
+    - 在未达到设置次数前，不进入“关闭榜单面板/退出直播间”分支，保持在直播间内继续重试采集。
+  - 榜单上滑策略调整：
+    - 改为优先执行无障碍手势滑动（屏幕滑动），`ACTION_SCROLL_FORWARD` 仅作为兜底。
+    - 增强上滑日志，便于判断“手势是否执行、是否回退、最终是否成功”。
   - 面板就绪判定收紧为“主按钮组命中”（贡献榜/魅力榜），避免仅命中弱标记时提前进入榜单点击导致 `target_missing`。
   - 关闭校验：通过检测上述按钮组是否消失来确认面板关闭；若仍存在会按配置重试返回。
   - 主流程仅在任务链条全部结束后才触发“直播间任务完成，执行返回退出直播间”。
+- CSV 批量落盘去重口径调整（v2.1.8）：
+  - 去重范围调整为“单次批量落盘前去重”：仅对本次待写入队列按整行 CSV 内容去重，避免界面重复采集导致同批次重复写入。
+  - 取消“历史 CSV 文件全量去重”行为：不再基于已落盘文件内容过滤后续批次数据。
+  - 榜单写入统计继续输出 `queued/accepted/written/dedupSkipped/ioSuccess`，其中 `dedupSkipped` 仅代表本批次内重复行数量。
 
 ## 8. 广告规则
 
