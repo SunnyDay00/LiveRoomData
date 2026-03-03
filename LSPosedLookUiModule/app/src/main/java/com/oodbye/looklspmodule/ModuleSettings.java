@@ -19,6 +19,9 @@ final class ModuleSettings {
     static final String KEY_TOGETHER_CYCLE_WAIT_SECONDS = "together_cycle_wait_seconds";
     static final String KEY_FLOAT_INFO_WINDOW_ENABLED = "float_info_window_enabled";
     static final String KEY_VIEW_TREE_DUMP_DEBUG_ENABLED = "view_tree_dump_debug_enabled";
+    static final String KEY_CONTRIBUTION_RANK_LOOP_COUNT = "contribution_rank_loop_count";
+    static final String KEY_CHARM_RANK_LOOP_COUNT = "charm_rank_loop_count";
+    static final String KEY_COLLECT_USER_DETAIL_ENABLED = "collect_user_detail_enabled";
     static final String KEY_A11Y_PANEL_MARKER_COUNT = "a11y_panel_marker_count";
     static final String KEY_A11Y_PANEL_PRIMARY_COUNT = "a11y_panel_primary_count";
     static final String KEY_A11Y_PANEL_UPDATED_AT = "a11y_panel_updated_at";
@@ -37,6 +40,8 @@ final class ModuleSettings {
     static final String ACTION_A11Y_PANEL_SNAPSHOT = MODULE_PACKAGE + ".ACTION_A11Y_PANEL_SNAPSHOT";
     static final String ACTION_A11Y_PANEL_CLICK_REQUEST = MODULE_PACKAGE + ".ACTION_A11Y_PANEL_CLICK_REQUEST";
     static final String ACTION_A11Y_PANEL_CLICK_RESULT = MODULE_PACKAGE + ".ACTION_A11Y_PANEL_CLICK_RESULT";
+    static final String ACTION_A11Y_RANK_COLLECT_REQUEST = MODULE_PACKAGE + ".ACTION_A11Y_RANK_COLLECT_REQUEST";
+    static final String ACTION_A11Y_RANK_COLLECT_RESULT = MODULE_PACKAGE + ".ACTION_A11Y_RANK_COLLECT_RESULT";
     static final String ACTION_SYNC_FLOAT_SERVICE = MODULE_PACKAGE + ".ACTION_SYNC_FLOAT_SERVICE";
     static final String ACTION_ENGINE_STATUS_REPORT = MODULE_PACKAGE + ".ACTION_ENGINE_STATUS_REPORT";
     static final String ACTION_CYCLE_COMPLETE_NOTICE = MODULE_PACKAGE + ".ACTION_CYCLE_COMPLETE_NOTICE";
@@ -55,6 +60,15 @@ final class ModuleSettings {
     static final String EXTRA_A11Y_PANEL_CLICK_REQUEST_ID = "a11y_panel_click_request_id";
     static final String EXTRA_A11Y_PANEL_CLICK_SUCCESS = "a11y_panel_click_success";
     static final String EXTRA_A11Y_PANEL_CLICK_DETAIL = "a11y_panel_click_detail";
+    static final String EXTRA_A11Y_RANK_COLLECT_REQUEST_ID = "a11y_rank_collect_request_id";
+    static final String EXTRA_A11Y_RANK_COLLECT_TYPE = "a11y_rank_collect_type";
+    static final String EXTRA_A11Y_RANK_COLLECT_HOME_ID = "a11y_rank_collect_home_id";
+    static final String EXTRA_A11Y_RANK_COLLECT_ENTER_TIME = "a11y_rank_collect_enter_time";
+    static final String EXTRA_A11Y_RANK_COLLECT_TARGET_COUNT = "a11y_rank_collect_target_count";
+    static final String EXTRA_A11Y_RANK_COLLECT_SUCCESS = "a11y_rank_collect_success";
+    static final String EXTRA_A11Y_RANK_COLLECT_DETAIL = "a11y_rank_collect_detail";
+    static final String EXTRA_A11Y_RANK_COLLECT_COUNT = "a11y_rank_collect_count";
+    static final String EXTRA_A11Y_RANK_COLLECT_MAX_RANK = "a11y_rank_collect_max_rank";
     static final String EXTRA_TOGETHER_CYCLE_LIMIT = "together_cycle_limit";
     static final String EXTRA_TOGETHER_CYCLE_WAIT_SECONDS = "together_cycle_wait_seconds";
     static final String EXTRA_TARGET_DISPLAY_ID = "target_display_id";
@@ -73,6 +87,8 @@ final class ModuleSettings {
     static final String DEBUG_CMD_EXPORT_ACTIVITY_VIEW_TREE = "EXPORT_ACTIVITY_VIEW_TREE";
     static final String A11Y_PANEL_CLICK_TARGET_CONTRIBUTION = "contribution";
     static final String A11Y_PANEL_CLICK_TARGET_CHARM = "charm";
+    static final String A11Y_RANK_COLLECT_TYPE_CONTRIBUTION = "contribution";
+    static final String A11Y_RANK_COLLECT_TYPE_CHARM = "charm";
 
     static final boolean DEFAULT_GLOBAL_FLOAT_BUTTON_ENABLED = false;
     static final boolean DEFAULT_AD_PROCESS_ENABLED = true;
@@ -82,6 +98,9 @@ final class ModuleSettings {
     static final int DEFAULT_TOGETHER_CYCLE_WAIT_SECONDS = 10;
     static final boolean DEFAULT_FLOAT_INFO_WINDOW_ENABLED = false;
     static final boolean DEFAULT_VIEW_TREE_DUMP_DEBUG_ENABLED = false;
+    static final int DEFAULT_CONTRIBUTION_RANK_LOOP_COUNT = 5;
+    static final int DEFAULT_CHARM_RANK_LOOP_COUNT = 20;
+    static final boolean DEFAULT_COLLECT_USER_DETAIL_ENABLED = true;
     static final int DEFAULT_A11Y_PANEL_MARKER_COUNT = 0;
     static final int DEFAULT_A11Y_PANEL_PRIMARY_COUNT = 0;
     static final long DEFAULT_A11Y_PANEL_UPDATED_AT = 0L;
@@ -190,6 +209,37 @@ final class ModuleSettings {
         return xsp.getBoolean(
                 KEY_VIEW_TREE_DUMP_DEBUG_ENABLED,
                 DEFAULT_VIEW_TREE_DUMP_DEBUG_ENABLED
+        );
+    }
+
+    static synchronized int getContributionRankLoopCount() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return DEFAULT_CONTRIBUTION_RANK_LOOP_COUNT;
+        }
+        return sanitizeNonNegativeInt(
+                xsp.getInt(KEY_CONTRIBUTION_RANK_LOOP_COUNT, DEFAULT_CONTRIBUTION_RANK_LOOP_COUNT)
+        );
+    }
+
+    static synchronized int getCharmRankLoopCount() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return DEFAULT_CHARM_RANK_LOOP_COUNT;
+        }
+        return sanitizeNonNegativeInt(
+                xsp.getInt(KEY_CHARM_RANK_LOOP_COUNT, DEFAULT_CHARM_RANK_LOOP_COUNT)
+        );
+    }
+
+    static synchronized boolean isCollectUserDetailEnabled() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return DEFAULT_COLLECT_USER_DETAIL_ENABLED;
+        }
+        return xsp.getBoolean(
+                KEY_COLLECT_USER_DETAIL_ENABLED,
+                DEFAULT_COLLECT_USER_DETAIL_ENABLED
         );
     }
 
@@ -366,6 +416,34 @@ final class ModuleSettings {
         );
     }
 
+    static synchronized int getContributionRankLoopCount(SharedPreferences prefs) {
+        if (prefs == null) {
+            return DEFAULT_CONTRIBUTION_RANK_LOOP_COUNT;
+        }
+        return sanitizeNonNegativeInt(
+                prefs.getInt(KEY_CONTRIBUTION_RANK_LOOP_COUNT, DEFAULT_CONTRIBUTION_RANK_LOOP_COUNT)
+        );
+    }
+
+    static synchronized int getCharmRankLoopCount(SharedPreferences prefs) {
+        if (prefs == null) {
+            return DEFAULT_CHARM_RANK_LOOP_COUNT;
+        }
+        return sanitizeNonNegativeInt(
+                prefs.getInt(KEY_CHARM_RANK_LOOP_COUNT, DEFAULT_CHARM_RANK_LOOP_COUNT)
+        );
+    }
+
+    static synchronized boolean getCollectUserDetailEnabled(SharedPreferences prefs) {
+        if (prefs == null) {
+            return DEFAULT_COLLECT_USER_DETAIL_ENABLED;
+        }
+        return prefs.getBoolean(
+                KEY_COLLECT_USER_DETAIL_ENABLED,
+                DEFAULT_COLLECT_USER_DETAIL_ENABLED
+        );
+    }
+
     static synchronized long getRuntimeRunStartAt(SharedPreferences prefs) {
         if (prefs == null) {
             return 0L;
@@ -486,6 +564,35 @@ final class ModuleSettings {
         }
         SharedPreferences prefs = appPrefs(context);
         prefs.edit().putBoolean(KEY_VIEW_TREE_DUMP_DEBUG_ENABLED, enabled).commit();
+        ensurePrefsReadable(context);
+    }
+
+    static synchronized void setContributionRankLoopCount(Context context, int count) {
+        if (context == null) {
+            return;
+        }
+        int safeValue = sanitizeNonNegativeInt(count);
+        SharedPreferences prefs = appPrefs(context);
+        prefs.edit().putInt(KEY_CONTRIBUTION_RANK_LOOP_COUNT, safeValue).commit();
+        ensurePrefsReadable(context);
+    }
+
+    static synchronized void setCharmRankLoopCount(Context context, int count) {
+        if (context == null) {
+            return;
+        }
+        int safeValue = sanitizeNonNegativeInt(count);
+        SharedPreferences prefs = appPrefs(context);
+        prefs.edit().putInt(KEY_CHARM_RANK_LOOP_COUNT, safeValue).commit();
+        ensurePrefsReadable(context);
+    }
+
+    static synchronized void setCollectUserDetailEnabled(Context context, boolean enabled) {
+        if (context == null) {
+            return;
+        }
+        SharedPreferences prefs = appPrefs(context);
+        prefs.edit().putBoolean(KEY_COLLECT_USER_DETAIL_ENABLED, enabled).commit();
         ensurePrefsReadable(context);
     }
 
@@ -692,6 +799,24 @@ final class ModuleSettings {
             editor.putBoolean(
                     KEY_VIEW_TREE_DUMP_DEBUG_ENABLED,
                     DEFAULT_VIEW_TREE_DUMP_DEBUG_ENABLED
+            );
+        }
+        if (!prefs.contains(KEY_CONTRIBUTION_RANK_LOOP_COUNT)) {
+            editor.putInt(
+                    KEY_CONTRIBUTION_RANK_LOOP_COUNT,
+                    DEFAULT_CONTRIBUTION_RANK_LOOP_COUNT
+            );
+        }
+        if (!prefs.contains(KEY_CHARM_RANK_LOOP_COUNT)) {
+            editor.putInt(
+                    KEY_CHARM_RANK_LOOP_COUNT,
+                    DEFAULT_CHARM_RANK_LOOP_COUNT
+            );
+        }
+        if (!prefs.contains(KEY_COLLECT_USER_DETAIL_ENABLED)) {
+            editor.putBoolean(
+                    KEY_COLLECT_USER_DETAIL_ENABLED,
+                    DEFAULT_COLLECT_USER_DETAIL_ENABLED
             );
         }
         if (!prefs.contains(KEY_A11Y_PANEL_MARKER_COUNT)) {

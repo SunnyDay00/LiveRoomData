@@ -8,7 +8,6 @@ import android.content.IntentFilter;
 import android.graphics.Rect;
 import android.os.Build;
 import android.os.Handler;
-import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.text.TextUtils;
@@ -45,6 +44,7 @@ public class LookHookEntry implements IXposedHookLoadPackage {
     private static final String LOGCAT_TAG = "LOOKLspModule";
     private static final Object VIEW_DUMP_LOCK = new Object();
     private static final Object A11Y_PANEL_CLICK_LOCK = new Object();
+    private static final Object A11Y_RANK_COLLECT_LOCK = new Object();
     private static final SimpleDateFormat VIEW_DUMP_FILE_TS_FORMAT =
             new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US);
     private static final SimpleDateFormat VIEW_DUMP_LOG_TS_FORMAT =
@@ -66,8 +66,9 @@ public class LookHookEntry implements IXposedHookLoadPackage {
     private static long sA11yPanelClickRequestSeq = 0L;
     private static final Map<Long, A11yPanelClickResult> sPendingA11yPanelClickResults =
             new LinkedHashMap<Long, A11yPanelClickResult>();
-    private static HandlerThread sA11yPanelClickResultThread;
-    private static Handler sA11yPanelClickResultHandler;
+    private static long sA11yRankCollectRequestSeq = 0L;
+    private static final Map<Long, A11yRankCollectResult> sPendingA11yRankCollectResults =
+            new LinkedHashMap<Long, A11yRankCollectResult>();
     private static int sRealtimeA11yPanelMarkerCount = 0;
     private static int sRealtimeA11yPanelPrimaryCount = 0;
     private static long sRealtimeA11yPanelUpdatedAt = 0L;
@@ -153,6 +154,7 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             filter.addAction(ModuleSettings.ACTION_DEBUG_COMMAND);
             filter.addAction(ModuleSettings.ACTION_A11Y_PANEL_SNAPSHOT);
             filter.addAction(ModuleSettings.ACTION_A11Y_PANEL_CLICK_RESULT);
+            filter.addAction(ModuleSettings.ACTION_A11Y_RANK_COLLECT_RESULT);
             sCommandReceiver = new BroadcastReceiver() {
                 @Override
                 public void onReceive(Context context, Intent intent) {
@@ -162,6 +164,10 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                     String action = safeTrimStatic(intent.getAction());
                     if (ModuleSettings.ACTION_A11Y_PANEL_CLICK_RESULT.equals(action)) {
                         handleA11yPanelClickResultIntent(intent);
+                        return;
+                    }
+                    if (ModuleSettings.ACTION_A11Y_RANK_COLLECT_RESULT.equals(action)) {
+                        handleA11yRankCollectResultIntent(intent);
                         return;
                     }
                     if (ModuleSettings.ACTION_A11Y_PANEL_SNAPSHOT.equals(action)) {
@@ -322,6 +328,45 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                 sPendingA11yPanelClickResults.remove(oldest);
             }
             A11Y_PANEL_CLICK_LOCK.notifyAll();
+        }
+    }
+
+    private void handleA11yRankCollectResultIntent(Intent intent) {
+        if (intent == null) {
+            return;
+        }
+        long requestId = intent.getLongExtra(
+                ModuleSettings.EXTRA_A11Y_RANK_COLLECT_REQUEST_ID,
+                -1L
+        );
+        if (requestId <= 0L) {
+            return;
+        }
+        boolean success = intent.getBooleanExtra(
+                ModuleSettings.EXTRA_A11Y_RANK_COLLECT_SUCCESS,
+                false
+        );
+        String detail = safeTrimStatic(
+                intent.getStringExtra(ModuleSettings.EXTRA_A11Y_RANK_COLLECT_DETAIL)
+        );
+        int count = intent.getIntExtra(
+                ModuleSettings.EXTRA_A11Y_RANK_COLLECT_COUNT,
+                0
+        );
+        int maxRank = intent.getIntExtra(
+                ModuleSettings.EXTRA_A11Y_RANK_COLLECT_MAX_RANK,
+                0
+        );
+        synchronized (A11Y_RANK_COLLECT_LOCK) {
+            sPendingA11yRankCollectResults.put(
+                    requestId,
+                    new A11yRankCollectResult(success, detail, count, maxRank)
+            );
+            while (sPendingA11yRankCollectResults.size() > 64) {
+                Long oldest = sPendingA11yRankCollectResults.keySet().iterator().next();
+                sPendingA11yRankCollectResults.remove(oldest);
+            }
+            A11Y_RANK_COLLECT_LOCK.notifyAll();
         }
     }
 
@@ -506,6 +551,11 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                 @Override
                 public String resolveLiveRoomTitle(View root) {
                     return UiSession.this.resolveLiveRoomTitle(root);
+                }
+
+                @Override
+                public String resolveLiveRoomRoomNo(View root) {
+                    return UiSession.this.resolveLiveRoomRoomNo(root);
                 }
 
                 @Override
@@ -1961,6 +2011,14 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             return safeTrim(String.valueOf(((TextView) titleNode).getText()));
         }
 
+        private String resolveLiveRoomRoomNo(View root) {
+            View roomNoNode = findFirstNode(root, UiComponentConfig.LIVE_ROOM_ROOM_NO_NODE);
+            if (!(roomNoNode instanceof TextView)) {
+                return "";
+            }
+            return safeTrim(String.valueOf(((TextView) roomNoNode).getText()));
+        }
+
         private boolean isStringInList(List<String> values, String target) {
             if (values == null || values.isEmpty()) {
                 return false;
@@ -2768,13 +2826,15 @@ public class LookHookEntry implements IXposedHookLoadPackage {
         }
     }
 
-    static A11yPanelClickResult requestA11yPanelClickForTaskRunner(
+    static long dispatchA11yRankCollectRequestForTaskRunner(
             Activity activity,
-            String target,
-            long timeoutMs
+            String rankType,
+            String homeId,
+            long enterTimeMs,
+            int targetCount
     ) {
         if (activity == null) {
-            return new A11yPanelClickResult(false, "activity_null");
+            return -1L;
         }
         Context appContext;
         try {
@@ -2783,130 +2843,107 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             appContext = null;
         }
         if (appContext == null) {
-            return new A11yPanelClickResult(false, "app_context_null");
+            return -1L;
+        }
+        String safeType = safeTrimStatic(rankType);
+        if (TextUtils.isEmpty(safeType)) {
+            return -1L;
+        }
+        final long requestId;
+        synchronized (A11Y_RANK_COLLECT_LOCK) {
+            sA11yRankCollectRequestSeq = Math.max(0L, sA11yRankCollectRequestSeq) + 1L;
+            requestId = sA11yRankCollectRequestSeq;
+            sPendingA11yRankCollectResults.remove(requestId);
+        }
+        try {
+            Intent intent = new Intent(ModuleSettings.ACTION_A11Y_RANK_COLLECT_REQUEST);
+            intent.setPackage(ModuleSettings.MODULE_PACKAGE);
+            intent.putExtra(ModuleSettings.EXTRA_A11Y_RANK_COLLECT_REQUEST_ID, requestId);
+            intent.putExtra(ModuleSettings.EXTRA_A11Y_RANK_COLLECT_TYPE, safeType);
+            intent.putExtra(
+                    ModuleSettings.EXTRA_A11Y_RANK_COLLECT_HOME_ID,
+                    safeTrimStatic(homeId)
+            );
+            intent.putExtra(
+                    ModuleSettings.EXTRA_A11Y_RANK_COLLECT_ENTER_TIME,
+                    Math.max(0L, enterTimeMs)
+            );
+            intent.putExtra(
+                    ModuleSettings.EXTRA_A11Y_RANK_COLLECT_TARGET_COUNT,
+                    Math.max(0, targetCount)
+            );
+            appContext.sendBroadcast(intent);
+            return requestId;
+        } catch (Throwable ignore) {
+            return -1L;
+        }
+    }
+
+    static A11yRankCollectResult consumeA11yRankCollectResultForTaskRunner(long requestId) {
+        if (requestId <= 0L) {
+            return null;
+        }
+        synchronized (A11Y_RANK_COLLECT_LOCK) {
+            return sPendingA11yRankCollectResults.remove(requestId);
+        }
+    }
+
+    static A11yPanelClickResult requestA11yPanelClickForTaskRunner(
+            Activity activity,
+            String target,
+            long timeoutMs
+    ) {
+        if (activity == null) {
+            return new A11yPanelClickResult(false, "activity_null");
         }
         String safeTarget = safeTrimStatic(target);
         if (TextUtils.isEmpty(safeTarget)) {
             return new A11yPanelClickResult(false, "target_empty");
         }
-        final long requestId;
-        synchronized (A11Y_PANEL_CLICK_LOCK) {
-            sA11yPanelClickRequestSeq = Math.max(0L, sA11yPanelClickRequestSeq) + 1L;
-            requestId = sA11yPanelClickRequestSeq;
-            sPendingA11yPanelClickResults.remove(requestId);
-        }
-        final Object waitLock = new Object();
-        final A11yPanelClickResult[] holder = new A11yPanelClickResult[1];
-        final BroadcastReceiver tempReceiver = new BroadcastReceiver() {
-            @Override
-            public void onReceive(Context context, Intent intent) {
-                if (intent == null) {
-                    return;
-                }
-                String action = safeTrimStatic(intent.getAction());
-                if (!ModuleSettings.ACTION_A11Y_PANEL_CLICK_RESULT.equals(action)) {
-                    return;
-                }
-                long callbackRequestId = intent.getLongExtra(
-                        ModuleSettings.EXTRA_A11Y_PANEL_CLICK_REQUEST_ID,
-                        -1L
-                );
-                if (callbackRequestId != requestId) {
-                    return;
-                }
-                boolean success = intent.getBooleanExtra(
-                        ModuleSettings.EXTRA_A11Y_PANEL_CLICK_SUCCESS,
-                        false
-                );
-                String detail = safeTrimStatic(
-                        intent.getStringExtra(ModuleSettings.EXTRA_A11Y_PANEL_CLICK_DETAIL)
-                );
-                synchronized (waitLock) {
-                    holder[0] = new A11yPanelClickResult(success, detail);
-                    waitLock.notifyAll();
-                }
-            }
-        };
-        boolean receiverRegistered = false;
-        try {
-            IntentFilter filter = new IntentFilter(ModuleSettings.ACTION_A11Y_PANEL_CLICK_RESULT);
-            if (Build.VERSION.SDK_INT >= 33) {
-                appContext.registerReceiver(
-                        tempReceiver,
-                        filter,
-                        null,
-                        getA11yPanelClickResultHandler(),
-                        Context.RECEIVER_EXPORTED
-                );
-            } else {
-                appContext.registerReceiver(
-                        tempReceiver,
-                        filter,
-                        null,
-                        getA11yPanelClickResultHandler()
-                );
-            }
-            receiverRegistered = true;
-            Intent intent = new Intent(ModuleSettings.ACTION_A11Y_PANEL_CLICK_REQUEST);
-            intent.setPackage(ModuleSettings.MODULE_PACKAGE);
-            intent.putExtra(ModuleSettings.EXTRA_A11Y_PANEL_CLICK_REQUEST_ID, requestId);
-            intent.putExtra(ModuleSettings.EXTRA_A11Y_PANEL_CLICK_TARGET, safeTarget);
-            appContext.sendBroadcast(intent);
-        } catch (Throwable e) {
-            if (receiverRegistered) {
-                try {
-                    appContext.unregisterReceiver(tempReceiver);
-                } catch (Throwable ignore) {
-                }
-            }
-            return new A11yPanelClickResult(false, "send_request_failed:" + safeTrimStatic(e.toString()));
+        long requestId = dispatchA11yPanelClickRequestForTaskRunner(activity, safeTarget);
+        if (requestId <= 0L) {
+            return new A11yPanelClickResult(false, "send_request_failed:dispatch_invalid_request_id");
         }
         long safeTimeoutMs = Math.max(120L, timeoutMs);
         long deadline = SystemClock.uptimeMillis() + safeTimeoutMs;
-        try {
-            synchronized (waitLock) {
-                while (holder[0] == null) {
-                    long remain = deadline - SystemClock.uptimeMillis();
-                    if (remain <= 0L) {
-                        break;
-                    }
-                    try {
-                        waitLock.wait(remain);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
+        synchronized (A11Y_PANEL_CLICK_LOCK) {
+            while (true) {
+                A11yPanelClickResult result = sPendingA11yPanelClickResults.remove(requestId);
+                if (result != null) {
+                    return result;
+                }
+                long remain = deadline - SystemClock.uptimeMillis();
+                if (remain <= 0L) {
+                    break;
+                }
+                try {
+                    A11Y_PANEL_CLICK_LOCK.wait(remain);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
                 }
             }
-        } finally {
-            try {
-                appContext.unregisterReceiver(tempReceiver);
-            } catch (Throwable ignore) {
-            }
         }
-        if (holder[0] != null) {
-            return holder[0];
+        long graceWaitMs = Math.max(
+                0L,
+                UiComponentConfig.LIVE_ROOM_TASK_A11Y_CLICK_RESULT_GRACE_WAIT_MS
+        );
+        if (graceWaitMs > 0L) {
+            SystemClock.sleep(graceWaitMs);
+            A11yPanelClickResult result = consumeA11yPanelClickResultForTaskRunner(requestId);
+            if (result != null) {
+                return result;
+            }
         }
         return new A11yPanelClickResult(false, "a11y_click_timeout");
     }
 
-    private static Handler getA11yPanelClickResultHandler() {
+    private static A11yPanelClickResult consumeA11yPanelClickResultForTaskRunner(long requestId) {
+        if (requestId <= 0L) {
+            return null;
+        }
         synchronized (A11Y_PANEL_CLICK_LOCK) {
-            if (sA11yPanelClickResultHandler != null) {
-                return sA11yPanelClickResultHandler;
-            }
-            try {
-                sA11yPanelClickResultThread = new HandlerThread("look_a11y_panel_click_result");
-                sA11yPanelClickResultThread.start();
-                sA11yPanelClickResultHandler = new Handler(
-                        sA11yPanelClickResultThread.getLooper()
-                );
-                return sA11yPanelClickResultHandler;
-            } catch (Throwable e) {
-                sA11yPanelClickResultThread = null;
-                sA11yPanelClickResultHandler = new Handler(Looper.getMainLooper());
-                return sA11yPanelClickResultHandler;
-            }
+            return sPendingA11yPanelClickResults.remove(requestId);
         }
     }
 
@@ -2949,6 +2986,20 @@ public class LookHookEntry implements IXposedHookLoadPackage {
         A11yPanelClickResult(boolean success, String detail) {
             this.success = success;
             this.detail = safeTrimStatic(detail);
+        }
+    }
+
+    static final class A11yRankCollectResult {
+        final boolean success;
+        final String detail;
+        final int count;
+        final int maxRank;
+
+        A11yRankCollectResult(boolean success, String detail, int count, int maxRank) {
+            this.success = success;
+            this.detail = safeTrimStatic(detail);
+            this.count = Math.max(0, count);
+            this.maxRank = Math.max(0, maxRank);
         }
     }
 

@@ -28,6 +28,8 @@ final class LiveRoomRuntimeModule {
 
         String resolveLiveRoomTitle(View root);
 
+        String resolveLiveRoomRoomNo(View root);
+
         boolean isTitleMatched(List<String> values, String target);
 
         void resetAwaitingLiveRoomFlag();
@@ -175,10 +177,14 @@ final class LiveRoomRuntimeModule {
         }
 
         bridge.markLiveRoomEntered(liveRoomTitle);
+        String liveRoomNo = bridge.resolveLiveRoomRoomNo(root);
+        long liveRoomEnterAt = Math.max(0L, now);
         bridge.log("直播间校验通过，开始执行直播间任务。liveTitle=" + liveRoomTitle
                 + " candidates=" + titleCandidates);
         LiveRoomTaskScriptRunner.runLiveRoomEnterTask(
                 activity,
+                liveRoomNo,
+                liveRoomEnterAt,
                 new LiveRoomTaskScriptRunner.TaskFinishListener() {
                     @Override
                     public void onTaskFinished(final String reason) {

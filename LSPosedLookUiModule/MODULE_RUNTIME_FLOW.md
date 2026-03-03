@@ -1,6 +1,6 @@
 # LSPosedLookUiModule 运行逻辑说明
 
-最后更新：2026-03-03（v1.6.29）
+最后更新：2026-03-03（v1.9.7）
 
 ## 1. 长期维护约定
 
@@ -19,6 +19,7 @@
 - `app/src/main/java/com/oodbye/looklspmodule/CustomRulesAdProcessor.java`
 - `app/src/main/java/com/oodbye/looklspmodule/LiveRoomTaskScriptRunner.java`
 - `app/src/main/java/com/oodbye/looklspmodule/LiveRoomRuntimeModule.java`
+- `app/src/main/java/com/oodbye/looklspmodule/LiveRoomRankCsvStore.java`
 - `app/src/main/java/com/oodbye/looklspmodule/RealtimeAdLoop.java`
 - `app/src/main/java/com/oodbye/looklspmodule/ModuleStartupReceiver.java`
 - `app/src/main/java/com/oodbye/looklspmodule/FloatServiceBootstrap.java`
@@ -36,6 +37,9 @@
   - `View树调试输出（仅调试）`
   - `一起聊直播间循环点击次数`（0=无限）
   - `每次循环后等待时间（秒）`（默认10秒）
+  - `贡献榜列表组循环点击次数`（默认5）
+  - `魅力榜列表组循环点击次数`（默认20）
+  - `采集用户详细界面`（默认开启）
 - 悬浮按钮命令：
   - `运行` -> `RUNNING`
   - `停止` -> `STOPPED`
@@ -278,6 +282,57 @@
 - 直播间返回后等待时长调整（v1.6.29）：
   - `LIVE_ROOM_RETURN_TOGETHER_WAIT_MS` 由 `1000ms` 调整为 `3000ms`。
   - 一起聊页在直播间返回后的卡片点击冷却由 1 秒改为 3 秒。
+- 榜单采集模块接入（v1.6.30）：
+  - `live_room_enter_task` 在点击 `贡献榜/魅力榜` 后，不再固定“等待5秒”，改为通过无障碍服务触发真实采集任务并等待结果。
+  - 新增无障碍采集请求/结果链路：
+    - 请求：`ACTION_A11Y_RANK_COLLECT_REQUEST`
+    - 回传：`ACTION_A11Y_RANK_COLLECT_RESULT`
+  - 新增本地 CSV 落盘模块：`LiveRoomRankCsvStore`，每次运行命令序列会创建新文件：
+    - 贡献榜：`homeid,ueseid,uesename,level,Data,Consumption,ueseip,time`
+    - 魅力榜：`homeid,upid,upname,followers,Data,Consumption,upip,time`
+  - `homeid` 来源为直播间 `roomNo`；`time` 为进入直播间时间（非写入时刻）。
+  - 榜单采集使用无障碍全局树：按排名点击用户组 -> 进入详情采集字段（ID/IP/粉丝/消费音符）-> 返回榜单 -> 继续下一排名；不足时自动上滑翻页，直到达到设置上限或无进展停止。
+- 榜单采集细化与按循环分CSV（v1.6.31）：
+  - 每个循环单独创建CSV文件：文件名尾缀追加循环序号（`_1`、`_2`、`_3`...），便于跨循环对比。
+  - 魅力榜 CSV 列调整为：`homeid,upid,upname,Data,followers,Consumption,upip,time`。
+  - 新增设置项：`采集用户详细界面`（默认开启）。
+    - 开启：点击用户进入详情页采集 `id/IP/粉丝/消费音符`。
+    - 关闭：不进入详情页，仅采集榜单列表可见字段。
+  - 详情采集新增兜底重试：若进入详情后未采集到有效数据，等待 `1秒` 后重试，最多 `3次`。
+- 日粒度连续CSV与遮挡层防护（v1.6.32）：
+  - CSV 文件命名改为：`{prefix}_{yyyyMMdd}_{cycle}.csv`，示例：`look_contribution_rank_20260303_1.csv`。
+  - 取消文件名中的 `seq`，同一天内循环序号按历史文件连续递增（跨多次运行连续）。
+  - 榜单上滑新增详细日志：上滑准备、坐标参数、`dispatchGesture` 结果、回调 `completed/cancelled`、超时信息，便于判断是否真正执行上滑。
+  - 针对 `com.netease.play:id/slidingContainer` 全屏遮挡层：
+    - 在面板按钮点击前、榜单采集循环前、详情采集前统一增加“等待遮挡层消失”门禁。
+    - 超时会输出明确日志并返回失败详情，避免被遮挡状态下误判导致的链路异常。
+- 详情关闭模式写入修复与批量落盘（v1.6.33）：
+  - 修复“`采集用户详细界面` 关闭后 CSV 无写入”的问题：关闭详情模式也会将榜单行数据正常入队并落盘。
+  - 详情模式开关读取改为模块进程 `SharedPreferences` 实时值，避免跨进程缓存导致的状态滞后。
+  - CSV 写入由“每用户一条立即写”改为“同一直播间榜单采集完成后批量写入”，减少 I/O 开销。
+  - 新增写入汇总日志：`queued/flushed/flushOk`，便于定位采集数量与落盘数量是否一致。
+- 榜单滚动与串行门禁修复（v1.9.4）：
+  - 榜单翻页改为“无障碍滚动动作优先 + 手势兜底”：
+    - 优先对可滚动节点执行 `ACTION_SCROLL_FORWARD`。
+    - 仅在动作不可用或失败时，回退到手势滑动。
+    - 新增滚动模式与目标节点日志，便于定位“日志显示已上滑但界面未变化”的问题。
+  - 榜单 Tab 点击改为严格门禁：`贡献榜/魅力榜` 必须点击成功后才进入对应采集，并支持重试，不再出现“点击超时但流程继续”的串行错位。
+  - 榜单采集新增 0 条数据失败判定：若目标次数>0但最终采集 0 条，回传失败并触发重试，避免误判“已完成”导致提前退房。
+  - 贡献榜完成后才进入魅力榜；魅力榜完成后才执行面板关闭与直播间返回。
+- 魅力榜退出门禁强化（v1.9.5）：
+  - 任务上下文新增“贡献榜已完成/魅力榜已完成”状态位，未完成前不允许进入下一个阶段。
+  - 贡献榜采集成功后才触发魅力榜点击；魅力榜采集成功后才触发面板关闭与直播间返回。
+  - 魅力榜点击失败不再直接结束任务，改为重试并在阈值后触发“重新找 `vflipper`/面板”继续执行，防止“未采集魅力榜就退房”。
+- 榜单页面识别增强（v1.9.6）：
+  - 新增贡献榜页面判定标记（无障碍树）：`日榜奖励？` + `日榜`。
+  - 新增魅力榜页面判定标记（无障碍树）：`查看规则` + `日榜`。
+  - 贡献榜/魅力榜采集前增加“页面就绪门禁”：未命中对应标记时不会开始采集，而是按重试参数等待；超时后返回失败并由任务链路继续重试，避免“点到错误页面就直接退出”。
+- 榜单页面判定容错与重选页签（v1.9.7）：
+  - 页面标记匹配放宽为候选组：
+    - 贡献榜标题支持 `日榜奖励？ / 日榜奖励? / 日榜奖励` 任一命中，再与 `日榜` 组合判定。
+    - 魅力榜支持 `查看规则` 与 `日榜` 组合判定。
+  - 去除页面标记中的强制 `class/package` 约束，避免因节点实现差异导致误判“页面未就绪”。
+  - 当采集结果失败原因为 `rank_page_not_ready` 时，任务侧会先重新点击对应榜单页签（贡献榜/魅力榜）再重启采集，不再仅盲目重发采集请求，减少“卡在贡献榜不动”的死循环。
 
 ## 4. 当前主流程
 
@@ -407,19 +462,38 @@
 - 固定任务名：`live_room_enter_task`（内部 Java 任务，不依赖 `.sh/.txt` 文件）。
 - 入口文件与方法：
   - `app/src/main/java/com/oodbye/looklspmodule/LiveRoomTaskScriptRunner.java`
-  - `runLiveRoomEnterTask(Activity activity)`
-- 当前行为（v1.6.24）：
+  - `runLiveRoomEnterTask(Activity activity, String homeId, long enterTimeMs, ...)`
+- 当前行为（v2.0.1）：
   - 进入直播间并完成校验后，执行 `live_room_enter_task`。
   - 任务持续查找并点击 `com.netease.play:id/vflipper`，进入榜单面板。
   - 面板识别条件：`当前房间/贡献榜/魅力榜/贵族/粉团榜/在线`（命中数阈值可配置）。
   - 面板判定来源：无障碍服务 `rootInActiveWindow` 全局树快照（带过期判定），不再依赖 Activity View 树无障碍节点。
   - 若面板已打开则不再重复点击 `vflipper`，直接执行后续榜单步骤。
-  - 顺序执行：`贡献榜(等待5秒)` -> `魅力榜(等待5秒)` -> `返回关闭榜单面板`。
-  - 其中 `贡献榜/魅力榜` 点击由无障碍服务全局树执行，不再走 Activity 视角点击。
+  - 顺序执行：`贡献榜点击` -> `贡献榜采集(无障碍)` -> `魅力榜点击` -> `魅力榜采集(无障碍)` -> `返回关闭榜单面板`。
+  - 采集前会校验榜单页面标记：
+    - 贡献榜：`日榜奖励？` + `日榜`
+    - 魅力榜：`查看规则` + `日榜`
+  - `贡献榜/魅力榜` 采集循环次数来自设置项（默认 5 / 20），目标排名不足时会自动上滑继续。
+  - 榜单上滑优先使用无障碍滚动动作（`ACTION_SCROLL_FORWARD`），仅在动作不可用时回退为手势滑动。
+  - 是否进入用户详情页由设置项 `采集用户详细界面` 控制（默认开启）。
+  - 进入详情后若数据无效，会按 `1秒 * 最多3次` 进行重试采集。
+  - 其中榜单点击与榜单采集均走无障碍服务全局树，不走 Activity 视角点击。
+  - 修复“榜单点击回调超时竞态”：
+    - `LOOKA11yAd` 已成功返回 `panel_contribution/panel_charm` 时，`LOOKScriptRunner` 不再因短超时误判失败并重复点击页签。
+    - 榜单点击结果等待窗口上调，并增加超时后的短暂宽限重取结果。
+  - 修复“贡献榜超时触发反复点 vflipper”：
+    - 当榜单页签点击达到重试阈值时，若面板快照仍显示已就绪，则不再重开 `vflipper`，改为直接进入榜单采集链路。
+    - 对 `a11y_click_timeout` 增加快照兜底：若快照显示对应目标（贡献/魅力）可见，则按“点击已生效”继续流程，避免死循环重点。
+  - 修复“榜单点击等待阻塞主线程”：
+    - 榜单页签点击请求改为后台线程等待无障碍回调，避免在主线程同步等待导致 `Skipped frames` 与系统 UI 树更新延迟。
+    - 降低 `a11y_click_timeout` 误判概率，减少由超时引发的重复 `vflipper` 点击与贡献榜卡住。
+  - 新增关键诊断日志（便于定位榜单链路）：
+    - `click vflipper start` / `vflipper clicked`：明确记录每次 `vflipper` 点击发起与成功。
+    - `vflipper panel detect: opened=...`：明确记录面板是否已打开与快照详情。
+    - `贡献榜界面检测已打开`、`魅力榜界面检测已打开`：明确记录对应榜单页已命中页面标记。
+  - 面板就绪判定收紧为“主按钮组命中”（贡献榜/魅力榜），避免仅命中弱标记时提前进入榜单点击导致 `target_missing`。
   - 关闭校验：通过检测上述按钮组是否消失来确认面板关闭；若仍存在会按配置重试返回。
-  - 任务返回等待时长为 `max(LIVE_ROOM_ENTER_TASK_WAIT_MS, LIVE_ROOM_TASK_MIN_RETURN_DELAY_MS)`，随后自动返回上一页。
-- 说明：
-  - 你后续要扩展“进入直播间后的采集功能”，直接在 `LiveRoomTaskScriptRunner.runLiveRoomEnterTask(...)` 中追加即可。
+  - 主流程仅在任务链条全部结束后才触发“直播间任务完成，执行返回退出直播间”。
 
 ## 8. 广告规则
 

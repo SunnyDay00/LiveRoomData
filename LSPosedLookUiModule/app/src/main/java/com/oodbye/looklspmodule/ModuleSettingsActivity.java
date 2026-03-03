@@ -447,6 +447,219 @@ public class ModuleSettingsActivity extends Activity {
         cycleWaitHint.setLayoutParams(cycleWaitHintLp);
         container.addView(cycleWaitHint);
 
+        TextView contributionRankTitle = new TextView(this);
+        contributionRankTitle.setText("贡献榜列表组循环点击次数");
+        contributionRankTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        LinearLayout.LayoutParams contributionRankTitleLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        contributionRankTitleLp.topMargin = dp(20);
+        contributionRankTitle.setLayoutParams(contributionRankTitleLp);
+        container.addView(contributionRankTitle);
+
+        LinearLayout contributionRankRow = new LinearLayout(this);
+        contributionRankRow.setOrientation(LinearLayout.HORIZONTAL);
+        contributionRankRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams contributionRankRowLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        contributionRankRowLp.topMargin = dp(8);
+        contributionRankRow.setLayoutParams(contributionRankRowLp);
+        container.addView(contributionRankRow);
+
+        final EditText contributionRankInput = new EditText(this);
+        contributionRankInput.setSingleLine(true);
+        contributionRankInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        contributionRankInput.setHint(String.valueOf(ModuleSettings.DEFAULT_CONTRIBUTION_RANK_LOOP_COUNT));
+        contributionRankInput.setText(
+                String.valueOf(ModuleSettings.getContributionRankLoopCount(prefs))
+        );
+        LinearLayout.LayoutParams contributionRankInputLp = new LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        contributionRankInputLp.weight = 1f;
+        contributionRankInput.setLayoutParams(contributionRankInputLp);
+        contributionRankRow.addView(contributionRankInput);
+
+        Button contributionRankSaveBtn = new Button(this);
+        contributionRankSaveBtn.setText("保存");
+        LinearLayout.LayoutParams contributionRankSaveLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        contributionRankSaveLp.leftMargin = dp(10);
+        contributionRankSaveBtn.setLayoutParams(contributionRankSaveLp);
+        contributionRankSaveBtn.setOnClickListener(v -> {
+            String raw = String.valueOf(contributionRankInput.getText()).trim();
+            int count;
+            if (TextUtils.isEmpty(raw)) {
+                count = ModuleSettings.DEFAULT_CONTRIBUTION_RANK_LOOP_COUNT;
+            } else {
+                try {
+                    count = Integer.parseInt(raw);
+                } catch (Throwable e) {
+                    Toast.makeText(
+                            ModuleSettingsActivity.this,
+                            "请输入非负整数",
+                            Toast.LENGTH_SHORT
+                    ).show();
+                    return;
+                }
+            }
+            if (count < 0) {
+                Toast.makeText(
+                        ModuleSettingsActivity.this,
+                        "请输入非负整数",
+                        Toast.LENGTH_SHORT
+                ).show();
+                return;
+            }
+            ModuleSettings.setContributionRankLoopCount(ModuleSettingsActivity.this, count);
+            contributionRankInput.setText(String.valueOf(count));
+            Toast.makeText(
+                    ModuleSettingsActivity.this,
+                    "已设置贡献榜循环点击次数为 " + count,
+                    Toast.LENGTH_SHORT
+            ).show();
+        });
+        contributionRankRow.addView(contributionRankSaveBtn);
+
+        TextView contributionRankHint = new TextView(this);
+        contributionRankHint.setText("按用户排名从 1 开始采集，默认 5。目标排名不存在时会尝试上滑继续采集。");
+        contributionRankHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        LinearLayout.LayoutParams contributionRankHintLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        contributionRankHintLp.topMargin = dp(6);
+        contributionRankHint.setLayoutParams(contributionRankHintLp);
+        container.addView(contributionRankHint);
+
+        TextView charmRankTitle = new TextView(this);
+        charmRankTitle.setText("魅力榜列表组循环点击次数");
+        charmRankTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        LinearLayout.LayoutParams charmRankTitleLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        charmRankTitleLp.topMargin = dp(20);
+        charmRankTitle.setLayoutParams(charmRankTitleLp);
+        container.addView(charmRankTitle);
+
+        LinearLayout charmRankRow = new LinearLayout(this);
+        charmRankRow.setOrientation(LinearLayout.HORIZONTAL);
+        charmRankRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams charmRankRowLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        charmRankRowLp.topMargin = dp(8);
+        charmRankRow.setLayoutParams(charmRankRowLp);
+        container.addView(charmRankRow);
+
+        final EditText charmRankInput = new EditText(this);
+        charmRankInput.setSingleLine(true);
+        charmRankInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        charmRankInput.setHint(String.valueOf(ModuleSettings.DEFAULT_CHARM_RANK_LOOP_COUNT));
+        charmRankInput.setText(String.valueOf(ModuleSettings.getCharmRankLoopCount(prefs)));
+        LinearLayout.LayoutParams charmRankInputLp = new LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        charmRankInputLp.weight = 1f;
+        charmRankInput.setLayoutParams(charmRankInputLp);
+        charmRankRow.addView(charmRankInput);
+
+        Button charmRankSaveBtn = new Button(this);
+        charmRankSaveBtn.setText("保存");
+        LinearLayout.LayoutParams charmRankSaveLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        charmRankSaveLp.leftMargin = dp(10);
+        charmRankSaveBtn.setLayoutParams(charmRankSaveLp);
+        charmRankSaveBtn.setOnClickListener(v -> {
+            String raw = String.valueOf(charmRankInput.getText()).trim();
+            int count;
+            if (TextUtils.isEmpty(raw)) {
+                count = ModuleSettings.DEFAULT_CHARM_RANK_LOOP_COUNT;
+            } else {
+                try {
+                    count = Integer.parseInt(raw);
+                } catch (Throwable e) {
+                    Toast.makeText(
+                            ModuleSettingsActivity.this,
+                            "请输入非负整数",
+                            Toast.LENGTH_SHORT
+                    ).show();
+                    return;
+                }
+            }
+            if (count < 0) {
+                Toast.makeText(
+                        ModuleSettingsActivity.this,
+                        "请输入非负整数",
+                        Toast.LENGTH_SHORT
+                ).show();
+                return;
+            }
+            ModuleSettings.setCharmRankLoopCount(ModuleSettingsActivity.this, count);
+            charmRankInput.setText(String.valueOf(count));
+            Toast.makeText(
+                    ModuleSettingsActivity.this,
+                    "已设置魅力榜循环点击次数为 " + count,
+                    Toast.LENGTH_SHORT
+            ).show();
+        });
+        charmRankRow.addView(charmRankSaveBtn);
+
+        TextView charmRankHint = new TextView(this);
+        charmRankHint.setText("按用户排名从 1 开始采集，默认 20。目标排名不存在时会尝试上滑继续采集。");
+        charmRankHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        LinearLayout.LayoutParams charmRankHintLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        charmRankHintLp.topMargin = dp(6);
+        charmRankHint.setLayoutParams(charmRankHintLp);
+        container.addView(charmRankHint);
+
+        final Switch collectUserDetailSwitch = new Switch(this);
+        collectUserDetailSwitch.setText("采集用户详细界面");
+        collectUserDetailSwitch.setChecked(ModuleSettings.getCollectUserDetailEnabled(prefs));
+        LinearLayout.LayoutParams collectUserDetailLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        collectUserDetailLp.topMargin = dp(20);
+        collectUserDetailSwitch.setLayoutParams(collectUserDetailLp);
+        collectUserDetailSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                ModuleSettings.setCollectUserDetailEnabled(ModuleSettingsActivity.this, isChecked);
+                Toast.makeText(
+                        ModuleSettingsActivity.this,
+                        isChecked ? "已开启采集用户详细界面" : "已关闭采集用户详细界面",
+                        Toast.LENGTH_SHORT
+                ).show();
+            }
+        });
+        container.addView(collectUserDetailSwitch);
+
+        TextView collectUserDetailHint = new TextView(this);
+        collectUserDetailHint.setText("开启：点击用户进入详情采集ID/IP/消费等；关闭：仅采集榜单列表可见数据，不进入详情。");
+        collectUserDetailHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        LinearLayout.LayoutParams collectUserDetailHintLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        collectUserDetailHintLp.topMargin = dp(6);
+        collectUserDetailHint.setLayoutParams(collectUserDetailHintLp);
+        container.addView(collectUserDetailHint);
+
         setContentView(scrollView);
 
         if (ModuleSettings.getGlobalFloatButtonEnabled(prefs)) {

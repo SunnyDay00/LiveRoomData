@@ -32,9 +32,19 @@ final class LiveRoomTaskScriptRunner {
     private LiveRoomTaskScriptRunner() {
     }
 
-    static long runLiveRoomEnterTask(final Activity activity, TaskFinishListener listener) {
+    static long runLiveRoomEnterTask(
+            final Activity activity,
+            String homeId,
+            long enterTimeMs,
+            TaskFinishListener listener
+    ) {
         final long startedAt = System.currentTimeMillis();
-        final TaskContext taskContext = new TaskContext(startedAt, listener);
+        final TaskContext taskContext = new TaskContext(
+                startedAt,
+                safeTrim(homeId),
+                Math.max(0L, enterTimeMs),
+                listener
+        );
         long configuredWaitMs = Math.max(0L, UiComponentConfig.LIVE_ROOM_ENTER_TASK_WAIT_MS);
         long flowWaitMs = Math.max(configuredWaitMs, UiComponentConfig.LIVE_ROOM_TASK_MIN_RETURN_DELAY_MS);
         String taskName = UiComponentConfig.LIVE_ROOM_ENTER_TASK_NAME;
@@ -73,6 +83,11 @@ final class LiveRoomTaskScriptRunner {
         }
         PanelState panelState = resolvePanelState();
         if (isPanelReady(panelState)) {
+            log(
+                    activity,
+                    "task=live_room_enter_task vflipper panel detect: opened=true "
+                            + "detail=" + buildPanelMatchDetail(panelState)
+            );
             startRankSequence(activity, taskContext, panelState);
             return;
         }
@@ -81,6 +96,10 @@ final class LiveRoomTaskScriptRunner {
             scheduleFindRetry(activity, taskContext, startedAt, findAttempt, "vflipper_missing");
             return;
         }
+        log(
+                activity,
+                "task=live_room_enter_task click vflipper start, attempt=" + findAttempt
+        );
         ClickResult clickResult = clickWithParentFallbackDetailed(activity, vflipperNode, "vflipper");
         if (!clickResult.success) {
             scheduleFindRetry(activity, taskContext, startedAt, findAttempt, "vflipper_click_failed");
@@ -183,7 +202,21 @@ final class LiveRoomTaskScriptRunner {
                     "task=live_room_enter_task panel detect block inactive, continue panel check"
             );
         }
+        if (panelRetryIndex == 1 || panelRetryIndex % 4 == 0) {
+            log(
+                    activity,
+                    "task=live_room_enter_task vflipper panel detect: opened="
+                            + isPanelReady(panelState)
+                            + " retry=" + panelRetryIndex + "/" + maxRetry
+                            + " detail=" + buildPanelMatchDetail(panelState)
+            );
+        }
         if (isPanelReady(panelState)) {
+            log(
+                    activity,
+                    "task=live_room_enter_task vflipper panel detect: opened=true "
+                            + "detail=" + buildPanelMatchDetail(panelState)
+            );
             maybeDumpViewTree(activity, root, "panel_ready_before_rank_sequence");
             startRankSequence(activity, taskContext, panelState);
             return;
@@ -262,59 +295,556 @@ final class LiveRoomTaskScriptRunner {
                 "task=live_room_enter_task panel entered, markerCount="
                         + markerCount + " primaryCount=" + primaryCount
         );
-        clickRankTab(
-                activity,
-                ModuleSettings.A11Y_PANEL_CLICK_TARGET_CONTRIBUTION,
-                "贡献榜"
-        );
-        boolean posted = postOnUi(
-                activity,
-                new Runnable() {
-                    @Override
-                    public void run() {
-                        clickCharmAndClosePanel(activity, taskContext);
-                    }
-                },
-                UiComponentConfig.LIVE_ROOM_TASK_CONTRIBUTION_WAIT_MS
-        );
-        if (!posted) {
-            finishTask(activity, taskContext, "post_click_charm_failed");
-        }
-    }
-
-    private static void clickCharmAndClosePanel(final Activity activity, final TaskContext taskContext) {
-        if (!isTaskExecutionAllowed(activity)) {
-            return;
-        }
-        PanelState panelState = resolvePanelState();
-        if (!isPanelReady(panelState)) {
-            int markerCount = panelState == null ? 0 : panelState.markerCount;
-            int primaryCount = panelState == null ? 0 : panelState.primaryCount;
-            log(
-                    activity,
-                    "task=live_room_enter_task skip charm click: panel markers insufficient "
-                            + "markerCount=" + markerCount + " primaryCount=" + primaryCount
-            );
+        if (isCharmCollected(taskContext)) {
             requestClosePanel(activity, taskContext, 0);
             return;
         }
-        clickRankTab(
+        if (isContributionCollected(taskContext)) {
+            clickCharmAndCollect(activity, taskContext);
+            return;
+        }
+        clickRankThenCollectWithRetry(
                 activity,
+                taskContext,
+                ModuleSettings.A11Y_PANEL_CLICK_TARGET_CONTRIBUTION,
+                ModuleSettings.A11Y_RANK_COLLECT_TYPE_CONTRIBUTION,
+                "贡献榜",
+                ModuleSettings.getContributionRankLoopCount(),
+                1,
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        markContributionCollected(taskContext);
+                        clickCharmAndCollect(activity, taskContext);
+                    }
+                }
+        );
+    }
+
+    private static void clickCharmAndCollect(final Activity activity, final TaskContext taskContext) {
+        if (!isTaskExecutionAllowed(activity)) {
+            return;
+        }
+        clickRankThenCollectWithRetry(
+                activity,
+                taskContext,
                 ModuleSettings.A11Y_PANEL_CLICK_TARGET_CHARM,
-                "魅力榜"
+                ModuleSettings.A11Y_RANK_COLLECT_TYPE_CHARM,
+                "魅力榜",
+                ModuleSettings.getCharmRankLoopCount(),
+                1,
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        markCharmCollected(taskContext);
+                        requestClosePanel(activity, taskContext, 0);
+                    }
+                }
+        );
+    }
+
+    private static void clickRankThenCollectWithRetry(
+            final Activity activity,
+            final TaskContext taskContext,
+            final String rankClickTarget,
+            final String rankType,
+            final String rankName,
+            final int targetCount,
+            final int clickRetryIndex,
+            final Runnable onDone
+    ) {
+        if (!isTaskExecutionAllowed(activity)) {
+            return;
+        }
+        requestRankTabClickAsync(
+                activity,
+                rankClickTarget,
+                rankName,
+                new RankTabClickCallback() {
+                    @Override
+                    public void onResult(boolean clicked) {
+                        if (!isTaskExecutionAllowed(activity)) {
+                            return;
+                        }
+                        if (!clicked) {
+                            int maxRetry = Math.max(
+                                    1,
+                                    UiComponentConfig.LIVE_ROOM_TASK_RANK_TAB_CLICK_MAX_RETRY
+                            );
+                            if (clickRetryIndex <= 2 || clickRetryIndex % 3 == 0) {
+                                log(
+                                        activity,
+                                        "task=live_room_enter_task rank click retry scheduled: "
+                                                + safeTrim(rankName)
+                                                + " retry=" + clickRetryIndex + "/" + maxRetry
+                                );
+                            }
+                            if (clickRetryIndex >= maxRetry) {
+                                final PanelState panelState = resolvePanelState();
+                                final boolean panelReady = isPanelReady(panelState);
+                                log(
+                                        activity,
+                                        "task=live_room_enter_task rank click retry threshold reached: "
+                                                + safeTrim(rankName)
+                                                + " retry=" + clickRetryIndex + "/" + maxRetry
+                                                + " panelReady=" + panelReady
+                                                + " snapshot=" + buildPanelMatchDetail(panelState)
+                                );
+                                if (panelReady) {
+                                    postStartRankCollect(
+                                            activity,
+                                            taskContext,
+                                            rankType,
+                                            rankName,
+                                            targetCount,
+                                            onDone
+                                    );
+                                } else {
+                                    scheduleFindVFlipperAndRun(
+                                            activity,
+                                            taskContext,
+                                            taskContext.startedAt,
+                                            1
+                                    );
+                                }
+                                return;
+                            }
+                            final int nextRetry = clickRetryIndex + 1;
+                            boolean retryPosted = postOnUi(
+                                    activity,
+                                    new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            clickRankThenCollectWithRetry(
+                                                    activity,
+                                                    taskContext,
+                                                    rankClickTarget,
+                                                    rankType,
+                                                    rankName,
+                                                    targetCount,
+                                                    nextRetry,
+                                                    onDone
+                                            );
+                                        }
+                                    },
+                                    UiComponentConfig.LIVE_ROOM_TASK_RANK_TAB_CLICK_RETRY_INTERVAL_MS
+                            );
+                            if (!retryPosted) {
+                                finishTask(activity, taskContext, "post_rank_tab_click_retry_failed");
+                            }
+                            return;
+                        }
+                        postStartRankCollect(
+                                activity,
+                                taskContext,
+                                rankType,
+                                rankName,
+                                targetCount,
+                                onDone
+                        );
+                    }
+                }
+        );
+    }
+
+    private interface RankTabClickCallback {
+        void onResult(boolean clicked);
+    }
+
+    private static void requestRankTabClickAsync(
+            final Activity activity,
+            final String rankClickTarget,
+            final String rankName,
+            final RankTabClickCallback callback
+    ) {
+        if (callback == null) {
+            return;
+        }
+        final Thread worker = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final boolean clicked = clickRankTab(activity, rankClickTarget, rankName);
+                boolean posted = postOnUi(
+                        activity,
+                        new Runnable() {
+                            @Override
+                            public void run() {
+                                callback.onResult(clicked);
+                            }
+                        },
+                        0L
+                );
+                if (!posted) {
+                    callback.onResult(clicked);
+                }
+            }
+        }, "look_rank_tab_click_worker");
+        try {
+            worker.start();
+        } catch (Throwable e) {
+            log(activity, "task=live_room_enter_task rank click worker start failed: " + e);
+            callback.onResult(false);
+        }
+    }
+
+    private static void postStartRankCollect(
+            final Activity activity,
+            final TaskContext taskContext,
+            final String rankType,
+            final String rankName,
+            final int targetCount,
+            final Runnable onDone
+    ) {
+        boolean posted = postOnUi(
+                activity,
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        startRankCollect(
+                                activity,
+                                taskContext,
+                                rankType,
+                                rankName,
+                                targetCount,
+                                onDone
+                        );
+                    }
+                },
+                UiComponentConfig.LIVE_ROOM_TASK_RANK_COLLECT_START_DELAY_MS
+        );
+        if (!posted) {
+            log(
+                    activity,
+                    "task=live_room_enter_task start rank collect post failed: "
+                            + safeTrim(rankName)
+            );
+            finishTask(activity, taskContext, "post_start_rank_collect_failed");
+        }
+    }
+
+    private static void startRankCollect(
+            final Activity activity,
+            final TaskContext taskContext,
+            final String rankType,
+            final String rankName,
+            final int targetCount,
+            final Runnable onDone
+    ) {
+        startRankCollect(
+                activity,
+                taskContext,
+                rankType,
+                rankName,
+                targetCount,
+                onDone,
+                1
+        );
+    }
+
+    private static void startRankCollect(
+            final Activity activity,
+            final TaskContext taskContext,
+            final String rankType,
+            final String rankName,
+            final int targetCount,
+            final Runnable onDone,
+            final int dispatchRound
+    ) {
+        if (!isTaskExecutionAllowed(activity)) {
+            return;
+        }
+        final int safeTargetCount = Math.max(0, targetCount);
+        if (safeTargetCount <= 0) {
+            log(
+                    activity,
+                    "task=live_room_enter_task rank collect skip: " + safeTrim(rankName)
+                            + " targetCount=0"
+            );
+            runNextStep(onDone);
+            return;
+        }
+        long requestId = LookHookEntry.dispatchA11yRankCollectRequestForTaskRunner(
+                activity,
+                rankType,
+                taskContext.homeId,
+                taskContext.enterTimeMs,
+                safeTargetCount
+        );
+        if (requestId <= 0L) {
+            log(
+                    activity,
+                    "task=live_room_enter_task rank collect dispatch failed: "
+                            + safeTrim(rankName)
+                            + " dispatchRound=" + dispatchRound
+                            + " targetCount=" + safeTargetCount
+            );
+            scheduleRankCollectRedispatch(
+                    activity,
+                    taskContext,
+                    rankType,
+                    rankName,
+                    safeTargetCount,
+                    dispatchRound + 1,
+                    onDone,
+                    "dispatch_failed"
+            );
+            return;
+        }
+        log(
+                activity,
+                "task=live_room_enter_task rank collect dispatched: "
+                        + safeTrim(rankName)
+                        + " dispatchRound=" + dispatchRound
+                        + " requestId=" + requestId
+                        + " targetCount=" + safeTargetCount
+                        + " homeId=" + safeTrim(taskContext.homeId)
+                        + " enterAt=" + taskContext.enterTimeMs
+        );
+        waitRankCollectResult(
+                activity,
+                taskContext,
+                requestId,
+                rankType,
+                rankName,
+                safeTargetCount,
+                SystemClock.uptimeMillis(),
+                1,
+                dispatchRound,
+                onDone
+        );
+    }
+
+    private static void waitRankCollectResult(
+            final Activity activity,
+            final TaskContext taskContext,
+            final long requestId,
+            final String rankType,
+            final String rankName,
+            final int targetCount,
+            final long waitStartedAt,
+            final int pollIndex,
+            final int dispatchRound,
+            final Runnable onDone
+    ) {
+        if (!isTaskExecutionAllowed(activity)) {
+            return;
+        }
+        LookHookEntry.A11yRankCollectResult result =
+                LookHookEntry.consumeA11yRankCollectResultForTaskRunner(requestId);
+        if (result != null) {
+            log(
+                    activity,
+                    "task=live_room_enter_task rank collect result: "
+                            + safeTrim(rankName)
+                            + " dispatchRound=" + dispatchRound
+                            + " success=" + result.success
+                            + " count=" + result.count
+                            + " maxRank=" + result.maxRank
+                            + " targetCount=" + targetCount
+                            + " detail=" + safeTrim(result.detail)
+            );
+            if (result.success) {
+                runNextStep(onDone);
+                return;
+            }
+            String resultDetail = safeTrim(result.detail);
+            if (resultDetail.contains("rank_page_not_ready")) {
+                String rankClickTarget = resolveRankClickTarget(rankType);
+                if (!TextUtils.isEmpty(rankClickTarget)) {
+                    log(
+                            activity,
+                            "task=live_room_enter_task rank collect page_not_ready, reclick tab: "
+                                    + safeTrim(rankName)
+                                    + " dispatchRound=" + dispatchRound
+                                    + " detail=" + resultDetail
+                    );
+                    clickRankThenCollectWithRetry(
+                            activity,
+                            taskContext,
+                            rankClickTarget,
+                            rankType,
+                            rankName,
+                            targetCount,
+                            1,
+                            onDone
+                    );
+                    return;
+                }
+            }
+            scheduleRankCollectRedispatch(
+                    activity,
+                    taskContext,
+                    rankType,
+                    rankName,
+                    targetCount,
+                    dispatchRound + 1,
+                    onDone,
+                    "result_failed"
+            );
+            return;
+        }
+        long elapsed = Math.max(0L, SystemClock.uptimeMillis() - waitStartedAt);
+        long timeoutMs = Math.max(
+                UiComponentConfig.LIVE_ROOM_TASK_RANK_COLLECT_RESULT_POLL_INTERVAL_MS,
+                UiComponentConfig.LIVE_ROOM_TASK_RANK_COLLECT_RESULT_TIMEOUT_MS
+        );
+        if (elapsed >= timeoutMs) {
+            log(
+                    activity,
+                    "task=live_room_enter_task rank collect timeout: "
+                            + safeTrim(rankName)
+                            + " dispatchRound=" + dispatchRound
+                            + " requestId=" + requestId
+                            + " elapsed=" + elapsed + "ms"
+                            + " targetCount=" + targetCount
+            );
+            scheduleRankCollectRedispatch(
+                    activity,
+                    taskContext,
+                    rankType,
+                    rankName,
+                    targetCount,
+                    dispatchRound + 1,
+                    onDone,
+                    "result_timeout"
+            );
+            return;
+        }
+        if (pollIndex <= 2 || pollIndex % 10 == 0) {
+            log(
+                    activity,
+                    "task=live_room_enter_task rank collect waiting: "
+                            + safeTrim(rankName)
+                            + " dispatchRound=" + dispatchRound
+                            + " requestId=" + requestId
+                            + " poll=" + pollIndex
+                            + " elapsed=" + elapsed + "ms"
+            );
+        }
+        boolean posted = postOnUi(
+                activity,
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        waitRankCollectResult(
+                                activity,
+                                taskContext,
+                                requestId,
+                                rankType,
+                                rankName,
+                                targetCount,
+                                waitStartedAt,
+                                pollIndex + 1,
+                                dispatchRound,
+                                onDone
+                        );
+                    }
+                },
+                UiComponentConfig.LIVE_ROOM_TASK_RANK_COLLECT_RESULT_POLL_INTERVAL_MS
+        );
+        if (!posted) {
+            finishTask(activity, taskContext, "post_wait_rank_collect_result_failed");
+        }
+    }
+
+    private static void scheduleRankCollectRedispatch(
+            final Activity activity,
+            final TaskContext taskContext,
+            final String rankType,
+            final String rankName,
+            final int targetCount,
+            final int nextDispatchRound,
+            final Runnable onDone,
+            final String reason
+    ) {
+        if (!isTaskExecutionAllowed(activity)) {
+            return;
+        }
+        log(
+                activity,
+                "task=live_room_enter_task rank collect redispatch: "
+                        + safeTrim(rankName)
+                        + " nextRound=" + nextDispatchRound
+                        + " reason=" + safeTrim(reason)
+                        + " targetCount=" + targetCount
         );
         boolean posted = postOnUi(
                 activity,
                 new Runnable() {
                     @Override
                     public void run() {
-                        requestClosePanel(activity, taskContext, 0);
+                        startRankCollect(
+                                activity,
+                                taskContext,
+                                rankType,
+                                rankName,
+                                targetCount,
+                                onDone,
+                                nextDispatchRound
+                        );
                     }
                 },
-                UiComponentConfig.LIVE_ROOM_TASK_CHARM_WAIT_MS
+                UiComponentConfig.LIVE_ROOM_TASK_RANK_COLLECT_REDISPATCH_DELAY_MS
         );
         if (!posted) {
-            finishTask(activity, taskContext, "post_request_panel_close_failed");
+            finishTask(activity, taskContext, "post_rank_collect_redispatch_failed");
+        }
+    }
+
+    private static String resolveRankClickTarget(String rankType) {
+        String type = safeTrim(rankType);
+        if (ModuleSettings.A11Y_RANK_COLLECT_TYPE_CONTRIBUTION.equals(type)) {
+            return ModuleSettings.A11Y_PANEL_CLICK_TARGET_CONTRIBUTION;
+        }
+        if (ModuleSettings.A11Y_RANK_COLLECT_TYPE_CHARM.equals(type)) {
+            return ModuleSettings.A11Y_PANEL_CLICK_TARGET_CHARM;
+        }
+        return "";
+    }
+
+    private static void runNextStep(Runnable onDone) {
+        if (onDone == null) {
+            return;
+        }
+        try {
+            onDone.run();
+        } catch (Throwable ignore) {
+        }
+    }
+
+    private static boolean isContributionCollected(TaskContext taskContext) {
+        if (taskContext == null) {
+            return false;
+        }
+        synchronized (taskContext.lock) {
+            return taskContext.contributionCollected;
+        }
+    }
+
+    private static boolean isCharmCollected(TaskContext taskContext) {
+        if (taskContext == null) {
+            return false;
+        }
+        synchronized (taskContext.lock) {
+            return taskContext.charmCollected;
+        }
+    }
+
+    private static void markContributionCollected(TaskContext taskContext) {
+        if (taskContext == null) {
+            return;
+        }
+        synchronized (taskContext.lock) {
+            taskContext.contributionCollected = true;
+        }
+    }
+
+    private static void markCharmCollected(TaskContext taskContext) {
+        if (taskContext == null) {
+            return;
+        }
+        synchronized (taskContext.lock) {
+            taskContext.charmCollected = true;
         }
     }
 
@@ -461,13 +991,13 @@ final class LiveRoomTaskScriptRunner {
         }
     }
 
-    private static void clickRankTab(
+    private static boolean clickRankTab(
             Activity activity,
             String rankTarget,
             String rankName
     ) {
         if (!isTaskExecutionAllowed(activity) || TextUtils.isEmpty(rankTarget)) {
-            return;
+            return false;
         }
         LookHookEntry.A11yPanelClickResult clickResult =
                 LookHookEntry.requestA11yPanelClickForTaskRunner(
@@ -481,14 +1011,44 @@ final class LiveRoomTaskScriptRunner {
                     "task=live_room_enter_task rank clicked: " + safeTrim(rankName)
                             + " detail=" + safeTrim(clickResult.detail)
             );
-            return;
+            return true;
         }
         String failedDetail = clickResult == null ? "null_result" : safeTrim(clickResult.detail);
+        if (failedDetail.contains("a11y_click_timeout")) {
+            PanelState panelState = resolvePanelState();
+            if (isPanelReady(panelState) && isRankTargetVisibleInSnapshot(rankTarget, panelState)) {
+                log(
+                        activity,
+                        "task=live_room_enter_task rank click timeout fallback accepted: "
+                                + safeTrim(rankName)
+                                + " snapshot=" + buildPanelMatchDetail(panelState)
+                );
+                return true;
+            }
+        }
         log(
                 activity,
                 "task=live_room_enter_task rank click failed: " + safeTrim(rankName)
                         + " detail=" + failedDetail
         );
+        return false;
+    }
+
+    private static boolean isRankTargetVisibleInSnapshot(String rankTarget, PanelState panelState) {
+        if (panelState == null || TextUtils.isEmpty(rankTarget)) {
+            return false;
+        }
+        String detail = safeTrim(panelState.detail);
+        if (TextUtils.isEmpty(detail)) {
+            return false;
+        }
+        if (ModuleSettings.A11Y_PANEL_CLICK_TARGET_CONTRIBUTION.equals(rankTarget)) {
+            return detail.contains("contribution=true");
+        }
+        if (ModuleSettings.A11Y_PANEL_CLICK_TARGET_CHARM.equals(rankTarget)) {
+            return detail.contains("charm=true");
+        }
+        return false;
     }
 
     private static PanelState resolvePanelState() {
@@ -559,11 +1119,9 @@ final class LiveRoomTaskScriptRunner {
         if (panelState == null || panelState.stale) {
             return false;
         }
-        int markerCount = panelState == null ? 0 : panelState.markerCount;
         int primaryCount = panelState == null ? 0 : panelState.primaryCount;
-        int markerThreshold = Math.max(1, UiComponentConfig.LIVE_ROOM_TASK_PANEL_MARKER_MIN_MATCH_COUNT);
         int primaryThreshold = Math.max(1, UiComponentConfig.LIVE_ROOM_TASK_PANEL_PRIMARY_MIN_MATCH_COUNT);
-        return markerCount >= markerThreshold || primaryCount >= primaryThreshold;
+        return primaryCount >= primaryThreshold;
     }
 
     private static boolean postOnUi(Activity activity, Runnable task, long delayMs) {
@@ -1290,15 +1848,23 @@ final class LiveRoomTaskScriptRunner {
 
     private static final class TaskContext {
         final long startedAt;
+        final String homeId;
+        final long enterTimeMs;
         final TaskFinishListener listener;
         final Object lock;
         boolean finished;
+        boolean contributionCollected;
+        boolean charmCollected;
 
-        TaskContext(long startedAt, TaskFinishListener listener) {
+        TaskContext(long startedAt, String homeId, long enterTimeMs, TaskFinishListener listener) {
             this.startedAt = Math.max(0L, startedAt);
+            this.homeId = safeTrim(homeId);
+            this.enterTimeMs = Math.max(0L, enterTimeMs);
             this.listener = listener;
             this.lock = new Object();
             this.finished = false;
+            this.contributionCollected = false;
+            this.charmCollected = false;
         }
     }
 
