@@ -23,6 +23,7 @@ final class ModuleSettings {
     static final String KEY_CHARM_RANK_LOOP_COUNT = "charm_rank_loop_count";
     static final String KEY_SINGLE_RANK_RETRY_LIMIT = "single_rank_retry_limit";
     static final String KEY_COLLECT_ALL_RANK_USERS_ENABLED = "collect_all_rank_users_enabled";
+    static final String KEY_COLLECT_ALL_RANK_DATA_LIMIT = "collect_all_rank_data_limit";
     static final String KEY_COLLECT_USER_DETAIL_ENABLED = "collect_user_detail_enabled";
     static final String KEY_A11Y_PANEL_MARKER_COUNT = "a11y_panel_marker_count";
     static final String KEY_A11Y_PANEL_PRIMARY_COUNT = "a11y_panel_primary_count";
@@ -104,6 +105,7 @@ final class ModuleSettings {
     static final int DEFAULT_CHARM_RANK_LOOP_COUNT = 20;
     static final int DEFAULT_SINGLE_RANK_RETRY_LIMIT = 3;
     static final boolean DEFAULT_COLLECT_ALL_RANK_USERS_ENABLED = true;
+    static final int DEFAULT_COLLECT_ALL_RANK_DATA_LIMIT = 5000;
     static final boolean DEFAULT_COLLECT_USER_DETAIL_ENABLED = true;
     static final int DEFAULT_A11Y_PANEL_MARKER_COUNT = 0;
     static final int DEFAULT_A11Y_PANEL_PRIMARY_COUNT = 0;
@@ -254,6 +256,16 @@ final class ModuleSettings {
         return xsp.getBoolean(
                 KEY_COLLECT_ALL_RANK_USERS_ENABLED,
                 DEFAULT_COLLECT_ALL_RANK_USERS_ENABLED
+        );
+    }
+
+    static synchronized int getCollectAllRankDataLimit() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return DEFAULT_COLLECT_ALL_RANK_DATA_LIMIT;
+        }
+        return sanitizeNonNegativeInt(
+                xsp.getInt(KEY_COLLECT_ALL_RANK_DATA_LIMIT, DEFAULT_COLLECT_ALL_RANK_DATA_LIMIT)
         );
     }
 
@@ -478,6 +490,15 @@ final class ModuleSettings {
         );
     }
 
+    static synchronized int getCollectAllRankDataLimit(SharedPreferences prefs) {
+        if (prefs == null) {
+            return DEFAULT_COLLECT_ALL_RANK_DATA_LIMIT;
+        }
+        return sanitizeNonNegativeInt(
+                prefs.getInt(KEY_COLLECT_ALL_RANK_DATA_LIMIT, DEFAULT_COLLECT_ALL_RANK_DATA_LIMIT)
+        );
+    }
+
     static synchronized boolean getCollectUserDetailEnabled(SharedPreferences prefs) {
         if (prefs == null) {
             return DEFAULT_COLLECT_USER_DETAIL_ENABLED;
@@ -647,6 +668,16 @@ final class ModuleSettings {
         }
         SharedPreferences prefs = appPrefs(context);
         prefs.edit().putBoolean(KEY_COLLECT_ALL_RANK_USERS_ENABLED, enabled).commit();
+        ensurePrefsReadable(context);
+    }
+
+    static synchronized void setCollectAllRankDataLimit(Context context, int limit) {
+        if (context == null) {
+            return;
+        }
+        int safeValue = sanitizeNonNegativeInt(limit);
+        SharedPreferences prefs = appPrefs(context);
+        prefs.edit().putInt(KEY_COLLECT_ALL_RANK_DATA_LIMIT, safeValue).commit();
         ensurePrefsReadable(context);
     }
 
@@ -886,6 +917,12 @@ final class ModuleSettings {
             editor.putBoolean(
                     KEY_COLLECT_ALL_RANK_USERS_ENABLED,
                     DEFAULT_COLLECT_ALL_RANK_USERS_ENABLED
+            );
+        }
+        if (!prefs.contains(KEY_COLLECT_ALL_RANK_DATA_LIMIT)) {
+            editor.putInt(
+                    KEY_COLLECT_ALL_RANK_DATA_LIMIT,
+                    DEFAULT_COLLECT_ALL_RANK_DATA_LIMIT
             );
         }
         if (!prefs.contains(KEY_COLLECT_USER_DETAIL_ENABLED)) {

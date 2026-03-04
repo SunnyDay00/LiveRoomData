@@ -49,6 +49,8 @@ public class LookAccessibilityAdService extends AccessibilityService {
     private static final int SHIZUKU_PERMISSION_REQUEST_CODE = 1201;
     private static final Pattern RANK_VALUE_LEADING_DIGITS_PATTERN =
             Pattern.compile("^(\\d{1,4})\\D*$");
+    private static final Pattern RANK_DATA_NUMERIC_PATTERN =
+            Pattern.compile("^(\\d+(?:\\.\\d+)?)([万亿wW]?)$");
 
     private Handler handler;
     private AccessibilityCustomRulesAdEngine adEngine;
@@ -393,6 +395,9 @@ public class LookAccessibilityAdService extends AccessibilityService {
         boolean collectAllRankUsers = ModuleSettings.getCollectAllRankUsersEnabled(
                 ModuleSettings.appPrefs(this)
         );
+        int collectAllRankDataLimit = ModuleSettings.getCollectAllRankDataLimit(
+                ModuleSettings.appPrefs(this)
+        );
         int safeTargetCount = Math.max(0, targetCount);
         if (!collectAllRankUsers && safeTargetCount <= 0) {
             return new RankCollectSummary(
@@ -420,6 +425,7 @@ public class LookAccessibilityAdService extends AccessibilityService {
                 + " type=" + type
                 + " targetCount=" + (collectAllRankUsers ? "ALL" : safeTargetCount)
                 + " collectAll=" + collectAllRankUsers
+                + " dataLimit=" + (collectAllRankUsers ? collectAllRankDataLimit : 0)
                 + " homeId=" + homeId
                 + " enterTime=" + enterTimeMs
                 + " csv=" + safeTrim(csvPath));
@@ -428,7 +434,8 @@ public class LookAccessibilityAdService extends AccessibilityService {
                 homeId,
                 enterTimeMs,
                 safeTargetCount,
-                collectAllRankUsers
+                collectAllRankUsers,
+                collectAllRankDataLimit
         );
         String detail = safeTrim(summary.detail);
         if (TextUtils.isEmpty(detail)) {
@@ -445,9 +452,13 @@ public class LookAccessibilityAdService extends AccessibilityService {
             String homeId,
             long enterTimeMs,
             int targetCount,
-            boolean collectAllRankUsers
+            boolean collectAllRankUsers,
+            int collectAllRankDataLimit
     ) {
         int safeTargetCount = Math.max(0, targetCount);
+        int safeCollectAllDataLimit = collectAllRankUsers
+                ? Math.max(0, collectAllRankDataLimit)
+                : 0;
         if (!collectAllRankUsers && safeTargetCount <= 0) {
             return new RankCollectSummary(true, "target_count_zero", 0, 0);
         }
@@ -463,6 +474,7 @@ public class LookAccessibilityAdService extends AccessibilityService {
         boolean rankPageOpenedLogged = false;
         boolean pendingNoProgressConfirm = false;
         boolean stoppedByNoProgressLimit = false;
+        boolean stoppedByDataLimit = false;
         boolean collectDetailEnabled = ModuleSettings.getCollectUserDetailEnabled(
                 ModuleSettings.appPrefs(this)
         );
@@ -532,8 +544,31 @@ public class LookAccessibilityAdService extends AccessibilityService {
                 safeRecycle(root);
             }
             highestObservedRank = Math.max(highestObservedRank, scanResult.maxRank);
+            if (collectAllRankUsers && safeCollectAllDataLimit > 0) {
+                RankRowData limitCheckRow = findVisibleRowByRank(scanResult.visibleRows, nextRank);
+                if (limitCheckRow == null
+                        && scanResult.match != null
+                        && scanResult.match.row != null
+                        && scanResult.match.row.rank == nextRank) {
+                    limitCheckRow = scanResult.match.row;
+                }
+                if (limitCheckRow != null) {
+                    long normalizedDataValue = parseRankDataToComparableValue(limitCheckRow.dataValue);
+                    if (normalizedDataValue >= 0L && normalizedDataValue < safeCollectAllDataLimit) {
+                        stoppedByDataLimit = true;
+                        log("榜单采集达到数值限制，停止采集: type=" + safeTrim(rankType)
+                                + " rank=" + limitCheckRow.rank
+                                + " dataRaw=" + safeTrim(limitCheckRow.dataValue)
+                                + " dataValue=" + normalizedDataValue
+                                + " limit=" + safeCollectAllDataLimit);
+                        break;
+                    }
+                }
+            }
             if (!collectDetailEnabled && collectAllRankUsers) {
                 int pageCollected = 0;
+                boolean stopByDataLimitThisPage = false;
+                int expectedVisibleRank = Math.max(1, nextRank);
                 DetailCollectData listModeDetail = new DetailCollectData(false, "", "", "", "");
                 for (RankRowData visibleRow : scanResult.visibleRows) {
                     if (visibleRow == null || visibleRow.rank <= 0) {
@@ -541,6 +576,27 @@ public class LookAccessibilityAdService extends AccessibilityService {
                     }
                     if (doneRanks.contains(visibleRow.rank)) {
                         continue;
+                    }
+                    if (safeCollectAllDataLimit > 0) {
+                        if (visibleRow.rank < expectedVisibleRank) {
+                            continue;
+                        }
+                        if (visibleRow.rank > expectedVisibleRank) {
+                            break;
+                        }
+                    }
+                    if (safeCollectAllDataLimit > 0) {
+                        long normalizedDataValue = parseRankDataToComparableValue(visibleRow.dataValue);
+                        if (normalizedDataValue >= 0L && normalizedDataValue < safeCollectAllDataLimit) {
+                            stoppedByDataLimit = true;
+                            stopByDataLimitThisPage = true;
+                            log("榜单采集达到数值限制，停止采集: type=" + safeTrim(rankType)
+                                    + " rank=" + visibleRow.rank
+                                    + " dataRaw=" + safeTrim(visibleRow.dataValue)
+                                    + " dataValue=" + normalizedDataValue
+                                    + " limit=" + safeCollectAllDataLimit);
+                            break;
+                        }
                     }
                     boolean queued = queueRankRow(
                             rankType,
@@ -565,6 +621,12 @@ public class LookAccessibilityAdService extends AccessibilityService {
                             + " data=" + safeTrim(visibleRow.dataValue)
                             + " id="
                             + " detailMode=list");
+                    if (safeCollectAllDataLimit > 0) {
+                        expectedVisibleRank = visibleRow.rank + 1;
+                    }
+                }
+                if (stopByDataLimitThisPage) {
+                    break;
                 }
                 if (pageCollected > 0) {
                     nextRank = resolveNextMissingRank(doneRanks, nextRank);
@@ -596,6 +658,9 @@ public class LookAccessibilityAdService extends AccessibilityService {
                 }
                 if (fallbackRow != null) {
                     int expectedBefore = nextRank;
+                    if (safeCollectAllDataLimit > 0 && fallbackRow.rank > expectedBefore + 1) {
+                        fallbackRow = null;
+                    } else {
                     nextRank = fallbackRow.rank;
                     if (expectedBefore != nextRank) {
                         log("榜单当前页目标排名缺失，改用可见排名重试: type=" + safeTrim(rankType)
@@ -604,6 +669,7 @@ public class LookAccessibilityAdService extends AccessibilityService {
                                 + " scannedMaxRank=" + scanResult.maxRank);
                         continue;
                     }
+                    }
                 }
             }
             int visibleFallbackRank = resolveFirstVisibleUncollectedRank(
@@ -611,6 +677,11 @@ public class LookAccessibilityAdService extends AccessibilityService {
                     doneRanks,
                     collectAllRankUsers ? Integer.MAX_VALUE : safeTargetCount
             );
+            if (collectAllRankUsers
+                    && safeCollectAllDataLimit > 0
+                    && visibleFallbackRank > nextRank + 1) {
+                visibleFallbackRank = 0;
+            }
             if (visibleFallbackRank > 0 && visibleFallbackRank != nextRank) {
                 int expectedBefore = nextRank;
                 nextRank = visibleFallbackRank;
@@ -628,6 +699,19 @@ public class LookAccessibilityAdService extends AccessibilityService {
                     nextRank = resolveNextMissingRank(doneRanks, nextRank);
                     safeRecycle(rowNode);
                     continue;
+                }
+                if (collectAllRankUsers && safeCollectAllDataLimit > 0) {
+                    long normalizedDataValue = parseRankDataToComparableValue(row.dataValue);
+                    if (normalizedDataValue >= 0L && normalizedDataValue < safeCollectAllDataLimit) {
+                        stoppedByDataLimit = true;
+                        safeRecycle(rowNode);
+                        log("榜单采集达到数值限制，停止采集: type=" + safeTrim(rankType)
+                                + " rank=" + row.rank
+                                + " dataRaw=" + safeTrim(row.dataValue)
+                                + " dataValue=" + normalizedDataValue
+                                + " limit=" + safeCollectAllDataLimit);
+                        break;
+                    }
                 }
                 DetailCollectData detailData;
                 if (collectDetailEnabled) {
@@ -890,12 +974,12 @@ public class LookAccessibilityAdService extends AccessibilityService {
                     + " signatureChanged=" + signatureChanged
                     + " confirmPending=" + pendingNoProgressConfirm);
         }
-        if (success && collectedCount <= 0) {
+        if (success && collectedCount <= 0 && !stoppedByDataLimit) {
             success = false;
             failDetail = "rank_no_data_collected";
         }
         boolean countMatched = collectAllRankUsers
-                ? stoppedByNoProgressLimit
+                ? (stoppedByNoProgressLimit || stoppedByDataLimit)
                 : (safeTargetCount <= 0 || collectedCount >= safeTargetCount);
         if (success && !countMatched) {
             if (!collectAllRankUsers && stoppedByNoProgressLimit && collectedCount > 0) {
@@ -906,6 +990,8 @@ public class LookAccessibilityAdService extends AccessibilityService {
                         + " actual=" + collectedCount
                         + " highestObserved=" + highestObservedRank
                         + " limit=" + singleRankRetryLimit);
+            } else if (collectAllRankUsers && stoppedByDataLimit) {
+                countMatched = true;
             } else if (collectAllRankUsers) {
                 success = false;
                 failDetail = "collect_all_not_confirmed_bottom(actual=" + collectedCount
@@ -1578,6 +1664,58 @@ public class LookAccessibilityAdService extends AccessibilityService {
             return row.rank;
         }
         return 0;
+    }
+
+    private RankRowData findVisibleRowByRank(List<RankRowData> visibleRows, int targetRank) {
+        int safeTargetRank = Math.max(1, targetRank);
+        if (visibleRows == null || visibleRows.isEmpty() || safeTargetRank <= 0) {
+            return null;
+        }
+        for (RankRowData row : visibleRows) {
+            if (row == null || row.rank <= 0) {
+                continue;
+            }
+            if (row.rank == safeTargetRank) {
+                return row;
+            }
+        }
+        return null;
+    }
+
+    private long parseRankDataToComparableValue(String rawValue) {
+        String value = safeTrim(rawValue)
+                .replace(",", "")
+                .replace("，", "")
+                .replace(" ", "");
+        if (TextUtils.isEmpty(value)) {
+            return -1L;
+        }
+        Matcher matcher = RANK_DATA_NUMERIC_PATTERN.matcher(value);
+        if (!matcher.matches()) {
+            return -1L;
+        }
+        double number;
+        try {
+            number = Double.parseDouble(safeTrim(matcher.group(1)));
+        } catch (Throwable ignore) {
+            return -1L;
+        }
+        if (Double.isNaN(number) || Double.isInfinite(number) || number < 0d) {
+            return -1L;
+        }
+        String unit = safeTrim(matcher.group(2));
+        double multiplier = 1d;
+        if ("万".equals(unit) || "w".equals(unit) || "W".equals(unit)) {
+            multiplier = 10000d;
+        } else if ("亿".equals(unit)) {
+            multiplier = 100000000d;
+        }
+        double normalized = number * multiplier;
+        if (Double.isNaN(normalized) || Double.isInfinite(normalized)
+                || normalized < 0d || normalized > Long.MAX_VALUE) {
+            return -1L;
+        }
+        return Math.round(normalized);
     }
 
     private String buildVisibleRanksSummary(List<RankRowData> visibleRows) {

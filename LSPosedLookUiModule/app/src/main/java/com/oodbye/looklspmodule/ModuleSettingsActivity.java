@@ -748,6 +748,96 @@ public class ModuleSettingsActivity extends Activity {
         collectAllRankUsersHint.setLayoutParams(collectAllRankUsersHintLp);
         container.addView(collectAllRankUsersHint);
 
+        LinearLayout collectAllDataLimitRow = new LinearLayout(this);
+        collectAllDataLimitRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams collectAllDataLimitRowLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        collectAllDataLimitRowLp.topMargin = dp(10);
+        collectAllDataLimitRow.setLayoutParams(collectAllDataLimitRowLp);
+        container.addView(collectAllDataLimitRow);
+
+        TextView collectAllDataLimitLabel = new TextView(this);
+        collectAllDataLimitLabel.setText("全量采集Data数值限制");
+        collectAllDataLimitLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        LinearLayout.LayoutParams collectAllDataLimitLabelLp = new LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        collectAllDataLimitLabelLp.weight = 1f;
+        collectAllDataLimitLabel.setLayoutParams(collectAllDataLimitLabelLp);
+        collectAllDataLimitRow.addView(collectAllDataLimitLabel);
+
+        final EditText collectAllDataLimitInput = new EditText(this);
+        collectAllDataLimitInput.setSingleLine(true);
+        collectAllDataLimitInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        collectAllDataLimitInput.setHint(String.valueOf(ModuleSettings.DEFAULT_COLLECT_ALL_RANK_DATA_LIMIT));
+        collectAllDataLimitInput.setText(
+                String.valueOf(ModuleSettings.getCollectAllRankDataLimit(prefs))
+        );
+        LinearLayout.LayoutParams collectAllDataLimitInputLp = new LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        collectAllDataLimitInputLp.weight = 1f;
+        collectAllDataLimitInput.setLayoutParams(collectAllDataLimitInputLp);
+        collectAllDataLimitRow.addView(collectAllDataLimitInput);
+
+        Button collectAllDataLimitSaveBtn = new Button(this);
+        collectAllDataLimitSaveBtn.setText("保存");
+        LinearLayout.LayoutParams collectAllDataLimitSaveLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        collectAllDataLimitSaveLp.leftMargin = dp(10);
+        collectAllDataLimitSaveBtn.setLayoutParams(collectAllDataLimitSaveLp);
+        collectAllDataLimitSaveBtn.setOnClickListener(v -> {
+            String raw = String.valueOf(collectAllDataLimitInput.getText()).trim();
+            int limit;
+            if (TextUtils.isEmpty(raw)) {
+                limit = ModuleSettings.DEFAULT_COLLECT_ALL_RANK_DATA_LIMIT;
+            } else {
+                try {
+                    limit = Integer.parseInt(raw);
+                } catch (Throwable e) {
+                    Toast.makeText(
+                            ModuleSettingsActivity.this,
+                            "请输入非负整数，0表示不限制",
+                            Toast.LENGTH_SHORT
+                    ).show();
+                    return;
+                }
+            }
+            if (limit < 0) {
+                Toast.makeText(
+                        ModuleSettingsActivity.this,
+                        "请输入非负整数，0表示不限制",
+                        Toast.LENGTH_SHORT
+                ).show();
+                return;
+            }
+            ModuleSettings.setCollectAllRankDataLimit(ModuleSettingsActivity.this, limit);
+            collectAllDataLimitInput.setText(String.valueOf(limit));
+            Toast.makeText(
+                    ModuleSettingsActivity.this,
+                    "已设置全量采集Data数值限制为 " + limit,
+                    Toast.LENGTH_SHORT
+            ).show();
+        });
+        collectAllDataLimitRow.addView(collectAllDataLimitSaveBtn);
+
+        TextView collectAllDataLimitHint = new TextView(this);
+        collectAllDataLimitHint.setText("仅在“全量采集榜单用户数据”开启时生效。默认 5000，0 表示不限制。会先将 Data 的“万”单位换算后再比较，小于限制值则结束当前榜单采集。");
+        collectAllDataLimitHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        LinearLayout.LayoutParams collectAllDataLimitHintLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        collectAllDataLimitHintLp.topMargin = dp(6);
+        collectAllDataLimitHint.setLayoutParams(collectAllDataLimitHintLp);
+        container.addView(collectAllDataLimitHint);
+
         final Switch collectUserDetailSwitch = new Switch(this);
         collectUserDetailSwitch.setText("采集用户详细界面");
         collectUserDetailSwitch.setChecked(ModuleSettings.getCollectUserDetailEnabled(prefs));
