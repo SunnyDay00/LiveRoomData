@@ -627,6 +627,94 @@ public class ModuleSettingsActivity extends Activity {
         charmRankHint.setLayoutParams(charmRankHintLp);
         container.addView(charmRankHint);
 
+        LinearLayout singleRankRetryRow = new LinearLayout(this);
+        singleRankRetryRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams singleRankRetryRowLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        singleRankRetryRowLp.topMargin = dp(14);
+        singleRankRetryRow.setLayoutParams(singleRankRetryRowLp);
+        container.addView(singleRankRetryRow);
+
+        TextView singleRankRetryLabel = new TextView(this);
+        singleRankRetryLabel.setText("单榜重试上限/超时重试次数");
+        singleRankRetryLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        LinearLayout.LayoutParams singleRankRetryLabelLp = new LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        singleRankRetryLabelLp.weight = 1f;
+        singleRankRetryLabel.setLayoutParams(singleRankRetryLabelLp);
+        singleRankRetryRow.addView(singleRankRetryLabel);
+
+        final EditText singleRankRetryInput = new EditText(this);
+        singleRankRetryInput.setSingleLine(true);
+        singleRankRetryInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        singleRankRetryInput.setHint(String.valueOf(ModuleSettings.DEFAULT_SINGLE_RANK_RETRY_LIMIT));
+        singleRankRetryInput.setText(String.valueOf(ModuleSettings.getSingleRankRetryLimit(prefs)));
+        LinearLayout.LayoutParams singleRankRetryInputLp = new LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        singleRankRetryInputLp.weight = 1f;
+        singleRankRetryInput.setLayoutParams(singleRankRetryInputLp);
+        singleRankRetryRow.addView(singleRankRetryInput);
+
+        Button singleRankRetrySaveBtn = new Button(this);
+        singleRankRetrySaveBtn.setText("保存");
+        LinearLayout.LayoutParams singleRankRetrySaveLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        singleRankRetrySaveLp.leftMargin = dp(10);
+        singleRankRetrySaveBtn.setLayoutParams(singleRankRetrySaveLp);
+        singleRankRetrySaveBtn.setOnClickListener(v -> {
+            String raw = String.valueOf(singleRankRetryInput.getText()).trim();
+            int count;
+            if (TextUtils.isEmpty(raw)) {
+                count = ModuleSettings.DEFAULT_SINGLE_RANK_RETRY_LIMIT;
+            } else {
+                try {
+                    count = Integer.parseInt(raw);
+                } catch (Throwable e) {
+                    Toast.makeText(
+                            ModuleSettingsActivity.this,
+                            "请输入非负整数",
+                            Toast.LENGTH_SHORT
+                    ).show();
+                    return;
+                }
+            }
+            if (count < 0) {
+                Toast.makeText(
+                        ModuleSettingsActivity.this,
+                        "请输入非负整数",
+                        Toast.LENGTH_SHORT
+                ).show();
+                return;
+            }
+            ModuleSettings.setSingleRankRetryLimit(ModuleSettingsActivity.this, count);
+            singleRankRetryInput.setText(String.valueOf(count));
+            Toast.makeText(
+                    ModuleSettingsActivity.this,
+                    "已设置单榜重试上限为 " + count,
+                    Toast.LENGTH_SHORT
+            ).show();
+        });
+        singleRankRetryRow.addView(singleRankRetrySaveBtn);
+
+        TextView singleRankRetryHint = new TextView(this);
+        singleRankRetryHint.setText("默认 3。单榜采集超时/失败达到该次数后停止重派发，避免无限重试。");
+        singleRankRetryHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        LinearLayout.LayoutParams singleRankRetryHintLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        singleRankRetryHintLp.topMargin = dp(6);
+        singleRankRetryHint.setLayoutParams(singleRankRetryHintLp);
+        container.addView(singleRankRetryHint);
+
         final Switch collectUserDetailSwitch = new Switch(this);
         collectUserDetailSwitch.setText("采集用户详细界面");
         collectUserDetailSwitch.setChecked(ModuleSettings.getCollectUserDetailEnabled(prefs));

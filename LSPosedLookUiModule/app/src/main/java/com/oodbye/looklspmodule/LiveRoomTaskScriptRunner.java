@@ -760,12 +760,34 @@ final class LiveRoomTaskScriptRunner {
         if (!isTaskExecutionAllowed(activity)) {
             return;
         }
+        int maxRedispatchRound = Math.max(1, ModuleSettings.getSingleRankRetryLimit());
+        if (nextDispatchRound > maxRedispatchRound) {
+            log(
+                    activity,
+                    "task=live_room_enter_task rank collect redispatch stop: "
+                            + safeTrim(rankName)
+                            + " reason=retry_limit_reached"
+                            + " nextRound=" + nextDispatchRound
+                            + " maxRound=" + maxRedispatchRound
+                            + " lastReason=" + safeTrim(reason)
+                            + " targetCount=" + targetCount
+            );
+            finishTask(
+                    activity,
+                    taskContext,
+                    "rank_collect_retry_limit_reached:"
+                            + safeTrim(rankName)
+                            + "(maxRound=" + maxRedispatchRound + ")"
+            );
+            return;
+        }
         log(
                 activity,
                 "task=live_room_enter_task rank collect redispatch: "
                         + safeTrim(rankName)
                         + " nextRound=" + nextDispatchRound
                         + " reason=" + safeTrim(reason)
+                        + " maxRound=" + maxRedispatchRound
                         + " targetCount=" + targetCount
         );
         boolean posted = postOnUi(

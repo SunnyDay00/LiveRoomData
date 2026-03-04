@@ -534,12 +534,40 @@ public class LookAccessibilityAdService extends AccessibilityService {
                         SystemClock.sleep(UiComponentConfig.LIVE_ROOM_TASK_RANK_DETAIL_READY_RETRY_INTERVAL_MS);
                         continue;
                     }
-                    clickFailedRetry = 0;
                     SystemClock.sleep(UiComponentConfig.LIVE_ROOM_TASK_RANK_DETAIL_WAIT_AFTER_CLICK_MS);
                     detailData = collectDetailData(rankType);
                     if (detailData.enteredDetail) {
                         performGlobalAction(GLOBAL_ACTION_BACK);
                         SystemClock.sleep(UiComponentConfig.LIVE_ROOM_TASK_RANK_BACK_TO_LIST_WAIT_MS);
+                    }
+                    if (!detailData.enteredDetail) {
+                        clickFailedRetry++;
+                        if (clickFailedRetry < 3) {
+                            log("用户详情未就绪，等待重试: type=" + safeTrim(rankType)
+                                    + " rank=" + row.rank
+                                    + " retry=" + clickFailedRetry + "/3");
+                            SystemClock.sleep(
+                                    UiComponentConfig.LIVE_ROOM_TASK_RANK_DETAIL_READY_RETRY_INTERVAL_MS
+                            );
+                            continue;
+                        }
+                        log("用户详情未就绪，重试耗尽后按空值写入: type=" + safeTrim(rankType)
+                                + " rank=" + row.rank);
+                    } else {
+                        clickFailedRetry = 0;
+                    }
+                    boolean detailValid = isDetailDataValid(detailData, rankType);
+                    log("用户详情采集结果: type=" + safeTrim(rankType)
+                            + " rank=" + row.rank
+                            + " enteredDetail=" + detailData.enteredDetail
+                            + " valid=" + detailValid
+                            + " id=" + safeTrim(detailData.userId)
+                            + " ip=" + safeTrim(detailData.ip)
+                            + " consumption=" + safeTrim(detailData.consumption)
+                            + " followers=" + safeTrim(detailData.followers));
+                    if (!detailValid) {
+                        log("用户详情字段全空，按空值写入: type=" + safeTrim(rankType)
+                                + " rank=" + row.rank);
                     }
                 } else {
                     safeRecycle(rowNode);
@@ -741,13 +769,9 @@ public class LookAccessibilityAdService extends AccessibilityService {
                         UiComponentConfig.LIVE_ROOM_TASK_DETAIL_ARTIST_NAME_NODE
                 );
                 String userId = readNodeText(idNode);
-                boolean ready = idNode != null && artistNode != null;
+                boolean hasIdentityMarker = idNode != null || artistNode != null;
                 safeRecycle(idNode);
                 safeRecycle(artistNode);
-                if (!ready) {
-                    SystemClock.sleep(UiComponentConfig.LIVE_ROOM_TASK_RANK_DETAIL_READY_RETRY_INTERVAL_MS);
-                    continue;
-                }
                 String ip = findNumByLabel(
                         root,
                         UiComponentConfig.LIVE_ROOM_TASK_DETAIL_LABEL_IP_REGION
@@ -762,6 +786,15 @@ public class LookAccessibilityAdService extends AccessibilityService {
                             root,
                             UiComponentConfig.LIVE_ROOM_TASK_DETAIL_LABEL_FOLLOWERS
                     );
+                }
+                boolean hasAnyDetailField = !TextUtils.isEmpty(userId)
+                        || !TextUtils.isEmpty(ip)
+                        || !TextUtils.isEmpty(consumption)
+                        || !TextUtils.isEmpty(followers);
+                boolean ready = hasIdentityMarker || hasAnyDetailField;
+                if (!ready) {
+                    SystemClock.sleep(UiComponentConfig.LIVE_ROOM_TASK_RANK_DETAIL_READY_RETRY_INTERVAL_MS);
+                    continue;
                 }
                 DetailCollectData detailData = new DetailCollectData(
                         true,
@@ -796,13 +829,10 @@ public class LookAccessibilityAdService extends AccessibilityService {
         if (detailData == null || !detailData.enteredDetail) {
             return false;
         }
-        if (!TextUtils.isEmpty(detailData.userId)) {
-            return true;
-        }
-        if (!TextUtils.isEmpty(detailData.ip) || !TextUtils.isEmpty(detailData.consumption)) {
-            return true;
-        }
-        return isCharmCollectType(rankType) && !TextUtils.isEmpty(detailData.followers);
+        return !TextUtils.isEmpty(detailData.userId)
+                || !TextUtils.isEmpty(detailData.ip)
+                || !TextUtils.isEmpty(detailData.consumption)
+                || !TextUtils.isEmpty(detailData.followers);
     }
 
     private String findNumByLabel(AccessibilityNodeInfo root, String label) {

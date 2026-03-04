@@ -23,6 +23,12 @@ final class UiComponentConfig {
     static final String LIVE_RANK_CSV_CONTRIBUTION_PREFIX = "look_contribution_rank";
     static final String LIVE_RANK_CSV_CHARM_PREFIX = "look_charm_rank";
     static final String LIVE_RANK_CSV_SUFFIX = ".csv";
+    static final List<String> SHIZUKU_PACKAGE_CANDIDATES = Collections.unmodifiableList(
+            Arrays.asList(
+                    "moe.shizuku.privileged.api",
+                    "rikka.shizuku.app"
+            )
+    );
     static final String MANUAL_VIEW_TREE_EXPORT_DIR = "/sdcard/Android/data/com.oodbye.looklspmodule/files/view_tree_dumps";
     static final String MANUAL_VIEW_TREE_EXPORT_FALLBACK_DIR_NAME = "look_view_tree_dumps";
     static final String MANUAL_VIEW_TREE_EXPORT_FILE_PREFIX = "look_activity_view_tree";

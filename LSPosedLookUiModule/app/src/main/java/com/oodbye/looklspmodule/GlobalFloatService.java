@@ -9,6 +9,7 @@ import android.hardware.display.DisplayManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
@@ -37,6 +38,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import rikka.shizuku.Shizuku;
+
 public class GlobalFloatService extends Service {
     private static final String TAG = "LOOKLspModule";
     private static final String CHANNEL_ID = "look_lsp_float_service";
@@ -44,6 +47,8 @@ public class GlobalFloatService extends Service {
     private static final long DISPLAY_REFRESH_INTERVAL_MS = 2000L;
     private static final long PERMISSION_TOAST_MIN_INTERVAL_MS = 6000L;
     private static final long ACCESSIBILITY_PROMPT_MIN_INTERVAL_MS = 6000L;
+    private static final long RUNTIME_PRECHECK_INTERVAL_MS = 3000L;
+    private static final long RUNTIME_PRECHECK_PROMPT_MIN_INTERVAL_MS = 6000L;
     private static final long CYCLE_NOTICE_SHOW_MS = 6000L;
     private static final int GLOBAL_DISPLAY_ID = 0;
 
@@ -72,6 +77,8 @@ public class GlobalFloatService extends Service {
     private final Map<Integer, ExtraOverlay> extraOverlays = new HashMap<Integer, ExtraOverlay>();
     private long lastPermissionToastAt;
     private long lastAccessibilityPromptAt;
+    private long lastRuntimePrecheckAt;
+    private long lastRuntimePrecheckPromptAt;
     private int preferredDisplayId = -1;
     private int attachedDisplayId = -1;
     private int mirrorAttachedDisplayId = -1;
@@ -210,6 +217,8 @@ public class GlobalFloatService extends Service {
         mirrorOverlayAdded = false;
         lastPermissionToastAt = 0L;
         lastAccessibilityPromptAt = 0L;
+        lastRuntimePrecheckAt = 0L;
+        lastRuntimePrecheckPromptAt = 0L;
         startForegroundInternal();
         refreshOverlayState();
         handler.postDelayed(refreshTask, DISPLAY_REFRESH_INTERVAL_MS);
@@ -329,6 +338,7 @@ public class GlobalFloatService extends Service {
             forceStopForMissingAccessibility("running_guard");
             promptEnableAccessibility(false);
         }
+        ensureRuntimePrecheckGuardWhenRunning();
         ensureOverlay();
         ensureMirrorOverlay();
         ensureExtraOverlays();
@@ -1107,6 +1117,13 @@ public class GlobalFloatService extends Service {
             promptEnableAccessibility(true);
             return;
         }
+        RuntimePrecheckResult precheck = checkRuntimePreconditions(true);
+        if (!precheck.ok) {
+            log("run blocked by runtime precheck: reason=" + precheck.reasonCode);
+            notifyRuntimePrecheckFailure(precheck, false);
+            collapseActionPanel();
+            return;
+        }
         hideCycleLimitFinishedDialog("run_clicked");
         long seq = ModuleSettings.pushEngineCommand(
                 this,
@@ -1865,6 +1882,151 @@ public class GlobalFloatService extends Service {
         log("force stop: missing accessibility permission, reason=" + safeReason(reason));
     }
 
+    private void ensureRuntimePrecheckGuardWhenRunning() {
+        if (prefs == null) {
+            return;
+        }
+        if (ModuleSettings.getEngineStatus(prefs) != ModuleSettings.EngineStatus.RUNNING) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastRuntimePrecheckAt < RUNTIME_PRECHECK_INTERVAL_MS) {
+            return;
+        }
+        lastRuntimePrecheckAt = now;
+        RuntimePrecheckResult result = checkRuntimePreconditions(false);
+        if (result.ok) {
+            return;
+        }
+        notifyRuntimePrecheckFailure(result, true);
+    }
+
+    private RuntimePrecheckResult checkRuntimePreconditions(boolean forRunClick) {
+        if (!isAnyShizukuPackageInstalledCompat()) {
+            return RuntimePrecheckResult.fail(
+                    "shizuku_app_missing",
+                    "未检测到 Shizuku，请先安装 Shizuku"
+            );
+        }
+        if (!isShizukuBinderAliveCompat()) {
+            return RuntimePrecheckResult.fail(
+                    "shizuku_service_unavailable",
+                    "Shizuku ADB 服务不可用，请先启动服务"
+            );
+        }
+        if (!isShizukuPermissionGrantedCompat()) {
+            if (forRunClick) {
+                requestShizukuPermissionQuietly();
+            }
+            return RuntimePrecheckResult.fail(
+                    "shizuku_permission_denied",
+                    "Shizuku 权限未授权，请先授权模块"
+            );
+        }
+        if (!hasRootPermissionCompat()) {
+            return RuntimePrecheckResult.fail(
+                    "root_unavailable",
+                    "未检测到 root 权限，请先授予 root"
+            );
+        }
+        return RuntimePrecheckResult.ok();
+    }
+
+    private void notifyRuntimePrecheckFailure(RuntimePrecheckResult result, boolean forceStopRunning) {
+        if (result == null || result.ok) {
+            return;
+        }
+        if (forceStopRunning) {
+            forceStopForRuntimePrecheck(result.reasonCode);
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastRuntimePrecheckPromptAt < RUNTIME_PRECHECK_PROMPT_MIN_INTERVAL_MS) {
+            return;
+        }
+        lastRuntimePrecheckPromptAt = now;
+        Toast.makeText(this, result.prompt, Toast.LENGTH_LONG).show();
+    }
+
+    private void forceStopForRuntimePrecheck(String reason) {
+        if (prefs == null) {
+            return;
+        }
+        if (ModuleSettings.getEngineStatus(prefs) != ModuleSettings.EngineStatus.RUNNING) {
+            return;
+        }
+        long seq = ModuleSettings.forceStopAndResetRuntime(this);
+        dispatchEngineCommandBroadcast(
+                ModuleSettings.ENGINE_CMD_STOP,
+                ModuleSettings.EngineStatus.STOPPED,
+                seq
+        );
+        hideCycleLimitFinishedDialog("runtime_precheck_" + safeReason(reason));
+        collapseActionPanel();
+        updateMainButtonStatus();
+        updateInfoWindowStatus();
+        updateCycleLimitDialogStatus();
+        log("force stop: runtime precheck failed, reason=" + safeReason(reason));
+    }
+
+    private boolean isAnyShizukuPackageInstalledCompat() {
+        if (UiComponentConfig.SHIZUKU_PACKAGE_CANDIDATES == null
+                || UiComponentConfig.SHIZUKU_PACKAGE_CANDIDATES.isEmpty()) {
+            return false;
+        }
+        for (String pkg : UiComponentConfig.SHIZUKU_PACKAGE_CANDIDATES) {
+            if (isPackageInstalledCompat(pkg)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isPackageInstalledCompat(String packageName) {
+        if (TextUtils.isEmpty(packageName)) {
+            return false;
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                getPackageManager().getPackageInfo(
+                        packageName,
+                        PackageManager.PackageInfoFlags.of(0L)
+                );
+            } else {
+                getPackageManager().getPackageInfo(packageName, 0);
+            }
+            return true;
+        } catch (Throwable ignore) {
+            return false;
+        }
+    }
+
+    private boolean isShizukuBinderAliveCompat() {
+        try {
+            return Shizuku.pingBinder();
+        } catch (Throwable ignore) {
+            return false;
+        }
+    }
+
+    private boolean isShizukuPermissionGrantedCompat() {
+        try {
+            return Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED;
+        } catch (Throwable ignore) {
+            return false;
+        }
+    }
+
+    private void requestShizukuPermissionQuietly() {
+        try {
+            Shizuku.requestPermission(20260303);
+        } catch (Throwable ignore) {
+        }
+    }
+
+    private boolean hasRootPermissionCompat() {
+        return runCommandAsRoot("id");
+    }
+
     private void promptEnableAccessibility(boolean force) {
         long now = System.currentTimeMillis();
         if (!force && now - lastAccessibilityPromptAt < ACCESSIBILITY_PROMPT_MIN_INTERVAL_MS) {
@@ -1909,6 +2071,26 @@ public class GlobalFloatService extends Service {
 
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private static final class RuntimePrecheckResult {
+        final boolean ok;
+        final String reasonCode;
+        final String prompt;
+
+        RuntimePrecheckResult(boolean ok, String reasonCode, String prompt) {
+            this.ok = ok;
+            this.reasonCode = reasonCode == null ? "" : reasonCode.trim();
+            this.prompt = prompt == null ? "" : prompt.trim();
+        }
+
+        static RuntimePrecheckResult ok() {
+            return new RuntimePrecheckResult(true, "", "");
+        }
+
+        static RuntimePrecheckResult fail(String reasonCode, String prompt) {
+            return new RuntimePrecheckResult(false, reasonCode, prompt);
+        }
     }
 
     private void startForegroundInternal() {
