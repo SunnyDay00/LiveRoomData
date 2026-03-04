@@ -2,6 +2,7 @@ package com.oodbye.looklspmodule;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.Rect;
 import android.os.Build;
 import android.os.Handler;
@@ -337,6 +338,7 @@ final class LiveRoomTaskScriptRunner {
                     @Override
                     public void run() {
                         markCharmCollected(taskContext);
+                        triggerAiConsumptionAnalysis(activity, taskContext);
                         requestClosePanel(activity, taskContext, 0);
                     }
                 }
@@ -561,7 +563,7 @@ final class LiveRoomTaskScriptRunner {
                     "task=live_room_enter_task rank collect skip: " + safeTrim(rankName)
                             + " targetCount=0"
             );
-            runNextStep(onDone);
+            runNextStep(activity, onDone);
             return;
         }
         long requestId = LookHookEntry.dispatchA11yRankCollectRequestForTaskRunner(
@@ -634,6 +636,7 @@ final class LiveRoomTaskScriptRunner {
         LookHookEntry.A11yRankCollectResult result =
                 LookHookEntry.consumeA11yRankCollectResultForTaskRunner(requestId);
         if (result != null) {
+            captureRankCsvPath(taskContext, rankType, result.detail, activity);
             log(
                     activity,
                     "task=live_room_enter_task rank collect result: "
@@ -646,7 +649,7 @@ final class LiveRoomTaskScriptRunner {
                             + " detail=" + safeTrim(result.detail)
             );
             if (result.success) {
-                runNextStep(onDone);
+                runNextStep(activity, onDone);
                 return;
             }
             String resultDetail = safeTrim(result.detail);
@@ -826,13 +829,14 @@ final class LiveRoomTaskScriptRunner {
         return "";
     }
 
-    private static void runNextStep(Runnable onDone) {
+    private static void runNextStep(Activity activity, Runnable onDone) {
         if (onDone == null) {
             return;
         }
         try {
             onDone.run();
-        } catch (Throwable ignore) {
+        } catch (Throwable e) {
+            log(activity, "task=live_room_enter_task next step exception: " + safeTrim(String.valueOf(e)));
         }
     }
 
@@ -869,6 +873,111 @@ final class LiveRoomTaskScriptRunner {
         }
         synchronized (taskContext.lock) {
             taskContext.charmCollected = true;
+        }
+    }
+
+    private static void captureRankCsvPath(
+            TaskContext taskContext,
+            String rankType,
+            String detail,
+            Activity activity
+    ) {
+        if (taskContext == null) {
+            return;
+        }
+        String csvPath = extractCsvPathFromResultDetail(detail);
+        if (TextUtils.isEmpty(csvPath)) {
+            return;
+        }
+        synchronized (taskContext.lock) {
+            String type = safeTrim(rankType);
+            if (ModuleSettings.A11Y_RANK_COLLECT_TYPE_CONTRIBUTION.equals(type)) {
+                taskContext.contributionCsvPath = csvPath;
+            } else if (ModuleSettings.A11Y_RANK_COLLECT_TYPE_CHARM.equals(type)) {
+                taskContext.charmCsvPath = csvPath;
+            }
+        }
+        if (activity != null) {
+            log(activity,
+                    "task=live_room_enter_task rank collect csv captured: type="
+                            + safeTrim(rankType)
+                            + " csv=" + csvPath);
+        }
+    }
+
+    private static String extractCsvPathFromResultDetail(String detail) {
+        String value = safeTrim(detail);
+        if (TextUtils.isEmpty(value)) {
+            return "";
+        }
+        String marker = "|csv=";
+        int idx = value.lastIndexOf(marker);
+        if (idx < 0) {
+            return "";
+        }
+        return safeTrim(value.substring(idx + marker.length()));
+    }
+
+    private static void triggerAiConsumptionAnalysis(Activity activity, TaskContext taskContext) {
+        if (taskContext == null || activity == null) {
+            log(activity, "task=live_room_enter_task ai analyze skip: context_invalid");
+            return;
+        }
+        String homeId;
+        long enterTimeMs;
+        String contributionCsv;
+        String charmCsv;
+        synchronized (taskContext.lock) {
+            if (taskContext.aiAnalysisDispatched) {
+                log(activity, "task=live_room_enter_task ai analyze skip: already_dispatched");
+                return;
+            }
+            if (!taskContext.contributionCollected || !taskContext.charmCollected) {
+                log(activity,
+                        "task=live_room_enter_task ai analyze skip: rank_not_ready"
+                                + " contributionCollected=" + taskContext.contributionCollected
+                                + " charmCollected=" + taskContext.charmCollected);
+                return;
+            }
+            contributionCsv = safeTrim(taskContext.contributionCsvPath);
+            charmCsv = safeTrim(taskContext.charmCsvPath);
+            if (TextUtils.isEmpty(contributionCsv) || TextUtils.isEmpty(charmCsv)) {
+                log(activity,
+                        "task=live_room_enter_task ai analyze skip: csv_missing"
+                                + " contributionCsv=" + contributionCsv
+                                + " charmCsv=" + charmCsv);
+                return;
+            }
+            taskContext.aiAnalysisDispatched = true;
+            homeId = safeTrim(taskContext.homeId);
+            enterTimeMs = taskContext.enterTimeMs;
+        }
+        try {
+            Context appContext = activity.getApplicationContext();
+            if (appContext == null) {
+                log(activity, "task=live_room_enter_task ai analyze skip: app_context_null");
+                return;
+            }
+            Intent request = new Intent(ModuleSettings.ACTION_AI_ANALYSIS_REQUEST);
+            request.setPackage(ModuleSettings.MODULE_PACKAGE);
+            request.putExtra(ModuleSettings.EXTRA_AI_ANALYZE_HOME_ID, homeId);
+            request.putExtra(ModuleSettings.EXTRA_AI_ANALYZE_ENTER_TIME, Math.max(0L, enterTimeMs));
+            request.putExtra(ModuleSettings.EXTRA_AI_ANALYZE_CONTRIBUTION_CSV, contributionCsv);
+            request.putExtra(ModuleSettings.EXTRA_AI_ANALYZE_CHARM_CSV, charmCsv);
+            appContext.sendBroadcast(request);
+            log(activity,
+                    "task=live_room_enter_task ai analyze dispatched: homeId="
+                            + homeId
+                            + " contributionCsv=" + contributionCsv
+                            + " charmCsv=" + charmCsv
+                            + " via=module_broadcast");
+        } catch (Throwable e) {
+            synchronized (taskContext.lock) {
+                taskContext.aiAnalysisDispatched = false;
+            }
+            log(activity,
+                    "task=live_room_enter_task ai analyze dispatch failed: "
+                            + safeTrim(String.valueOf(e)));
         }
     }
 
@@ -1879,6 +1988,9 @@ final class LiveRoomTaskScriptRunner {
         boolean finished;
         boolean contributionCollected;
         boolean charmCollected;
+        String contributionCsvPath;
+        String charmCsvPath;
+        boolean aiAnalysisDispatched;
 
         TaskContext(long startedAt, String homeId, long enterTimeMs, TaskFinishListener listener) {
             this.startedAt = Math.max(0L, startedAt);
@@ -1889,6 +2001,9 @@ final class LiveRoomTaskScriptRunner {
             this.finished = false;
             this.contributionCollected = false;
             this.charmCollected = false;
+            this.contributionCsvPath = "";
+            this.charmCsvPath = "";
+            this.aiAnalysisDispatched = false;
         }
     }
 

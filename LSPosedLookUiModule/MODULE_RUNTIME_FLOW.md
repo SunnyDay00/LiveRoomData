@@ -1,6 +1,6 @@
 # LSPosedLookUiModule 运行逻辑说明
 
-最后更新：2026-03-04（v2.2.5）
+最后更新：2026-03-04（v2.2.10，已补充飞书推送开关与运行前飞书预检）
 
 ## 1. 长期维护约定
 
@@ -20,6 +20,8 @@
 - `app/src/main/java/com/oodbye/looklspmodule/LiveRoomTaskScriptRunner.java`
 - `app/src/main/java/com/oodbye/looklspmodule/LiveRoomRuntimeModule.java`
 - `app/src/main/java/com/oodbye/looklspmodule/LiveRoomRankCsvStore.java`
+- `app/src/main/java/com/oodbye/looklspmodule/RankAiConsumptionAnalyzer.java`
+- `app/src/main/java/com/oodbye/looklspmodule/FeishuWebhookSender.java`
 - `app/src/main/java/com/oodbye/looklspmodule/RealtimeAdLoop.java`
 - `app/src/main/java/com/oodbye/looklspmodule/ModuleStartupReceiver.java`
 - `app/src/main/java/com/oodbye/looklspmodule/FloatServiceBootstrap.java`
@@ -39,7 +41,18 @@
   - `每次循环后等待时间（秒）`（默认10秒）
   - `贡献榜列表组循环点击次数`（默认5）
   - `魅力榜列表组循环点击次数`（默认20）
+  - `全量采集榜单用户数据`（默认开启）
+  - `全量采集Data数值限制`（默认 `5000`，`0` 表示不限制）
   - `采集用户详细界面`（默认开启）
+  - `AI大模型分析消费数据`（默认开启）
+  - `AI大模型URL`
+  - `AI大模型AKY`
+  - `AI大模型model`
+  - `测试连接`（按钮，立即发起 AI 连接测试）
+  - `飞书机器人发送数据结果`（默认开启）
+  - `飞书Webhook机器人配置`
+  - `Webhook地址`
+  - `签名验证`（飞书机器人签名密钥，可空）
 - 悬浮按钮命令：
   - `运行` -> `RUNNING`
   - `停止` -> `STOPPED`
@@ -390,6 +403,8 @@
 
 1. 点击悬浮按钮“运行”后，若 LOOK 正在运行先 `force-stop`，再启动 LOOK。
    - 若未开启模块无障碍权限，会拦截运行并拉起无障碍设置页，不进入运行态。
+   - 若开启 `AI大模型分析消费数据`，会先自动执行 AI 测试连接；测试失败会拦截运行并弹出失败详情。
+   - 若同时开启 `飞书机器人发送数据结果`，在 AI 测试通过后会继续自动执行“飞书机器人连接测试”；飞书失败同样会拦截运行并弹出失败详情。
 2. LSPosed 在 `com.netease.play` 进程注入，进入主循环。
 3. 启动后先等待数秒，再在首页点击“`一起聊`”tab。
 4. 进入一起聊界面后，先执行一次“下滑刷新”，等待页面稳定。
@@ -403,13 +418,17 @@
    - 页面中必须同时存在 `roomNo`、`title`、`closeBtn` 三个组件。
    - 直播间 `title` 文本需与该卡片 `index=1..4` 子节点文本之一一致。
 9. 校验通过后执行直播间任务。
-10. 直播间任务执行完成后自动返回上一页（退出直播间）。
-11. 从直播间返回到一起聊后，先等待 `3秒`，再点击下一个直播卡片。
-12. 回到一起聊后继续点击后续卡片；无新卡片时继续上滑，循环处理。
-13. 当“一起聊无新卡片”满足完成阈值时，判定一次循环完成，延迟后请求模块服务重启 LOOK 进入下一轮。
-14. 若设置了 `一起聊直播间循环点击次数=N`（N>0），则每完成一轮计数 +1；当计数达到 N 时，不再重启下一轮，模块自动切换为停止状态并弹出“循环完成”操作窗口（重新运行/结束）。
-15. 每次完整循环完成后，会弹出提示：当前完成轮次 + 本轮进入直播间数量 + 剩余循环次数（约6秒后淡化消失，不阻塞流程）。
-16. 每次收到“运行”命令时轮转本地日志文件：保留“本次运行 + 上次运行”两份。
+10. 当“贡献榜 + 魅力榜”都采集成功后，若开启 AI 分析，会异步触发“消费对象推断分析”：
+   - 从当前轮 CSV 与上一轮同直播间 CSV 构造对比数据；
+   - 调用 AI 大模型计算；
+   - 先落盘 AI 结果，再按用户拆分逐条推送飞书（如配置了 Webhook）。
+11. 直播间任务执行完成后自动返回上一页（退出直播间）。
+12. 从直播间返回到一起聊后，先等待 `3秒`，再点击下一个直播卡片。
+13. 回到一起聊后继续点击后续卡片；无新卡片时继续上滑，循环处理。
+14. 当“一起聊无新卡片”满足完成阈值时，判定一次循环完成，延迟后请求模块服务重启 LOOK 进入下一轮。
+15. 若设置了 `一起聊直播间循环点击次数=N`（N>0），则每完成一轮计数 +1；当计数达到 N 时，不再重启下一轮，模块自动切换为停止状态并弹出“循环完成”操作窗口（重新运行/结束）。
+16. 每次完整循环完成后，会弹出提示：当前完成轮次 + 本轮进入直播间数量 + 剩余循环次数（约6秒后淡化消失，不阻塞流程）。
+17. 每次收到“运行”命令时轮转本地日志文件：保留“本次运行 + 上次运行”两份。
 
 ## 5. 一起聊卡片识别规则（当前）
 
@@ -577,6 +596,12 @@
   - 设置页新增 `全量采集榜单用户数据`（默认开启）。
   - 开启后，贡献榜/魅力榜采集不再受“列表组循环点击次数”限制，改为持续上滑采集直到连续无进展达到阈值（由 `单榜重试上限/超时设置` 控制）。
   - 关闭后，保持按“贡献榜列表组循环点击次数 / 魅力榜列表组循环点击次数”目标数量采集。
+- 全量采集 Data 数值限制（v2.2.6）：
+  - 设置页新增 `全量采集Data数值限制`（默认 `5000`，`0` 表示不限制）。
+  - 仅在 `全量采集榜单用户数据=开启` 时生效。
+  - 比较前会先将榜单 `Data` 字段转为可比数值：支持 `19.1万`、`w/W`、`亿` 等单位换算。
+  - 当“当前应采集排名”的 `Data` 换算值 `< 数值限制` 时，判定后续排名无需继续采集，停止当前榜单采集并落盘已采数据。
+  - 关键日志会输出 `榜单采集达到数值限制，停止采集`，并附带 `rank/dataRaw/dataValue/limit`。
 - 榜单到底判定复核机制（v2.2.3）：
   - 底部判定改为“两段式”：先标记“疑似到底”（一次上滑无刷新），再按 `单榜重试上限/超时设置` 做复核上滑；仅当复核阶段连续无刷新达到阈值，才判定“榜单到底/采集完成”。
   - 该机制与 `全量采集榜单用户数据` 开关无关：无论开关状态，提前完成或到底判定都必须经过上述复核。
@@ -588,6 +613,36 @@
 - 榜单识别与采集诊断增强（v2.2.5）：
   - 排名文本解析增强：支持 `20.`、`第20名`、`No.20` 等带装饰文本，降低从第 20 名开始无法命中的风险。
   - 新增“未命中目标排名”日志：输出 `expectedRank/scannedMaxRank/signature`，用于区分“识别不到目标排名”与“CSV落盘异常”。
+- AI 消费分析与飞书推送（v2.2.5 增补）：
+  - 新增 `RankAiConsumptionAnalyzer`：在贡献榜与魅力榜均采集成功后异步执行 AI 分析，不阻塞面板关闭与主流程返回。
+  - 采样数据来源：
+    - 当前轮：本轮贡献榜/魅力榜 CSV（由无障碍采集结果 `detail` 中 `|csv=...` 提取）。
+    - 对比轮：同一天同直播间（`homeId`）向前回溯最近一轮可用 CSV；若当日没有历史轮次则跳过 AI 计算。
+  - 提示词文件（内置打包）：
+    - 项目路径：`app/src/main/assets/look_ai_consumption_prompt.txt`
+    - 运行时从模块 `assets` 读取，不再从本地外部目录读取/写入提示词文件。
+    - 若修改提示词内容，需重新打包并安装模块后生效。
+  - AI 结果文件：
+    - `look_ai_analysis/look_ai_consumption_analysis_yyyyMMdd.txt`（按天聚合、含轮次与 homeId）。
+  - 新增 `FeishuWebhookSender`：
+    - 将 AI 回复按“每个用户结果块”拆分后逐条发送到飞书 Webhook。
+    - 支持签名模式（`timestamp + "\\n" + secret` 进行 HmacSHA256 + Base64）。
+    - 不影响本地落盘：始终先写本地分析文件，再执行飞书推送。
+  - 飞书推送总开关（v2.2.10 增补）：
+    - 设置页新增 `飞书机器人发送数据结果`（默认开启）。
+    - 关闭时不发送飞书，仅保留本地 AI 结果文件写入（不影响 AI 分析与本地落盘）。
+    - 开启时点击“运行”会在 AI 连接测试通过后自动执行飞书连接测试；飞书测试失败会阻断模块运行。
+    - 开启且 Webhook 为空时，运行前置校验会直接拦截并提示“请先填写 Webhook 或关闭飞书推送开关”。
+  - 运行前置联动：
+    - 当开启 `AI大模型分析消费数据` 时，点击“运行”会先自动测试 AI 连通性，失败即阻断运行并提示。
+    - 设置页“测试连接”按钮走同一测试逻辑，已改为可在无 Xposed 环境安全调用（日志写入采用反射可选调用）。
+- AI URL 兼容增强（v2.2.7）：
+  - 支持在设置中填写“通用基地址”例如 `https://api.deepseek.com/v1`。
+  - 模块会在请求前自动补全为 `.../chat/completions`（仅在检测到基地址场景时补全）。
+  - 测试连接失败日志新增 `configuredEndpoint/requestEndpoint`，便于快速定位是配置地址还是补全后地址的问题。
+- 飞书机器人签名与测试日志增强（v2.2.10）：
+  - 修正飞书签名算法实现，按飞书机器人签名规则计算，避免 `19021 sign match fail`。
+  - 设置页新增“测试机器人连接”详细日志，输出 `status/detail/response body` 片段，便于快速定位 Webhook 与签名问题。
 
 ## 8. 广告规则
 
@@ -627,7 +682,7 @@
 ## 9. 日志
 
 - `XposedBridge.log` + `logcat`
-- 前缀：`[LOOKLspModule]` / `[LOOKAdRules]` / `[LOOKScriptRunner]`
+- 前缀：`[LOOKLspModule]` / `[LOOKAdRules]` / `[LOOKScriptRunner]` / `[LOOKA11yAd]` / `[RankAiAnalyzer]` / `[LOOKFeishuPush]` / `[LOOKFeishuPushTest]`
 - 点击日志：
   - 每次实际点击成功时输出组件详情：`class/id/text/clickable/shown/bounds` 与点击方式（`performClick/callOnClick/tap`）。
   - 点击“一起聊”tab 与点击直播卡片均会输出对应组件详情。
@@ -636,6 +691,12 @@
   - 直播间校验会输出“校验开始/当前是否直播间 Activity/重试进度”。
 - 去重策略：
   - 高频等待类流程日志启用重复抑制，相同文案不重复输出，避免无效刷屏。
+- AI/飞书链路日志（便于对照新功能）：
+  - 运行前 AI 连通性：`GlobalFloatService`（`[LOOKLspModule]`）输出 `run blocked by ai connection test failed` / `AI测试连接成功` 等信息。
+  - 运行前飞书连通性：`GlobalFloatService`（`[LOOKLspModule]`）输出 `run blocked by feishu connection test failed` / `AI/飞书连接测试成功`。
+  - AI 分析主流程：`[RankAiAnalyzer]` 输出 `skip analyze / analyze success / feishu push start / feishu push finished`。
+  - 飞书设置页测试：`[LOOKFeishuPushTest]` 输出 `test start/test result`（含 `status/detail/body` 摘要）。
+  - 飞书发送结果：`[LOOKFeishuPush]` 输出 `send ok / send failed / send exception`，可直接定位 Webhook 与签名问题。
 - 模块本地日志文件（每次运行轮转）：
   - 当前运行：`/sdcard/Android/data/com.oodbye.looklspmodule/files/look_lsp_run_current.log`
   - 上次运行：`/sdcard/Android/data/com.oodbye.looklspmodule/files/look_lsp_run_previous.log`

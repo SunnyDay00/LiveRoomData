@@ -51,6 +51,8 @@ public class LookAccessibilityAdService extends AccessibilityService {
             Pattern.compile("^(\\d{1,4})\\D*$");
     private static final Pattern RANK_DATA_NUMERIC_PATTERN =
             Pattern.compile("^(\\d+(?:\\.\\d+)?)([万亿wW]?)$");
+    private static final Pattern RANK_DATA_NUMERIC_FALLBACK_PATTERN =
+            Pattern.compile("(\\d+(?:\\.\\d+)?)([万亿wW]?)");
 
     private Handler handler;
     private AccessibilityCustomRulesAdEngine adEngine;
@@ -1692,7 +1694,10 @@ public class LookAccessibilityAdService extends AccessibilityService {
         }
         Matcher matcher = RANK_DATA_NUMERIC_PATTERN.matcher(value);
         if (!matcher.matches()) {
-            return -1L;
+            matcher = RANK_DATA_NUMERIC_FALLBACK_PATTERN.matcher(value);
+            if (!matcher.find()) {
+                return -1L;
+            }
         }
         double number;
         try {
@@ -3081,11 +3086,22 @@ public class LookAccessibilityAdService extends AccessibilityService {
     }
 
     private boolean isEngineRunningForRankCollect() {
+        ModuleSettings.EngineStatus appStatus = ModuleSettings.EngineStatus.STOPPED;
+        ModuleSettings.EngineStatus xspStatus = ModuleSettings.EngineStatus.STOPPED;
         try {
-            return ModuleSettings.getEngineStatus() == ModuleSettings.EngineStatus.RUNNING;
+            appStatus = ModuleSettings.getEngineStatus(ModuleSettings.appPrefs(this));
         } catch (Throwable ignore) {
-            return true;
         }
+        try {
+            xspStatus = ModuleSettings.getEngineStatus();
+        } catch (Throwable ignore) {
+        }
+        boolean running = appStatus == ModuleSettings.EngineStatus.RUNNING
+                || xspStatus == ModuleSettings.EngineStatus.RUNNING;
+        if (!running) {
+            log("榜单采集引擎状态未运行: appStatus=" + appStatus + " xspStatus=" + xspStatus);
+        }
+        return running;
     }
 
     private void dispatchRankCollectResult(

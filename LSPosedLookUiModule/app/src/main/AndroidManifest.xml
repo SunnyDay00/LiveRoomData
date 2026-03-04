@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.BIND_ACCESSIBILITY_SERVICE" />
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:allowBackup="false"
@@ -64,6 +65,7 @@
                 <action android:name="com.oodbye.looklspmodule.ACTION_RUNTIME_STATS_REPORT" />
                 <action android:name="com.oodbye.looklspmodule.ACTION_CYCLE_COMPLETE_NOTICE" />
                 <action android:name="com.oodbye.looklspmodule.ACTION_CYCLE_LIMIT_FINISHED" />
+                <action android:name="com.oodbye.looklspmodule.ACTION_AI_ANALYSIS_REQUEST" />
             </intent-filter>
         </receiver>
 

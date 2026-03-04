@@ -28,6 +28,8 @@ public class ModuleStartupReceiver extends BroadcastReceiver {
             ModuleSettings.syncEngineState(context, command, status, seq);
             Log.i(TAG, "[ModuleReceiver] engine status report: status=" + status
                     + " command=" + command + " seq=" + seq);
+            // 引擎状态报告会高频上报，悬浮服务由自身定时刷新状态，不在此处重复拉起。
+            shouldSyncFloatService = false;
         } else if (ModuleSettings.ACTION_RUNTIME_STATS_REPORT.equals(action)) {
             long runStartAt = intent.getLongExtra(ModuleSettings.EXTRA_RUNTIME_RUN_START_AT, 0L);
             int cycleCompleted = intent.getIntExtra(ModuleSettings.EXTRA_RUNTIME_CYCLE_COMPLETED, 0);
@@ -64,8 +66,36 @@ public class ModuleStartupReceiver extends BroadcastReceiver {
             Log.i(TAG, "[ModuleReceiver] cycle limit finished dispatched: completed="
                     + completedCycles + " limit=" + cycleLimit + " durationMs=" + durationMs);
             shouldSyncFloatService = false;
+        } else if (ModuleSettings.ACTION_AI_ANALYSIS_REQUEST.equals(action)) {
+            String homeId = intent.getStringExtra(ModuleSettings.EXTRA_AI_ANALYZE_HOME_ID);
+            long enterTimeMs = intent.getLongExtra(ModuleSettings.EXTRA_AI_ANALYZE_ENTER_TIME, 0L);
+            String contributionCsv = intent.getStringExtra(ModuleSettings.EXTRA_AI_ANALYZE_CONTRIBUTION_CSV);
+            String charmCsv = intent.getStringExtra(ModuleSettings.EXTRA_AI_ANALYZE_CHARM_CSV);
+            RankAiConsumptionAnalyzer.scheduleAnalysis(
+                    context,
+                    homeId,
+                    enterTimeMs,
+                    contributionCsv,
+                    charmCsv
+            );
+            Log.i(TAG, "[ModuleReceiver] ai analysis request dispatched: homeId="
+                    + String.valueOf(homeId)
+                    + " contributionCsv=" + String.valueOf(contributionCsv)
+                    + " charmCsv=" + String.valueOf(charmCsv));
+            shouldSyncFloatService = false;
         }
         if (shouldSyncFloatService) {
+            boolean hasDisplayExtra = intent != null
+                    && intent.hasExtra(ModuleSettings.EXTRA_TARGET_DISPLAY_ID);
+            int targetDisplayId = hasDisplayExtra
+                    ? intent.getIntExtra(ModuleSettings.EXTRA_TARGET_DISPLAY_ID, -1)
+                    : -1;
+            boolean requestRestart = intent != null
+                    && intent.getBooleanExtra(ModuleSettings.EXTRA_REQUEST_RESTART_TARGET_APP, false);
+            Log.i(TAG, "[ModuleReceiver] sync float service: action=" + String.valueOf(action)
+                    + " hasDisplayExtra=" + hasDisplayExtra
+                    + " targetDisplayId=" + targetDisplayId
+                    + " requestRestart=" + requestRestart);
             FloatServiceBootstrap.syncFloatServiceState(context, intent);
         }
     }

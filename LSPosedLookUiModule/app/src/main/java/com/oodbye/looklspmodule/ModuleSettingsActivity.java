@@ -11,6 +11,7 @@ import android.os.Bundle;
 import android.provider.Settings;
 import android.text.TextUtils;
 import android.text.InputType;
+import android.util.Log;
 import android.util.TypedValue;
 import android.view.ViewGroup;
 import android.view.Gravity;
@@ -24,6 +25,8 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 public class ModuleSettingsActivity extends Activity {
+    private static final String TAG_FEISHU_TEST = "LOOKFeishuPushTest";
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -871,6 +874,499 @@ public class ModuleSettingsActivity extends Activity {
         collectUserDetailHint.setLayoutParams(collectUserDetailHintLp);
         container.addView(collectUserDetailHint);
 
+        final Switch aiAnalysisSwitch = new Switch(this);
+        aiAnalysisSwitch.setText("AI大模型分析消费数据");
+        aiAnalysisSwitch.setChecked(ModuleSettings.getAiAnalysisEnabled(prefs));
+        LinearLayout.LayoutParams aiAnalysisLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        aiAnalysisLp.topMargin = dp(18);
+        aiAnalysisSwitch.setLayoutParams(aiAnalysisLp);
+        aiAnalysisSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                ModuleSettings.setAiAnalysisEnabled(ModuleSettingsActivity.this, isChecked);
+                Toast.makeText(
+                        ModuleSettingsActivity.this,
+                        isChecked ? "已开启AI大模型分析消费数据" : "已关闭AI大模型分析消费数据",
+                        Toast.LENGTH_SHORT
+                ).show();
+            }
+        });
+        container.addView(aiAnalysisSwitch);
+
+        TextView aiAnalysisHint = new TextView(this);
+        aiAnalysisHint.setText("开启后：模块运行前自动测试连接，连接失败会阻断运行；榜单采集完成后会自动发起AI分析。");
+        aiAnalysisHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        LinearLayout.LayoutParams aiAnalysisHintLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        aiAnalysisHintLp.topMargin = dp(6);
+        aiAnalysisHint.setLayoutParams(aiAnalysisHintLp);
+        container.addView(aiAnalysisHint);
+
+        LinearLayout aiUrlRow = new LinearLayout(this);
+        aiUrlRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams aiUrlRowLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        aiUrlRowLp.topMargin = dp(12);
+        aiUrlRow.setLayoutParams(aiUrlRowLp);
+        container.addView(aiUrlRow);
+
+        TextView aiUrlLabel = new TextView(this);
+        aiUrlLabel.setText("AI大模型URL");
+        aiUrlLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        LinearLayout.LayoutParams aiUrlLabelLp = new LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        aiUrlLabelLp.weight = 1f;
+        aiUrlLabel.setLayoutParams(aiUrlLabelLp);
+        aiUrlRow.addView(aiUrlLabel);
+
+        final EditText aiUrlInput = new EditText(this);
+        aiUrlInput.setSingleLine(true);
+        aiUrlInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        aiUrlInput.setHint("https://api.example.com/v1/chat/completions");
+        aiUrlInput.setText(ModuleSettings.getAiApiUrl(prefs));
+        LinearLayout.LayoutParams aiUrlInputLp = new LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        aiUrlInputLp.weight = 1f;
+        aiUrlInput.setLayoutParams(aiUrlInputLp);
+        aiUrlRow.addView(aiUrlInput);
+
+        Button aiUrlSaveBtn = new Button(this);
+        aiUrlSaveBtn.setText("保存");
+        LinearLayout.LayoutParams aiUrlSaveLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        aiUrlSaveLp.leftMargin = dp(10);
+        aiUrlSaveBtn.setLayoutParams(aiUrlSaveLp);
+        aiUrlSaveBtn.setOnClickListener(v -> {
+            String url = String.valueOf(aiUrlInput.getText()).trim();
+            ModuleSettings.setAiApiUrl(ModuleSettingsActivity.this, url);
+            aiUrlInput.setText(url);
+            Toast.makeText(ModuleSettingsActivity.this, "已保存 AI大模型URL", Toast.LENGTH_SHORT).show();
+        });
+        aiUrlRow.addView(aiUrlSaveBtn);
+
+        LinearLayout aiKeyRow = new LinearLayout(this);
+        aiKeyRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams aiKeyRowLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        aiKeyRowLp.topMargin = dp(10);
+        aiKeyRow.setLayoutParams(aiKeyRowLp);
+        container.addView(aiKeyRow);
+
+        TextView aiKeyLabel = new TextView(this);
+        aiKeyLabel.setText("AI大模型AKY");
+        aiKeyLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        LinearLayout.LayoutParams aiKeyLabelLp = new LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        aiKeyLabelLp.weight = 1f;
+        aiKeyLabel.setLayoutParams(aiKeyLabelLp);
+        aiKeyRow.addView(aiKeyLabel);
+
+        final EditText aiKeyInput = new EditText(this);
+        aiKeyInput.setSingleLine(true);
+        aiKeyInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
+        aiKeyInput.setHint("sk-xxx");
+        aiKeyInput.setText(ModuleSettings.getAiApiKey(prefs));
+        LinearLayout.LayoutParams aiKeyInputLp = new LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        aiKeyInputLp.weight = 1f;
+        aiKeyInput.setLayoutParams(aiKeyInputLp);
+        aiKeyRow.addView(aiKeyInput);
+
+        Button aiKeySaveBtn = new Button(this);
+        aiKeySaveBtn.setText("保存");
+        LinearLayout.LayoutParams aiKeySaveLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        aiKeySaveLp.leftMargin = dp(10);
+        aiKeySaveBtn.setLayoutParams(aiKeySaveLp);
+        aiKeySaveBtn.setOnClickListener(v -> {
+            String key = String.valueOf(aiKeyInput.getText()).trim();
+            ModuleSettings.setAiApiKey(ModuleSettingsActivity.this, key);
+            aiKeyInput.setText(key);
+            Toast.makeText(ModuleSettingsActivity.this, "已保存 AI大模型AKY", Toast.LENGTH_SHORT).show();
+        });
+        aiKeyRow.addView(aiKeySaveBtn);
+
+        LinearLayout aiModelRow = new LinearLayout(this);
+        aiModelRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams aiModelRowLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        aiModelRowLp.topMargin = dp(10);
+        aiModelRow.setLayoutParams(aiModelRowLp);
+        container.addView(aiModelRow);
+
+        TextView aiModelLabel = new TextView(this);
+        aiModelLabel.setText("AI大模型model");
+        aiModelLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        LinearLayout.LayoutParams aiModelLabelLp = new LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        aiModelLabelLp.weight = 1f;
+        aiModelLabel.setLayoutParams(aiModelLabelLp);
+        aiModelRow.addView(aiModelLabel);
+
+        final EditText aiModelInput = new EditText(this);
+        aiModelInput.setSingleLine(true);
+        aiModelInput.setInputType(InputType.TYPE_CLASS_TEXT);
+        aiModelInput.setHint("gpt-4.1-mini");
+        aiModelInput.setText(ModuleSettings.getAiModel(prefs));
+        LinearLayout.LayoutParams aiModelInputLp = new LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        aiModelInputLp.weight = 1f;
+        aiModelInput.setLayoutParams(aiModelInputLp);
+        aiModelRow.addView(aiModelInput);
+
+        Button aiModelSaveBtn = new Button(this);
+        aiModelSaveBtn.setText("保存");
+        LinearLayout.LayoutParams aiModelSaveLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        aiModelSaveLp.leftMargin = dp(10);
+        aiModelSaveBtn.setLayoutParams(aiModelSaveLp);
+        aiModelSaveBtn.setOnClickListener(v -> {
+            String model = String.valueOf(aiModelInput.getText()).trim();
+            ModuleSettings.setAiModel(ModuleSettingsActivity.this, model);
+            aiModelInput.setText(model);
+            Toast.makeText(ModuleSettingsActivity.this, "已保存 AI大模型model", Toast.LENGTH_SHORT).show();
+        });
+        aiModelRow.addView(aiModelSaveBtn);
+
+        LinearLayout aiTestRow = new LinearLayout(this);
+        aiTestRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams aiTestRowLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        aiTestRowLp.topMargin = dp(10);
+        aiTestRow.setLayoutParams(aiTestRowLp);
+        container.addView(aiTestRow);
+
+        final Button aiTestButton = new Button(this);
+        aiTestButton.setText("测试连接");
+        aiTestButton.setAllCaps(false);
+        aiTestButton.setOnClickListener(v -> {
+            String url = String.valueOf(aiUrlInput.getText()).trim();
+            String key = String.valueOf(aiKeyInput.getText()).trim();
+            String model = String.valueOf(aiModelInput.getText()).trim();
+            ModuleSettings.setAiApiUrl(ModuleSettingsActivity.this, url);
+            ModuleSettings.setAiApiKey(ModuleSettingsActivity.this, key);
+            ModuleSettings.setAiModel(ModuleSettingsActivity.this, model);
+            aiUrlInput.setText(url);
+            aiKeyInput.setText(key);
+            aiModelInput.setText(model);
+            aiTestButton.setEnabled(false);
+            aiTestButton.setText("测试中...");
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    RankAiConsumptionAnalyzer.TestResult tempResult;
+                    try {
+                        tempResult = RankAiConsumptionAnalyzer.testConnection(ModuleSettingsActivity.this);
+                    } catch (Throwable e) {
+                        tempResult = RankAiConsumptionAnalyzer.TestResult.fail(
+                                "测试连接异常: " + String.valueOf(e)
+                        );
+                    }
+                    final RankAiConsumptionAnalyzer.TestResult testResult = tempResult;
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            aiTestButton.setEnabled(true);
+                            aiTestButton.setText("测试连接");
+                            String msg = testResult == null
+                                    ? "测试连接失败: result_null"
+                                    : safeToastText(testResult.detail, testResult.success);
+                            Toast.makeText(ModuleSettingsActivity.this, msg, Toast.LENGTH_LONG).show();
+                        }
+                    });
+                }
+            }, "look_ai_test").start();
+        });
+        aiTestRow.addView(aiTestButton);
+
+        TextView aiTestHint = new TextView(this);
+        aiTestHint.setText("点击“测试连接”会使用当前URL/AKY/model发起真实请求；支持填写通用基地址（如 .../v1），模块会自动补全到 chat/completions。运行模块前也会自动测试连接。");
+        aiTestHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        LinearLayout.LayoutParams aiTestHintLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        aiTestHintLp.topMargin = dp(6);
+        aiTestHint.setLayoutParams(aiTestHintLp);
+        container.addView(aiTestHint);
+
+        TextView feishuTitle = new TextView(this);
+        feishuTitle.setText("飞书Webhook机器人配置");
+        feishuTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        feishuTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        LinearLayout.LayoutParams feishuTitleLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        feishuTitleLp.topMargin = dp(18);
+        feishuTitle.setLayoutParams(feishuTitleLp);
+        container.addView(feishuTitle);
+
+        final Switch feishuPushSwitch = new Switch(this);
+        feishuPushSwitch.setText("飞书机器人发送数据结果");
+        feishuPushSwitch.setChecked(ModuleSettings.getFeishuPushEnabled(prefs));
+        LinearLayout.LayoutParams feishuPushSwitchLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        feishuPushSwitchLp.topMargin = dp(10);
+        feishuPushSwitch.setLayoutParams(feishuPushSwitchLp);
+        feishuPushSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                ModuleSettings.setFeishuPushEnabled(ModuleSettingsActivity.this, isChecked);
+                Toast.makeText(
+                        ModuleSettingsActivity.this,
+                        isChecked ? "已开启飞书机器人发送数据结果" : "已关闭飞书机器人发送数据结果",
+                        Toast.LENGTH_SHORT
+                ).show();
+            }
+        });
+        container.addView(feishuPushSwitch);
+
+        LinearLayout feishuWebhookRow = new LinearLayout(this);
+        feishuWebhookRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams feishuWebhookRowLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        feishuWebhookRowLp.topMargin = dp(10);
+        feishuWebhookRow.setLayoutParams(feishuWebhookRowLp);
+        container.addView(feishuWebhookRow);
+
+        TextView feishuWebhookLabel = new TextView(this);
+        feishuWebhookLabel.setText("Webhook地址");
+        feishuWebhookLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        LinearLayout.LayoutParams feishuWebhookLabelLp = new LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        feishuWebhookLabelLp.weight = 1f;
+        feishuWebhookLabel.setLayoutParams(feishuWebhookLabelLp);
+        feishuWebhookRow.addView(feishuWebhookLabel);
+
+        final EditText feishuWebhookInput = new EditText(this);
+        feishuWebhookInput.setSingleLine(true);
+        feishuWebhookInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        feishuWebhookInput.setHint("https://open.feishu.cn/open-apis/bot/v2/hook/...");
+        feishuWebhookInput.setText(ModuleSettings.getFeishuWebhookUrl(prefs));
+        LinearLayout.LayoutParams feishuWebhookInputLp = new LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        feishuWebhookInputLp.weight = 1f;
+        feishuWebhookInput.setLayoutParams(feishuWebhookInputLp);
+        feishuWebhookRow.addView(feishuWebhookInput);
+
+        Button feishuWebhookSaveBtn = new Button(this);
+        feishuWebhookSaveBtn.setText("保存");
+        LinearLayout.LayoutParams feishuWebhookSaveLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        feishuWebhookSaveLp.leftMargin = dp(10);
+        feishuWebhookSaveBtn.setLayoutParams(feishuWebhookSaveLp);
+        feishuWebhookSaveBtn.setOnClickListener(v -> {
+            String webhook = String.valueOf(feishuWebhookInput.getText()).trim();
+            ModuleSettings.setFeishuWebhookUrl(ModuleSettingsActivity.this, webhook);
+            feishuWebhookInput.setText(webhook);
+            Toast.makeText(ModuleSettingsActivity.this, "已保存飞书Webhook地址", Toast.LENGTH_SHORT).show();
+        });
+        feishuWebhookRow.addView(feishuWebhookSaveBtn);
+
+        LinearLayout feishuSignRow = new LinearLayout(this);
+        feishuSignRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams feishuSignRowLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        feishuSignRowLp.topMargin = dp(10);
+        feishuSignRow.setLayoutParams(feishuSignRowLp);
+        container.addView(feishuSignRow);
+
+        TextView feishuSignLabel = new TextView(this);
+        feishuSignLabel.setText("签名验证");
+        feishuSignLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        LinearLayout.LayoutParams feishuSignLabelLp = new LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        feishuSignLabelLp.weight = 1f;
+        feishuSignLabel.setLayoutParams(feishuSignLabelLp);
+        feishuSignRow.addView(feishuSignLabel);
+
+        final EditText feishuSignInput = new EditText(this);
+        feishuSignInput.setSingleLine(true);
+        feishuSignInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
+        feishuSignInput.setHint("签名密钥（可空）");
+        feishuSignInput.setText(ModuleSettings.getFeishuSignSecret(prefs));
+        LinearLayout.LayoutParams feishuSignInputLp = new LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        feishuSignInputLp.weight = 1f;
+        feishuSignInput.setLayoutParams(feishuSignInputLp);
+        feishuSignRow.addView(feishuSignInput);
+
+        Button feishuSignSaveBtn = new Button(this);
+        feishuSignSaveBtn.setText("保存");
+        LinearLayout.LayoutParams feishuSignSaveLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        feishuSignSaveLp.leftMargin = dp(10);
+        feishuSignSaveBtn.setLayoutParams(feishuSignSaveLp);
+        feishuSignSaveBtn.setOnClickListener(v -> {
+            String signSecret = String.valueOf(feishuSignInput.getText()).trim();
+            ModuleSettings.setFeishuSignSecret(ModuleSettingsActivity.this, signSecret);
+            feishuSignInput.setText(signSecret);
+            Toast.makeText(ModuleSettingsActivity.this, "已保存飞书签名配置", Toast.LENGTH_SHORT).show();
+        });
+        feishuSignRow.addView(feishuSignSaveBtn);
+
+        LinearLayout feishuTestRow = new LinearLayout(this);
+        feishuTestRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams feishuTestRowLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        feishuTestRowLp.topMargin = dp(10);
+        feishuTestRow.setLayoutParams(feishuTestRowLp);
+        container.addView(feishuTestRow);
+
+        final Button feishuTestButton = new Button(this);
+        feishuTestButton.setText("测试机器人连接");
+        feishuTestButton.setAllCaps(false);
+        feishuTestButton.setOnClickListener(v -> {
+            String webhook = String.valueOf(feishuWebhookInput.getText()).trim();
+            String signSecret = String.valueOf(feishuSignInput.getText()).trim();
+            ModuleSettings.setFeishuWebhookUrl(ModuleSettingsActivity.this, webhook);
+            ModuleSettings.setFeishuSignSecret(ModuleSettingsActivity.this, signSecret);
+            feishuWebhookInput.setText(webhook);
+            feishuSignInput.setText(signSecret);
+            if (TextUtils.isEmpty(webhook)) {
+                Toast.makeText(ModuleSettingsActivity.this, "请先填写Webhook地址", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            logFeishuTest("test start: webhook=" + maskWebhook(webhook)
+                    + " signEnabled=" + (!TextUtils.isEmpty(signSecret)));
+            logFeishuTest("device time: epochMs=" + System.currentTimeMillis()
+                    + " tz=" + java.util.TimeZone.getDefault().getID());
+            feishuTestButton.setEnabled(false);
+            feishuTestButton.setText("测试中...");
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    String message = "LOOK LSP 飞书机器人测试\n"
+                            + "时间戳(ms): " + System.currentTimeMillis() + "\n"
+                            + "结果: 若收到本条消息，说明配置可用。";
+                    FeishuWebhookSender.SendResult tempResult;
+                    try {
+                        tempResult = FeishuWebhookSender.sendText(
+                                ModuleSettingsActivity.this,
+                                webhook,
+                                signSecret,
+                                message
+                        );
+                    } catch (Throwable e) {
+                        tempResult = FeishuWebhookSender.SendResult.fail(
+                                -1,
+                                "test_exception:" + String.valueOf(e),
+                                ""
+                        );
+                    }
+                    final FeishuWebhookSender.SendResult result = tempResult;
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            feishuTestButton.setEnabled(true);
+                            feishuTestButton.setText("测试机器人连接");
+                            if (result == null) {
+                                logFeishuTest("test result: success=false status=-1 detail=result_null");
+                                Toast.makeText(
+                                        ModuleSettingsActivity.this,
+                                        "机器人连接测试失败: result_null",
+                                        Toast.LENGTH_LONG
+                                ).show();
+                                return;
+                            }
+                            String detail = safeTrim(
+                                    result.detail + " status=" + result.statusCode
+                            );
+                            String bodySummary = truncate(safeTrim(result.responseBody), 320);
+                            logFeishuTest("test result: success=" + result.success
+                                    + " status=" + result.statusCode
+                                    + " detail=" + safeTrim(result.detail)
+                                    + " body=" + bodySummary);
+                            if (!result.success && TextUtils.isEmpty(detail)) {
+                                detail = "status=" + result.statusCode;
+                            }
+                            if (!result.success && !TextUtils.isEmpty(bodySummary)) {
+                                detail = detail + " body=" + bodySummary;
+                            }
+                            String combined = (safeTrim(result.detail) + " " + bodySummary).toLowerCase();
+                            if (!result.success
+                                    && (combined.contains("code=19021")
+                                    || combined.contains("\"code\":19021")
+                                    || combined.contains("sign match fail")
+                                    || combined.contains("timestamp is not within one hour"))) {
+                                detail = detail
+                                        + "；请确认“签名验证”填写的是飞书机器人加签密钥"
+                                        + "（未开启加签则留空），并确认手机时间正确（adb shell date）";
+                            }
+                            String msg = result.success
+                                    ? "机器人连接测试成功: " + safeToastText(detail, true)
+                                    : "机器人连接测试失败: " + safeToastText(detail, false);
+                            Toast.makeText(ModuleSettingsActivity.this, msg, Toast.LENGTH_LONG).show();
+                        }
+                    });
+                }
+            }, "look_feishu_test").start();
+        });
+        feishuTestRow.addView(feishuTestButton);
+
+        TextView feishuHint = new TextView(this);
+        feishuHint.setText("开启“飞书机器人发送数据结果”后，AI分析结果会按用户逐条拆分后推送到飞书Webhook；运行模块前会自动测试机器人连接。签名验证留空则按不签名模式发送。");
+        feishuHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        LinearLayout.LayoutParams feishuHintLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        feishuHintLp.topMargin = dp(6);
+        feishuHint.setLayoutParams(feishuHintLp);
+        container.addView(feishuHint);
+
         setContentView(scrollView);
 
         if (ModuleSettings.getGlobalFloatButtonEnabled(prefs)) {
@@ -943,5 +1439,48 @@ public class ModuleSettingsActivity extends Activity {
 
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private String safeToastText(String detail, boolean success) {
+        String text = detail == null ? "" : detail.trim();
+        if (TextUtils.isEmpty(text)) {
+            return success ? "测试连接成功" : "测试连接失败";
+        }
+        if (text.length() > 240) {
+            return text.substring(0, 240) + "...";
+        }
+        return text;
+    }
+
+    private String safeTrim(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.trim();
+    }
+
+    private String truncate(String value, int maxLen) {
+        String text = safeTrim(value);
+        if (text.length() <= maxLen) {
+            return text;
+        }
+        return text.substring(0, Math.max(0, maxLen)) + "...";
+    }
+
+    private String maskWebhook(String webhook) {
+        String safe = safeTrim(webhook);
+        if (TextUtils.isEmpty(safe)) {
+            return "";
+        }
+        if (safe.length() <= 24) {
+            return safe;
+        }
+        return safe.substring(0, 16) + "..." + safe.substring(safe.length() - 6);
+    }
+
+    private void logFeishuTest(String message) {
+        String line = "[LOOKFeishuPushTest] " + safeTrim(message);
+        Log.i(TAG_FEISHU_TEST, line);
+        ModuleRunFileLogger.appendLine(this, line);
     }
 }

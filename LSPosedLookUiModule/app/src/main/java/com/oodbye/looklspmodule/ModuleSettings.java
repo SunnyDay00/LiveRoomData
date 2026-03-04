@@ -2,12 +2,14 @@ package com.oodbye.looklspmodule;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.util.Log;
 
 import java.io.File;
 
 import de.robv.android.xposed.XSharedPreferences;
 
 final class ModuleSettings {
+    private static final String LOGCAT_TAG = "LOOKModuleSettings";
     static final String MODULE_PACKAGE = "com.oodbye.looklspmodule";
     static final String PREFS_NAME = "module_settings";
 
@@ -25,6 +27,13 @@ final class ModuleSettings {
     static final String KEY_COLLECT_ALL_RANK_USERS_ENABLED = "collect_all_rank_users_enabled";
     static final String KEY_COLLECT_ALL_RANK_DATA_LIMIT = "collect_all_rank_data_limit";
     static final String KEY_COLLECT_USER_DETAIL_ENABLED = "collect_user_detail_enabled";
+    static final String KEY_AI_ANALYSIS_ENABLED = "ai_analysis_enabled";
+    static final String KEY_AI_API_URL = "ai_api_url";
+    static final String KEY_AI_API_KEY = "ai_api_key";
+    static final String KEY_AI_MODEL = "ai_model";
+    static final String KEY_FEISHU_PUSH_ENABLED = "feishu_push_enabled";
+    static final String KEY_FEISHU_WEBHOOK_URL = "feishu_webhook_url";
+    static final String KEY_FEISHU_SIGN_SECRET = "feishu_sign_secret";
     static final String KEY_A11Y_PANEL_MARKER_COUNT = "a11y_panel_marker_count";
     static final String KEY_A11Y_PANEL_PRIMARY_COUNT = "a11y_panel_primary_count";
     static final String KEY_A11Y_PANEL_UPDATED_AT = "a11y_panel_updated_at";
@@ -50,9 +59,17 @@ final class ModuleSettings {
     static final String ACTION_CYCLE_COMPLETE_NOTICE = MODULE_PACKAGE + ".ACTION_CYCLE_COMPLETE_NOTICE";
     static final String ACTION_CYCLE_LIMIT_FINISHED = MODULE_PACKAGE + ".ACTION_CYCLE_LIMIT_FINISHED";
     static final String ACTION_RUNTIME_STATS_REPORT = MODULE_PACKAGE + ".ACTION_RUNTIME_STATS_REPORT";
+    static final String ACTION_AI_ANALYSIS_REQUEST = MODULE_PACKAGE + ".ACTION_AI_ANALYSIS_REQUEST";
     static final String EXTRA_ENGINE_COMMAND = "engine_command";
     static final String EXTRA_ENGINE_STATUS = "engine_status";
     static final String EXTRA_ENGINE_COMMAND_SEQ = "engine_command_seq";
+    static final String EXTRA_AI_ANALYSIS_ENABLED = "ai_analysis_enabled";
+    static final String EXTRA_AI_API_URL = "ai_api_url";
+    static final String EXTRA_AI_API_KEY = "ai_api_key";
+    static final String EXTRA_AI_MODEL = "ai_model";
+    static final String EXTRA_FEISHU_PUSH_ENABLED = "feishu_push_enabled";
+    static final String EXTRA_FEISHU_WEBHOOK_URL = "feishu_webhook_url";
+    static final String EXTRA_FEISHU_SIGN_SECRET = "feishu_sign_secret";
     static final String EXTRA_DEBUG_COMMAND = "debug_command";
     static final String EXTRA_DEBUG_TRIGGER = "debug_trigger";
     static final String EXTRA_A11Y_PANEL_MARKER_COUNT = "a11y_panel_marker_count";
@@ -84,6 +101,10 @@ final class ModuleSettings {
     static final String EXTRA_RUNTIME_CYCLE_COMPLETED = "runtime_cycle_completed";
     static final String EXTRA_RUNTIME_CYCLE_ENTERED = "runtime_cycle_entered";
     static final String EXTRA_RUNTIME_COMMAND_SEQ = "runtime_command_seq";
+    static final String EXTRA_AI_ANALYZE_HOME_ID = "ai_analyze_home_id";
+    static final String EXTRA_AI_ANALYZE_ENTER_TIME = "ai_analyze_enter_time";
+    static final String EXTRA_AI_ANALYZE_CONTRIBUTION_CSV = "ai_analyze_contribution_csv";
+    static final String EXTRA_AI_ANALYZE_CHARM_CSV = "ai_analyze_charm_csv";
 
     static final String ENGINE_CMD_RUN = "RUN";
     static final String ENGINE_CMD_STOP = "STOP";
@@ -107,6 +128,13 @@ final class ModuleSettings {
     static final boolean DEFAULT_COLLECT_ALL_RANK_USERS_ENABLED = true;
     static final int DEFAULT_COLLECT_ALL_RANK_DATA_LIMIT = 5000;
     static final boolean DEFAULT_COLLECT_USER_DETAIL_ENABLED = true;
+    static final boolean DEFAULT_AI_ANALYSIS_ENABLED = true;
+    static final String DEFAULT_AI_API_URL = "";
+    static final String DEFAULT_AI_API_KEY = "";
+    static final String DEFAULT_AI_MODEL = "";
+    static final boolean DEFAULT_FEISHU_PUSH_ENABLED = true;
+    static final String DEFAULT_FEISHU_WEBHOOK_URL = "";
+    static final String DEFAULT_FEISHU_SIGN_SECRET = "";
     static final int DEFAULT_A11Y_PANEL_MARKER_COUNT = 0;
     static final int DEFAULT_A11Y_PANEL_PRIMARY_COUNT = 0;
     static final long DEFAULT_A11Y_PANEL_UPDATED_AT = 0L;
@@ -114,9 +142,15 @@ final class ModuleSettings {
     static final String DEFAULT_ENGINE_STATUS = EngineStatus.STOPPED.name();
 
     private static final long XSP_RELOAD_INTERVAL_MS = 1000L;
+    private static final String[] XSP_CANDIDATE_PATHS = new String[] {
+            "/data/user/0/" + MODULE_PACKAGE + "/shared_prefs/" + PREFS_NAME + ".xml",
+            "/data/data/" + MODULE_PACKAGE + "/shared_prefs/" + PREFS_NAME + ".xml",
+            "/data/user_de/0/" + MODULE_PACKAGE + "/shared_prefs/" + PREFS_NAME + ".xml"
+    };
 
     private static XSharedPreferences sXsp;
     private static long sLastReloadAt;
+    private static boolean sXspUnavailable;
 
     private ModuleSettings() {
     }
@@ -130,16 +164,28 @@ final class ModuleSettings {
             return;
         }
         try {
-            File spDir = new File(context.getApplicationInfo().dataDir, "shared_prefs");
-            File spFile = new File(spDir, PREFS_NAME + ".xml");
-            if (spDir.exists()) {
-                spDir.setReadable(true, false);
-                spDir.setExecutable(true, false);
-            }
-            if (spFile.exists()) {
-                spFile.setReadable(true, false);
+            ensurePrefsReadableForDataDir(context.getApplicationInfo().dataDir);
+            Context deContext = context.createDeviceProtectedStorageContext();
+            if (deContext != null) {
+                ensurePrefsReadableForDataDir(deContext.getApplicationInfo().dataDir);
             }
         } catch (Throwable ignored) {
+        }
+    }
+
+    private static void ensurePrefsReadableForDataDir(String dataDirPath) {
+        String safePath = safeTrim(dataDirPath);
+        if (safePath.isEmpty()) {
+            return;
+        }
+        File spDir = new File(safePath, "shared_prefs");
+        File spFile = new File(spDir, PREFS_NAME + ".xml");
+        if (spDir.exists()) {
+            spDir.setReadable(true, false);
+            spDir.setExecutable(true, false);
+        }
+        if (spFile.exists()) {
+            spFile.setReadable(true, false);
         }
     }
 
@@ -278,6 +324,62 @@ final class ModuleSettings {
                 KEY_COLLECT_USER_DETAIL_ENABLED,
                 DEFAULT_COLLECT_USER_DETAIL_ENABLED
         );
+    }
+
+    static synchronized boolean isAiAnalysisEnabled() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return DEFAULT_AI_ANALYSIS_ENABLED;
+        }
+        return xsp.getBoolean(KEY_AI_ANALYSIS_ENABLED, DEFAULT_AI_ANALYSIS_ENABLED);
+    }
+
+    static synchronized String getAiApiUrl() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return DEFAULT_AI_API_URL;
+        }
+        return safeTrim(xsp.getString(KEY_AI_API_URL, DEFAULT_AI_API_URL));
+    }
+
+    static synchronized String getAiApiKey() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return DEFAULT_AI_API_KEY;
+        }
+        return safeTrim(xsp.getString(KEY_AI_API_KEY, DEFAULT_AI_API_KEY));
+    }
+
+    static synchronized String getAiModel() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return DEFAULT_AI_MODEL;
+        }
+        return safeTrim(xsp.getString(KEY_AI_MODEL, DEFAULT_AI_MODEL));
+    }
+
+    static synchronized boolean isFeishuPushEnabled() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return DEFAULT_FEISHU_PUSH_ENABLED;
+        }
+        return xsp.getBoolean(KEY_FEISHU_PUSH_ENABLED, DEFAULT_FEISHU_PUSH_ENABLED);
+    }
+
+    static synchronized String getFeishuWebhookUrl() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return DEFAULT_FEISHU_WEBHOOK_URL;
+        }
+        return safeTrim(xsp.getString(KEY_FEISHU_WEBHOOK_URL, DEFAULT_FEISHU_WEBHOOK_URL));
+    }
+
+    static synchronized String getFeishuSignSecret() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return DEFAULT_FEISHU_SIGN_SECRET;
+        }
+        return safeTrim(xsp.getString(KEY_FEISHU_SIGN_SECRET, DEFAULT_FEISHU_SIGN_SECRET));
     }
 
     static synchronized int getA11yPanelMarkerCount() {
@@ -509,6 +611,55 @@ final class ModuleSettings {
         );
     }
 
+    static synchronized boolean getAiAnalysisEnabled(SharedPreferences prefs) {
+        if (prefs == null) {
+            return DEFAULT_AI_ANALYSIS_ENABLED;
+        }
+        return prefs.getBoolean(KEY_AI_ANALYSIS_ENABLED, DEFAULT_AI_ANALYSIS_ENABLED);
+    }
+
+    static synchronized String getAiApiUrl(SharedPreferences prefs) {
+        if (prefs == null) {
+            return DEFAULT_AI_API_URL;
+        }
+        return safeTrim(prefs.getString(KEY_AI_API_URL, DEFAULT_AI_API_URL));
+    }
+
+    static synchronized String getAiApiKey(SharedPreferences prefs) {
+        if (prefs == null) {
+            return DEFAULT_AI_API_KEY;
+        }
+        return safeTrim(prefs.getString(KEY_AI_API_KEY, DEFAULT_AI_API_KEY));
+    }
+
+    static synchronized String getAiModel(SharedPreferences prefs) {
+        if (prefs == null) {
+            return DEFAULT_AI_MODEL;
+        }
+        return safeTrim(prefs.getString(KEY_AI_MODEL, DEFAULT_AI_MODEL));
+    }
+
+    static synchronized boolean getFeishuPushEnabled(SharedPreferences prefs) {
+        if (prefs == null) {
+            return DEFAULT_FEISHU_PUSH_ENABLED;
+        }
+        return prefs.getBoolean(KEY_FEISHU_PUSH_ENABLED, DEFAULT_FEISHU_PUSH_ENABLED);
+    }
+
+    static synchronized String getFeishuWebhookUrl(SharedPreferences prefs) {
+        if (prefs == null) {
+            return DEFAULT_FEISHU_WEBHOOK_URL;
+        }
+        return safeTrim(prefs.getString(KEY_FEISHU_WEBHOOK_URL, DEFAULT_FEISHU_WEBHOOK_URL));
+    }
+
+    static synchronized String getFeishuSignSecret(SharedPreferences prefs) {
+        if (prefs == null) {
+            return DEFAULT_FEISHU_SIGN_SECRET;
+        }
+        return safeTrim(prefs.getString(KEY_FEISHU_SIGN_SECRET, DEFAULT_FEISHU_SIGN_SECRET));
+    }
+
     static synchronized long getRuntimeRunStartAt(SharedPreferences prefs) {
         if (prefs == null) {
             return 0L;
@@ -687,6 +838,69 @@ final class ModuleSettings {
         }
         SharedPreferences prefs = appPrefs(context);
         prefs.edit().putBoolean(KEY_COLLECT_USER_DETAIL_ENABLED, enabled).commit();
+        ensurePrefsReadable(context);
+    }
+
+    static synchronized void setAiAnalysisEnabled(Context context, boolean enabled) {
+        if (context == null) {
+            return;
+        }
+        SharedPreferences prefs = appPrefs(context);
+        prefs.edit().putBoolean(KEY_AI_ANALYSIS_ENABLED, enabled).commit();
+        ensurePrefsReadable(context);
+    }
+
+    static synchronized void setAiApiUrl(Context context, String url) {
+        if (context == null) {
+            return;
+        }
+        SharedPreferences prefs = appPrefs(context);
+        prefs.edit().putString(KEY_AI_API_URL, safeTrim(url)).commit();
+        ensurePrefsReadable(context);
+    }
+
+    static synchronized void setAiApiKey(Context context, String apiKey) {
+        if (context == null) {
+            return;
+        }
+        SharedPreferences prefs = appPrefs(context);
+        prefs.edit().putString(KEY_AI_API_KEY, safeTrim(apiKey)).commit();
+        ensurePrefsReadable(context);
+    }
+
+    static synchronized void setAiModel(Context context, String model) {
+        if (context == null) {
+            return;
+        }
+        SharedPreferences prefs = appPrefs(context);
+        prefs.edit().putString(KEY_AI_MODEL, safeTrim(model)).commit();
+        ensurePrefsReadable(context);
+    }
+
+    static synchronized void setFeishuPushEnabled(Context context, boolean enabled) {
+        if (context == null) {
+            return;
+        }
+        SharedPreferences prefs = appPrefs(context);
+        prefs.edit().putBoolean(KEY_FEISHU_PUSH_ENABLED, enabled).commit();
+        ensurePrefsReadable(context);
+    }
+
+    static synchronized void setFeishuWebhookUrl(Context context, String url) {
+        if (context == null) {
+            return;
+        }
+        SharedPreferences prefs = appPrefs(context);
+        prefs.edit().putString(KEY_FEISHU_WEBHOOK_URL, safeTrim(url)).commit();
+        ensurePrefsReadable(context);
+    }
+
+    static synchronized void setFeishuSignSecret(Context context, String secret) {
+        if (context == null) {
+            return;
+        }
+        SharedPreferences prefs = appPrefs(context);
+        prefs.edit().putString(KEY_FEISHU_SIGN_SECRET, safeTrim(secret)).commit();
         ensurePrefsReadable(context);
     }
 
@@ -931,6 +1145,27 @@ final class ModuleSettings {
                     DEFAULT_COLLECT_USER_DETAIL_ENABLED
             );
         }
+        if (!prefs.contains(KEY_AI_ANALYSIS_ENABLED)) {
+            editor.putBoolean(KEY_AI_ANALYSIS_ENABLED, DEFAULT_AI_ANALYSIS_ENABLED);
+        }
+        if (!prefs.contains(KEY_AI_API_URL)) {
+            editor.putString(KEY_AI_API_URL, DEFAULT_AI_API_URL);
+        }
+        if (!prefs.contains(KEY_AI_API_KEY)) {
+            editor.putString(KEY_AI_API_KEY, DEFAULT_AI_API_KEY);
+        }
+        if (!prefs.contains(KEY_AI_MODEL)) {
+            editor.putString(KEY_AI_MODEL, DEFAULT_AI_MODEL);
+        }
+        if (!prefs.contains(KEY_FEISHU_PUSH_ENABLED)) {
+            editor.putBoolean(KEY_FEISHU_PUSH_ENABLED, DEFAULT_FEISHU_PUSH_ENABLED);
+        }
+        if (!prefs.contains(KEY_FEISHU_WEBHOOK_URL)) {
+            editor.putString(KEY_FEISHU_WEBHOOK_URL, DEFAULT_FEISHU_WEBHOOK_URL);
+        }
+        if (!prefs.contains(KEY_FEISHU_SIGN_SECRET)) {
+            editor.putString(KEY_FEISHU_SIGN_SECRET, DEFAULT_FEISHU_SIGN_SECRET);
+        }
         if (!prefs.contains(KEY_A11Y_PANEL_MARKER_COUNT)) {
             editor.putInt(KEY_A11Y_PANEL_MARKER_COUNT, DEFAULT_A11Y_PANEL_MARKER_COUNT);
         }
@@ -975,9 +1210,16 @@ final class ModuleSettings {
     }
 
     private static XSharedPreferences getXsp() {
+        if (sXspUnavailable) {
+            return null;
+        }
         long now = System.currentTimeMillis();
         if (sXsp == null) {
-            sXsp = new XSharedPreferences(MODULE_PACKAGE, PREFS_NAME);
+            sXsp = createXspWithKnownPaths();
+            if (sXsp == null) {
+                sXspUnavailable = true;
+                return null;
+            }
             sXsp.makeWorldReadable();
             sLastReloadAt = 0L;
         }
@@ -986,6 +1228,29 @@ final class ModuleSettings {
             sLastReloadAt = now;
         }
         return sXsp;
+    }
+
+    private static XSharedPreferences createXspWithKnownPaths() {
+        for (String path : XSP_CANDIDATE_PATHS) {
+            File file = new File(path);
+            if (!file.exists()) {
+                continue;
+            }
+            try {
+                Log.i(LOGCAT_TAG, "[ModuleSettings] XSP init from file: " + file.getAbsolutePath());
+                return new XSharedPreferences(file);
+            } catch (Throwable e) {
+                Log.i(LOGCAT_TAG, "[ModuleSettings] XSP init file failed: "
+                        + file.getAbsolutePath() + " error=" + String.valueOf(e));
+            }
+        }
+        try {
+            Log.i(LOGCAT_TAG, "[ModuleSettings] XSP init fallback by package name");
+            return new XSharedPreferences(MODULE_PACKAGE, PREFS_NAME);
+        } catch (Throwable e) {
+            Log.i(LOGCAT_TAG, "[ModuleSettings] XSP fallback failed: " + String.valueOf(e));
+            return null;
+        }
     }
 
     private static EngineStatus parseStatus(String value) {

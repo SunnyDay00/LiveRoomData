@@ -184,6 +184,23 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                     String command = safeTrimStatic(intent.getStringExtra(ModuleSettings.EXTRA_ENGINE_COMMAND));
                     String statusName = safeTrimStatic(intent.getStringExtra(ModuleSettings.EXTRA_ENGINE_STATUS));
                     long seq = intent.getLongExtra(ModuleSettings.EXTRA_ENGINE_COMMAND_SEQ, -1L);
+                    boolean aiEnabled = intent.getBooleanExtra(
+                            ModuleSettings.EXTRA_AI_ANALYSIS_ENABLED,
+                            ModuleSettings.DEFAULT_AI_ANALYSIS_ENABLED
+                    );
+                    String aiUrl = safeTrimStatic(intent.getStringExtra(ModuleSettings.EXTRA_AI_API_URL));
+                    String aiApiKey = safeTrimStatic(intent.getStringExtra(ModuleSettings.EXTRA_AI_API_KEY));
+                    String aiModel = safeTrimStatic(intent.getStringExtra(ModuleSettings.EXTRA_AI_MODEL));
+                    boolean feishuPushEnabled = intent.getBooleanExtra(
+                            ModuleSettings.EXTRA_FEISHU_PUSH_ENABLED,
+                            ModuleSettings.DEFAULT_FEISHU_PUSH_ENABLED
+                    );
+                    String feishuWebhookUrl = safeTrimStatic(
+                            intent.getStringExtra(ModuleSettings.EXTRA_FEISHU_WEBHOOK_URL)
+                    );
+                    String feishuSignSecret = safeTrimStatic(
+                            intent.getStringExtra(ModuleSettings.EXTRA_FEISHU_SIGN_SECRET)
+                    );
                     int cycleLimit = intent.getIntExtra(
                             ModuleSettings.EXTRA_TOGETHER_CYCLE_LIMIT,
                             -1
@@ -205,6 +222,17 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                             -1
                     );
                     ModuleSettings.EngineStatus status = parseEngineStatusStatic(statusName);
+                    RankAiConsumptionAnalyzer.updateRuntimeConfigFromEngineCommand(
+                            command,
+                            seq,
+                            aiEnabled,
+                            aiUrl,
+                            aiApiKey,
+                            aiModel,
+                            feishuPushEnabled,
+                            feishuWebhookUrl,
+                            feishuSignSecret
+                    );
                     updateRealtimeEngineState(
                             command,
                             status,

@@ -10,8 +10,8 @@ android {
         applicationId 'com.oodbye.looklspmodule'
         minSdk 24
         targetSdk 34
-        versionCode 128
-        versionName '2.2.5'
+        versionCode 150
+        versionName '2.2.27'
     }
 
     buildTypes {

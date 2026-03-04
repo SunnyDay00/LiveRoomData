@@ -50,7 +50,13 @@ public class GlobalFloatService extends Service {
     private static final long RUNTIME_PRECHECK_INTERVAL_MS = 3000L;
     private static final long RUNTIME_PRECHECK_PROMPT_MIN_INTERVAL_MS = 6000L;
     private static final long CYCLE_NOTICE_SHOW_MS = 6000L;
+    private static final long OVERLAY_NOISE_LOG_THROTTLE_MS = 1500L;
     private static final int GLOBAL_DISPLAY_ID = 0;
+    private static final String DIRECT_PREFS_NAME = "module_settings";
+    private static final String DIRECT_KEY_FEISHU_PUSH_ENABLED = "feishu_push_enabled";
+    private static final String DIRECT_KEY_FEISHU_WEBHOOK_URL = "feishu_webhook_url";
+    private static final String DIRECT_KEY_FEISHU_SIGN_SECRET = "feishu_sign_secret";
+    private static final boolean DIRECT_DEFAULT_FEISHU_PUSH_ENABLED = true;
 
     private SharedPreferences prefs;
     private Handler handler;
@@ -85,6 +91,9 @@ public class GlobalFloatService extends Service {
     private long runtimeStartFallbackAt = 0L;
     private String cycleLimitDialogMessage = "";
     private boolean cycleLimitDialogVisible = false;
+    private boolean aiConnectionChecking = false;
+    private long lastOverlayNoiseLogAt = 0L;
+    private int overlayNoiseSuppressedCount = 0;
 
     private static final class ExtraOverlay {
         int targetDisplayId = -1;
@@ -227,6 +236,7 @@ public class GlobalFloatService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        String action = intent == null ? "" : String.valueOf(intent.getAction());
         int targetDisplayId = preferredDisplayId;
         boolean hasDisplayExtra = false;
         boolean requestRestartTargetApp = false;
@@ -257,6 +267,13 @@ public class GlobalFloatService extends Service {
                 finishedDurationMs = intent.getLongExtra(ModuleSettings.EXTRA_FINISHED_DURATION_MS, 0L);
             }
         }
+        log("onStartCommand: action=" + action
+                + " startId=" + startId
+                + " hasDisplayExtra=" + hasDisplayExtra
+                + " targetDisplayId=" + targetDisplayId
+                + " requestRestart=" + requestRestartTargetApp
+                + " hasNotice=" + (!TextUtils.isEmpty(cycleNoticeMessage))
+                + " hasCycleDialog=" + hasCycleLimitDialog);
         if (hasDisplayExtra && targetDisplayId >= 0 && targetDisplayId != preferredDisplayId) {
             preferredDisplayId = targetDisplayId;
             log("switch target displayId=" + preferredDisplayId);
@@ -1113,7 +1130,15 @@ public class GlobalFloatService extends Service {
     }
 
     private void onRunClicked() {
+        SharedPreferences settingsPrefs = prefs == null ? ModuleSettings.appPrefs(this) : prefs;
+        log("run clicked: aiEnabled="
+                + ModuleSettings.getAiAnalysisEnabled(settingsPrefs)
+                + " feishuPushEnabled="
+                + ModuleSettings.getFeishuPushEnabled(settingsPrefs)
+                + " engineStatus="
+                + ModuleSettings.getEngineStatus(settingsPrefs));
         if (!isAccessibilityServiceEnabledCompat()) {
+            log("run blocked: accessibility_service_disabled");
             promptEnableAccessibility(true);
             return;
         }
@@ -1124,12 +1149,186 @@ public class GlobalFloatService extends Service {
             collapseActionPanel();
             return;
         }
+        if (ModuleSettings.getAiAnalysisEnabled(ModuleSettings.appPrefs(this))) {
+            runWithAiConnectionCheck();
+            return;
+        }
+        continueRunAfterPrecheckPassed();
+    }
+
+    private void runWithAiConnectionCheck() {
+        if (aiConnectionChecking) {
+            log("run ignored: ai precheck already running");
+            Toast.makeText(this, "连接测试进行中，请稍候", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        aiConnectionChecking = true;
+        Toast.makeText(this, "正在测试AI连接...", Toast.LENGTH_SHORT).show();
+        final Context app = getApplicationContext();
+        final SharedPreferences directPrefs =
+                getSharedPreferences(DIRECT_PREFS_NAME, Context.MODE_PRIVATE);
+        final boolean feishuPushEnabled = directPrefs.getBoolean(
+                DIRECT_KEY_FEISHU_PUSH_ENABLED,
+                DIRECT_DEFAULT_FEISHU_PUSH_ENABLED
+        );
+        log("run precheck start: aiEnabled=true feishuPushEnabled=" + feishuPushEnabled);
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                RankAiConsumptionAnalyzer.TestResult tempResult;
+                try {
+                    tempResult = RankAiConsumptionAnalyzer.testConnection(app);
+                } catch (Throwable e) {
+                    tempResult = RankAiConsumptionAnalyzer.TestResult.fail(
+                            "测试连接异常: " + String.valueOf(e)
+                    );
+                }
+                final RankAiConsumptionAnalyzer.TestResult testResult = tempResult;
+                final FeishuWebhookSender.SendResult feishuResult;
+                if (testResult != null && testResult.success && feishuPushEnabled) {
+                    FeishuWebhookSender.SendResult tempFeishuResult;
+                    try {
+                        tempFeishuResult = testFeishuConnection(app);
+                    } catch (Throwable e) {
+                        String exceptionSummary = summarizeThrowable(e, 8);
+                        log("run precheck feishu exception: " + exceptionSummary);
+                        tempFeishuResult = FeishuWebhookSender.SendResult.fail(
+                                -1,
+                                "test_exception:" + exceptionSummary,
+                                ""
+                        );
+                    }
+                    feishuResult = tempFeishuResult;
+                } else {
+                    feishuResult = null;
+                }
+                Handler h = handler;
+                if (h == null) {
+                    aiConnectionChecking = false;
+                    return;
+                }
+                h.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        aiConnectionChecking = false;
+                        String aiDetail = testResult == null ? "result_null" : safeReason(testResult.detail);
+                        log("run precheck ai result: success="
+                                + (testResult != null && testResult.success)
+                                + " detail=" + aiDetail);
+                        if (testResult == null || !testResult.success) {
+                            String aiFailedMessage = buildAiConnectionToastMessage(aiDetail, false);
+                            log("run blocked by ai connection test failed: " + aiDetail);
+                            Toast.makeText(GlobalFloatService.this, aiFailedMessage, Toast.LENGTH_LONG).show();
+                            collapseActionPanel();
+                            return;
+                        }
+                        if (!feishuPushEnabled) {
+                            String message = buildAiConnectionToastMessage(aiDetail, true);
+                            Toast.makeText(GlobalFloatService.this, message, Toast.LENGTH_LONG).show();
+                            continueRunAfterPrecheckPassed();
+                            return;
+                        }
+                        String feishuDetail = feishuResult == null
+                                ? "result_null"
+                                : safeReason(feishuResult.detail + " status=" + feishuResult.statusCode);
+                        log("run precheck feishu result: success="
+                                + (feishuResult != null && feishuResult.success)
+                                + " detail=" + feishuDetail);
+                        if (feishuResult == null || !feishuResult.success) {
+                            String message = buildFeishuConnectionToastMessage(feishuDetail, false)
+                                    + "；本轮继续运行，飞书推送可能失败";
+                            log("run feishu precheck failed but continue: " + feishuDetail);
+                            Toast.makeText(GlobalFloatService.this, message, Toast.LENGTH_LONG).show();
+                            continueRunAfterPrecheckPassed();
+                            return;
+                        }
+                        String message = "AI/飞书连接测试成功";
+                        Toast.makeText(GlobalFloatService.this, message, Toast.LENGTH_LONG).show();
+                        continueRunAfterPrecheckPassed();
+                    }
+                });
+            }
+        }, "look_ai_precheck").start();
+    }
+
+    private String buildAiConnectionToastMessage(String detail, boolean success) {
+        String text = safeReason(detail);
+        if (TextUtils.isEmpty(text)) {
+            return success ? "AI测试连接成功" : "AI测试连接失败";
+        }
+        String prefix = success ? "AI测试连接成功: " : "AI测试连接失败: ";
+        if (text.length() > 200) {
+            text = text.substring(0, 200) + "...";
+        }
+        return prefix + text;
+    }
+
+    private String buildFeishuConnectionToastMessage(String detail, boolean success) {
+        String text = safeReason(detail);
+        if (TextUtils.isEmpty(text)) {
+            return success ? "飞书机器人测试连接成功" : "飞书机器人测试连接失败";
+        }
+        String prefix = success ? "飞书机器人测试连接成功: " : "飞书机器人测试连接失败: ";
+        if (text.length() > 240) {
+            text = text.substring(0, 240) + "...";
+        }
+        return prefix + text;
+    }
+
+    private FeishuWebhookSender.SendResult testFeishuConnection(Context context) {
+        log("run precheck feishu: step=start");
+        Context safeContext = context == null ? this : context;
+        SharedPreferences localPrefs;
+        try {
+            localPrefs = safeContext.getSharedPreferences(DIRECT_PREFS_NAME, Context.MODE_PRIVATE);
+        } catch (Throwable e) {
+            String detail = "prefs_exception:" + summarizeThrowable(e, 6);
+            log("run precheck feishu: step=appPrefs_failed detail=" + detail);
+            return FeishuWebhookSender.SendResult.fail(-1, detail, "");
+        }
+        String webhook;
+        String signSecret;
+        try {
+            webhook = safeReason(localPrefs.getString(DIRECT_KEY_FEISHU_WEBHOOK_URL, ""));
+            signSecret = safeReason(localPrefs.getString(DIRECT_KEY_FEISHU_SIGN_SECRET, ""));
+        } catch (Throwable e) {
+            String detail = "prefs_value_exception:" + summarizeThrowable(e, 6);
+            log("run precheck feishu: step=read_settings_failed detail=" + detail);
+            return FeishuWebhookSender.SendResult.fail(-1, detail, "");
+        }
+        log("run precheck feishu: step=read_settings_ok webhookEmpty="
+                + TextUtils.isEmpty(webhook)
+                + " signEnabled="
+                + (!TextUtils.isEmpty(signSecret)));
+        if (TextUtils.isEmpty(webhook)) {
+            return FeishuWebhookSender.SendResult.fail(-1, "webhook_url_empty", "");
+        }
+        String message = "LOOK LSP 飞书机器人运行前自动测试\n"
+                + "时间戳(ms): " + System.currentTimeMillis() + "\n"
+                + "结果: 若收到本条消息，说明配置可用。";
+        try {
+            log("run precheck feishu: step=send_begin");
+            FeishuWebhookSender.SendResult result =
+                    FeishuWebhookSender.sendText(safeContext, webhook, signSecret, message);
+            log("run precheck feishu: step=send_end success="
+                    + (result != null && result.success)
+                    + " status=" + (result == null ? -1 : result.statusCode));
+            return result;
+        } catch (Throwable e) {
+            String detail = "send_exception:" + summarizeThrowable(e, 6);
+            log("run precheck feishu: step=send_failed detail=" + detail);
+            return FeishuWebhookSender.SendResult.fail(-1, detail, "");
+        }
+    }
+
+    private void continueRunAfterPrecheckPassed() {
         hideCycleLimitFinishedDialog("run_clicked");
         long seq = ModuleSettings.pushEngineCommand(
                 this,
                 ModuleSettings.ENGINE_CMD_RUN,
                 ModuleSettings.EngineStatus.RUNNING
         );
+        log("run precheck passed: dispatch RUN, seq=" + seq);
         dispatchEngineCommandBroadcast(
                 ModuleSettings.ENGINE_CMD_RUN,
                 ModuleSettings.EngineStatus.RUNNING,
@@ -1137,6 +1336,7 @@ public class GlobalFloatService extends Service {
         );
         collapseActionPanel();
         boolean running = isPackageRunning(UiComponentConfig.TARGET_PACKAGE);
+        log("run launch target: packageRunning=" + running + ", package=" + UiComponentConfig.TARGET_PACKAGE);
         if (running) {
             forceStopPackage(UiComponentConfig.TARGET_PACKAGE);
         }
@@ -1256,6 +1456,7 @@ public class GlobalFloatService extends Service {
             long seq
     ) {
         try {
+            SharedPreferences settingsPrefs = prefs == null ? ModuleSettings.appPrefs(this) : prefs;
             Intent intent = new Intent(ModuleSettings.ACTION_ENGINE_COMMAND);
             intent.setPackage(UiComponentConfig.TARGET_PACKAGE);
             intent.putExtra(ModuleSettings.EXTRA_ENGINE_COMMAND, command);
@@ -1280,6 +1481,34 @@ public class GlobalFloatService extends Service {
             intent.putExtra(
                     ModuleSettings.EXTRA_RUNTIME_CYCLE_ENTERED,
                     ModuleSettings.getRuntimeCycleEntered(prefs)
+            );
+            intent.putExtra(
+                    ModuleSettings.EXTRA_AI_ANALYSIS_ENABLED,
+                    ModuleSettings.getAiAnalysisEnabled(settingsPrefs)
+            );
+            intent.putExtra(
+                    ModuleSettings.EXTRA_AI_API_URL,
+                    ModuleSettings.getAiApiUrl(settingsPrefs)
+            );
+            intent.putExtra(
+                    ModuleSettings.EXTRA_AI_API_KEY,
+                    ModuleSettings.getAiApiKey(settingsPrefs)
+            );
+            intent.putExtra(
+                    ModuleSettings.EXTRA_AI_MODEL,
+                    ModuleSettings.getAiModel(settingsPrefs)
+            );
+            intent.putExtra(
+                    ModuleSettings.EXTRA_FEISHU_PUSH_ENABLED,
+                    ModuleSettings.getFeishuPushEnabled(settingsPrefs)
+            );
+            intent.putExtra(
+                    ModuleSettings.EXTRA_FEISHU_WEBHOOK_URL,
+                    ModuleSettings.getFeishuWebhookUrl(settingsPrefs)
+            );
+            intent.putExtra(
+                    ModuleSettings.EXTRA_FEISHU_SIGN_SECRET,
+                    ModuleSettings.getFeishuSignSecret(settingsPrefs)
             );
             sendBroadcast(intent);
         } catch (Throwable ignore) {
@@ -1494,6 +1723,35 @@ public class GlobalFloatService extends Service {
             return "";
         }
         return reason.trim();
+    }
+
+    private String summarizeThrowable(Throwable throwable, int maxFrames) {
+        if (throwable == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        Throwable current = throwable;
+        int depth = 0;
+        while (current != null && depth < 3) {
+            if (depth > 0) {
+                sb.append(" | cause: ");
+            }
+            sb.append(current.getClass().getName());
+            String msg = safeReason(String.valueOf(current.getMessage()));
+            if (!TextUtils.isEmpty(msg) && !"null".equalsIgnoreCase(msg)) {
+                sb.append(": ").append(msg);
+            }
+            StackTraceElement[] trace = current.getStackTrace();
+            if (trace != null && trace.length > 0) {
+                int limit = Math.max(1, Math.min(maxFrames, trace.length));
+                for (int i = 0; i < limit; i++) {
+                    sb.append(" @").append(trace[i].toString());
+                }
+            }
+            current = current.getCause();
+            depth++;
+        }
+        return sb.toString();
     }
 
     private void showCycleCompleteNotice(String message) {
@@ -1929,6 +2187,33 @@ public class GlobalFloatService extends Service {
                     "未检测到 root 权限，请先授予 root"
             );
         }
+        SharedPreferences settingsPrefs = prefs == null ? ModuleSettings.appPrefs(this) : prefs;
+        boolean aiEnabled = ModuleSettings.getAiAnalysisEnabled(settingsPrefs);
+        if (aiEnabled) {
+            String url = ModuleSettings.getAiApiUrl(settingsPrefs);
+            String apiKey = ModuleSettings.getAiApiKey(settingsPrefs);
+            String model = ModuleSettings.getAiModel(settingsPrefs);
+            boolean feishuPushEnabled = ModuleSettings.getFeishuPushEnabled(settingsPrefs);
+            String feishuWebhook = ModuleSettings.getFeishuWebhookUrl(settingsPrefs);
+            if (TextUtils.isEmpty(url)) {
+                return RuntimePrecheckResult.fail(
+                        "ai_config_missing_url",
+                        "AI配置不完整：请先填写 AI大模型URL"
+                );
+            }
+            if (TextUtils.isEmpty(apiKey)) {
+                return RuntimePrecheckResult.fail(
+                        "ai_config_missing_key",
+                        "AI配置不完整：请先填写 AI大模型AKY"
+                );
+            }
+            if (TextUtils.isEmpty(model)) {
+                return RuntimePrecheckResult.fail(
+                        "ai_config_missing_model",
+                        "AI配置不完整：请先填写 AI大模型model"
+                );
+            }
+        }
         return RuntimePrecheckResult.ok();
     }
 
@@ -2124,9 +2409,33 @@ public class GlobalFloatService extends Service {
     }
 
     private void log(String msg) {
+        String safeMsg = msg == null ? "" : msg;
+        if (isOverlayNoiseLog(safeMsg)) {
+            long now = System.currentTimeMillis();
+            if (now - lastOverlayNoiseLogAt < OVERLAY_NOISE_LOG_THROTTLE_MS) {
+                overlayNoiseSuppressedCount++;
+                return;
+            }
+            if (overlayNoiseSuppressedCount > 0) {
+                Log.i(TAG, "[FloatService] overlay noise suppressed=" + overlayNoiseSuppressedCount);
+                overlayNoiseSuppressedCount = 0;
+            }
+            lastOverlayNoiseLogAt = now;
+        }
         try {
-            Log.i(TAG, "[FloatService] " + msg);
+            Log.i(TAG, "[FloatService] " + safeMsg);
         } catch (Throwable ignore) {
         }
+    }
+
+    private boolean isOverlayNoiseLog(String msg) {
+        if (TextUtils.isEmpty(msg)) {
+            return false;
+        }
+        return msg.startsWith("overlay removed")
+                || msg.startsWith("overlay added on displayId=")
+                || msg.startsWith("global overlay display unresolved")
+                || msg.startsWith("mirror overlay display unresolved")
+                || msg.startsWith("extra overlay display unresolved");
     }
 }

@@ -29,6 +29,7 @@ final class AccessibilityCustomRulesAdEngine {
     private static final String TAG = "LOOKA11yAd";
     private static final String LOG_PREFIX = "[LOOKA11yAd]";
     private static final String ALL_PATTERN_PREFIX = "ALL:";
+    private static final long ALL_RULE_MISS_SAME_LOG_INTERVAL_MS = 30_000L;
     private static final Map<String, List<PopupRule>> RULE_CACHE =
             new ConcurrentHashMap<String, List<PopupRule>>();
 
@@ -314,9 +315,6 @@ final class AccessibilityCustomRulesAdEngine {
         if (!idPattern.startsWith(ALL_PATTERN_PREFIX)) {
             return;
         }
-        if (nowMs - rule.lastMissLogAt < 3000L) {
-            return;
-        }
         String allPattern = safeTrim(idPattern.substring(ALL_PATTERN_PREFIX.length()));
         if (TextUtils.isEmpty(allPattern)) {
             return;
@@ -335,8 +333,36 @@ final class AccessibilityCustomRulesAdEngine {
         if (missing.isEmpty()) {
             return;
         }
+        String missSignature = buildMissingSignature(missing);
+        boolean sameAsLast = missSignature.equals(rule.lastMissSignature);
+        if (sameAsLast && nowMs - rule.lastMissLogAt < ALL_RULE_MISS_SAME_LOG_INTERVAL_MS) {
+            rule.missSuppressedCount++;
+            return;
+        }
+        int suppressed = rule.missSuppressedCount;
+        rule.missSuppressedCount = 0;
+        rule.lastMissSignature = missSignature;
         rule.lastMissLogAt = nowMs;
-        log("ALL规则未满足: id=" + idPattern + " missing=" + missing);
+        if (suppressed > 0) {
+            log("ALL规则未满足: id=" + idPattern + " missing=" + missing
+                    + " suppressed=" + suppressed);
+        } else {
+            log("ALL规则未满足: id=" + idPattern + " missing=" + missing);
+        }
+    }
+
+    private static String buildMissingSignature(List<String> missing) {
+        if (missing == null || missing.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < missing.size(); i++) {
+            if (i > 0) {
+                sb.append(';');
+            }
+            sb.append(safeTrim(missing.get(i)));
+        }
+        return sb.toString();
     }
 
     private static NodeRef findNodeByPattern(List<NodeRef> nodes, String pattern) {
@@ -638,6 +664,8 @@ final class AccessibilityCustomRulesAdEngine {
         long lastHandleAt;
         long lastFailLogAt;
         long lastMissLogAt;
+        String lastMissSignature;
+        int missSuppressedCount;
 
         PopupRule(String idPattern, String actionPattern, int delayPopupMs) {
             this.idPattern = idPattern;
@@ -646,6 +674,8 @@ final class AccessibilityCustomRulesAdEngine {
             this.lastHandleAt = 0L;
             this.lastFailLogAt = 0L;
             this.lastMissLogAt = 0L;
+            this.lastMissSignature = "";
+            this.missSuppressedCount = 0;
         }
     }
 }
