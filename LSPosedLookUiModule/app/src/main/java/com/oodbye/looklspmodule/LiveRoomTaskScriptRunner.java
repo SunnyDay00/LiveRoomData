@@ -554,7 +554,8 @@ final class LiveRoomTaskScriptRunner {
             return;
         }
         final int safeTargetCount = Math.max(0, targetCount);
-        if (safeTargetCount <= 0) {
+        final boolean collectAllRankUsers = ModuleSettings.isCollectAllRankUsersEnabled();
+        if (safeTargetCount <= 0 && !collectAllRankUsers) {
             log(
                     activity,
                     "task=live_room_enter_task rank collect skip: " + safeTrim(rankName)
@@ -597,6 +598,7 @@ final class LiveRoomTaskScriptRunner {
                         + " dispatchRound=" + dispatchRound
                         + " requestId=" + requestId
                         + " targetCount=" + safeTargetCount
+                        + " collectAll=" + collectAllRankUsers
                         + " homeId=" + safeTrim(taskContext.homeId)
                         + " enterAt=" + taskContext.enterTimeMs
         );

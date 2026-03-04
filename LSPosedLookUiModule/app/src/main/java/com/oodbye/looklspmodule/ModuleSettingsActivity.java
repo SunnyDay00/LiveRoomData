@@ -638,7 +638,7 @@ public class ModuleSettingsActivity extends Activity {
         container.addView(singleRankRetryRow);
 
         TextView singleRankRetryLabel = new TextView(this);
-        singleRankRetryLabel.setText("单榜重试上限/超时重试次数");
+        singleRankRetryLabel.setText("单榜重试上限/超时设置");
         singleRankRetryLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         LinearLayout.LayoutParams singleRankRetryLabelLp = new LinearLayout.LayoutParams(
                 0,
@@ -705,7 +705,7 @@ public class ModuleSettingsActivity extends Activity {
         singleRankRetryRow.addView(singleRankRetrySaveBtn);
 
         TextView singleRankRetryHint = new TextView(this);
-        singleRankRetryHint.setText("默认 3。单榜采集超时/失败达到该次数后停止重派发，避免无限重试。");
+        singleRankRetryHint.setText("默认 3。连续上滑无新榜单数据达到该次数时，判定该榜单数量不足并结束采集；同时用于限制单榜失败重试次数。");
         singleRankRetryHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         LinearLayout.LayoutParams singleRankRetryHintLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -715,6 +715,39 @@ public class ModuleSettingsActivity extends Activity {
         singleRankRetryHint.setLayoutParams(singleRankRetryHintLp);
         container.addView(singleRankRetryHint);
 
+        final Switch collectAllRankUsersSwitch = new Switch(this);
+        collectAllRankUsersSwitch.setText("全量采集榜单用户数据");
+        collectAllRankUsersSwitch.setChecked(ModuleSettings.getCollectAllRankUsersEnabled(prefs));
+        LinearLayout.LayoutParams collectAllRankUsersLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        collectAllRankUsersLp.topMargin = dp(20);
+        collectAllRankUsersSwitch.setLayoutParams(collectAllRankUsersLp);
+        collectAllRankUsersSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                ModuleSettings.setCollectAllRankUsersEnabled(ModuleSettingsActivity.this, isChecked);
+                Toast.makeText(
+                        ModuleSettingsActivity.this,
+                        isChecked ? "已开启全量采集榜单用户数据" : "已关闭全量采集榜单用户数据",
+                        Toast.LENGTH_SHORT
+                ).show();
+            }
+        });
+        container.addView(collectAllRankUsersSwitch);
+
+        TextView collectAllRankUsersHint = new TextView(this);
+        collectAllRankUsersHint.setText("默认开启。开启后忽略贡献榜/魅力榜循环点击次数，持续上滑采集，直到连续无新榜单数据达到“单榜重试上限/超时设置”后判定榜单到底。");
+        collectAllRankUsersHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        LinearLayout.LayoutParams collectAllRankUsersHintLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        collectAllRankUsersHintLp.topMargin = dp(6);
+        collectAllRankUsersHint.setLayoutParams(collectAllRankUsersHintLp);
+        container.addView(collectAllRankUsersHint);
+
         final Switch collectUserDetailSwitch = new Switch(this);
         collectUserDetailSwitch.setText("采集用户详细界面");
         collectUserDetailSwitch.setChecked(ModuleSettings.getCollectUserDetailEnabled(prefs));
@@ -722,7 +755,7 @@ public class ModuleSettingsActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
         );
-        collectUserDetailLp.topMargin = dp(20);
+        collectUserDetailLp.topMargin = dp(16);
         collectUserDetailSwitch.setLayoutParams(collectUserDetailLp);
         collectUserDetailSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
             @Override

@@ -27,11 +27,15 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import moe.shizuku.server.IRemoteProcess;
 import moe.shizuku.server.IShizukuService;
@@ -43,6 +47,8 @@ public class LookAccessibilityAdService extends AccessibilityService {
     private static final long PANEL_SNAPSHOT_LOG_INTERVAL_MS = 3000L;
     private static final long SHIZUKU_PERMISSION_REQUEST_INTERVAL_MS = 30_000L;
     private static final int SHIZUKU_PERMISSION_REQUEST_CODE = 1201;
+    private static final Pattern RANK_VALUE_LEADING_DIGITS_PATTERN =
+            Pattern.compile("^(\\d{1,4})\\D*$");
 
     private Handler handler;
     private AccessibilityCustomRulesAdEngine adEngine;
@@ -384,8 +390,11 @@ public class LookAccessibilityAdService extends AccessibilityService {
             int targetCount
     ) {
         String type = safeTrim(rankType);
+        boolean collectAllRankUsers = ModuleSettings.getCollectAllRankUsersEnabled(
+                ModuleSettings.appPrefs(this)
+        );
         int safeTargetCount = Math.max(0, targetCount);
-        if (safeTargetCount <= 0) {
+        if (!collectAllRankUsers && safeTargetCount <= 0) {
             return new RankCollectSummary(
                     true,
                     "target_count_zero",
@@ -409,11 +418,18 @@ public class LookAccessibilityAdService extends AccessibilityService {
         }
         log("开始榜单采集: requestId=" + requestId
                 + " type=" + type
-                + " targetCount=" + safeTargetCount
+                + " targetCount=" + (collectAllRankUsers ? "ALL" : safeTargetCount)
+                + " collectAll=" + collectAllRankUsers
                 + " homeId=" + homeId
                 + " enterTime=" + enterTimeMs
                 + " csv=" + safeTrim(csvPath));
-        RankCollectSummary summary = collectRankRows(type, homeId, enterTimeMs, safeTargetCount);
+        RankCollectSummary summary = collectRankRows(
+                type,
+                homeId,
+                enterTimeMs,
+                safeTargetCount,
+                collectAllRankUsers
+        );
         String detail = safeTrim(summary.detail);
         if (TextUtils.isEmpty(detail)) {
             detail = "done";
@@ -428,10 +444,11 @@ public class LookAccessibilityAdService extends AccessibilityService {
             String rankType,
             String homeId,
             long enterTimeMs,
-            int targetCount
+            int targetCount,
+            boolean collectAllRankUsers
     ) {
         int safeTargetCount = Math.max(0, targetCount);
-        if (safeTargetCount <= 0) {
+        if (!collectAllRankUsers && safeTargetCount <= 0) {
             return new RankCollectSummary(true, "target_count_zero", 0, 0);
         }
         int nextRank = 1;
@@ -444,8 +461,14 @@ public class LookAccessibilityAdService extends AccessibilityService {
         int rankPageNotReadyRetry = 0;
         int clickFailedRetry = 0;
         boolean rankPageOpenedLogged = false;
+        boolean pendingNoProgressConfirm = false;
+        boolean stoppedByNoProgressLimit = false;
         boolean collectDetailEnabled = ModuleSettings.getCollectUserDetailEnabled(
                 ModuleSettings.appPrefs(this)
+        );
+        int singleRankRetryLimit = Math.max(
+                1,
+                ModuleSettings.getSingleRankRetryLimit(ModuleSettings.appPrefs(this))
         );
         boolean success = true;
         String failDetail = "";
@@ -454,7 +477,7 @@ public class LookAccessibilityAdService extends AccessibilityService {
                 new ArrayList<LiveRoomRankCsvStore.ContributionCsvRow>();
         List<LiveRoomRankCsvStore.CharmCsvRow> charmRows =
                 new ArrayList<LiveRoomRankCsvStore.CharmCsvRow>();
-        while (nextRank <= safeTargetCount) {
+        while (collectAllRankUsers || nextRank <= safeTargetCount) {
             if (!isEngineRunningForRankCollect()) {
                 success = false;
                 failDetail = "engine_stopped";
@@ -509,11 +532,100 @@ public class LookAccessibilityAdService extends AccessibilityService {
                 safeRecycle(root);
             }
             highestObservedRank = Math.max(highestObservedRank, scanResult.maxRank);
+            if (!collectDetailEnabled && collectAllRankUsers) {
+                int pageCollected = 0;
+                DetailCollectData listModeDetail = new DetailCollectData(false, "", "", "", "");
+                for (RankRowData visibleRow : scanResult.visibleRows) {
+                    if (visibleRow == null || visibleRow.rank <= 0) {
+                        continue;
+                    }
+                    if (doneRanks.contains(visibleRow.rank)) {
+                        continue;
+                    }
+                    boolean queued = queueRankRow(
+                            rankType,
+                            homeId,
+                            visibleRow,
+                            listModeDetail,
+                            enterTimeMs,
+                            contributionRows,
+                            charmRows
+                    );
+                    if (!queued) {
+                        log("榜单采集入队失败: type=" + safeTrim(rankType) + " rank=" + visibleRow.rank);
+                        continue;
+                    }
+                    doneRanks.add(visibleRow.rank);
+                    collectedCount++;
+                    pageCollected++;
+                    maxCollectedRank = Math.max(maxCollectedRank, visibleRow.rank);
+                    log("榜单采集完成一条: type=" + safeTrim(rankType)
+                            + " rank=" + visibleRow.rank
+                            + " name=" + safeTrim(visibleRow.name)
+                            + " data=" + safeTrim(visibleRow.dataValue)
+                            + " id="
+                            + " detailMode=list");
+                }
+                if (pageCollected > 0) {
+                    nextRank = resolveNextMissingRank(doneRanks, nextRank);
+                    pendingNoProgressConfirm = false;
+                    noProgressScrollCount = 0;
+                    log("榜单可见区批量采集: type=" + safeTrim(rankType)
+                            + " pageCollected=" + pageCollected
+                            + " totalCollected=" + collectedCount
+                            + " nextRank=" + nextRank
+                            + " scannedMaxRank=" + scanResult.maxRank);
+                    continue;
+                }
+            }
+            if (collectAllRankUsers
+                    && collectDetailEnabled
+                    && (scanResult.match == null
+                    || scanResult.match.row == null
+                    || scanResult.match.node == null)) {
+                RankRowData fallbackRow = null;
+                for (RankRowData visibleRow : scanResult.visibleRows) {
+                    if (visibleRow == null || visibleRow.rank <= 0) {
+                        continue;
+                    }
+                    if (doneRanks.contains(visibleRow.rank)) {
+                        continue;
+                    }
+                    fallbackRow = visibleRow;
+                    break;
+                }
+                if (fallbackRow != null) {
+                    int expectedBefore = nextRank;
+                    nextRank = fallbackRow.rank;
+                    if (expectedBefore != nextRank) {
+                        log("榜单当前页目标排名缺失，改用可见排名重试: type=" + safeTrim(rankType)
+                                + " expectedRank=" + expectedBefore
+                                + " fallbackRank=" + nextRank
+                                + " scannedMaxRank=" + scanResult.maxRank);
+                        continue;
+                    }
+                }
+            }
+            int visibleFallbackRank = resolveFirstVisibleUncollectedRank(
+                    scanResult.visibleRows,
+                    doneRanks,
+                    collectAllRankUsers ? Integer.MAX_VALUE : safeTargetCount
+            );
+            if (visibleFallbackRank > 0 && visibleFallbackRank != nextRank) {
+                int expectedBefore = nextRank;
+                nextRank = visibleFallbackRank;
+                log("榜单当前页存在未采集用户，优先继续当前页: type=" + safeTrim(rankType)
+                        + " expectedRank=" + expectedBefore
+                        + " continueWithRank=" + nextRank
+                        + " scannedMaxRank=" + scanResult.maxRank
+                        + " visibleRanks=" + buildVisibleRanksSummary(scanResult.visibleRows));
+                continue;
+            }
             if (scanResult.match != null && scanResult.match.row != null && scanResult.match.node != null) {
                 RankRowData row = scanResult.match.row;
                 AccessibilityNodeInfo rowNode = scanResult.match.node;
                 if (doneRanks.contains(row.rank)) {
-                    nextRank = row.rank + 1;
+                    nextRank = resolveNextMissingRank(doneRanks, nextRank);
                     safeRecycle(rowNode);
                     continue;
                 }
@@ -588,7 +700,8 @@ public class LookAccessibilityAdService extends AccessibilityService {
                 doneRanks.add(row.rank);
                 collectedCount++;
                 maxCollectedRank = Math.max(maxCollectedRank, row.rank);
-                nextRank = row.rank + 1;
+                nextRank = resolveNextMissingRank(doneRanks, nextRank);
+                pendingNoProgressConfirm = false;
                 noProgressScrollCount = 0;
                 log("榜单采集完成一条: type=" + safeTrim(rankType)
                         + " rank=" + row.rank
@@ -598,25 +711,57 @@ public class LookAccessibilityAdService extends AccessibilityService {
                         + " detailMode=" + (collectDetailEnabled ? "detail" : "list"));
                 continue;
             }
+            int visibleMaxRank = 0;
+            for (RankRowData visibleRow : scanResult.visibleRows) {
+                if (visibleRow == null || visibleRow.rank <= 0) {
+                    continue;
+                }
+                visibleMaxRank = Math.max(visibleMaxRank, visibleRow.rank);
+            }
+            boolean pageExhaustedForExpected = visibleMaxRank > 0 && nextRank > visibleMaxRank;
+            if (noProgressScrollCount > 0 || scrollCount % 3 == 0) {
+                if (pageExhaustedForExpected) {
+                    log("榜单当前页已采尽，准备上滑: type=" + safeTrim(rankType)
+                            + " expectedRank=" + nextRank
+                            + " visibleMaxRank=" + visibleMaxRank
+                            + " visibleCount=" + scanResult.visibleRows.size()
+                            + " visibleRanks=" + buildVisibleRanksSummary(scanResult.visibleRows));
+                } else {
+                    log("榜单目标排名当前不可见，继续上滑: type=" + safeTrim(rankType)
+                            + " expectedRank=" + nextRank
+                            + " scannedMaxRank=" + scanResult.maxRank
+                            + " visibleCount=" + scanResult.visibleRows.size()
+                            + " visibleRanks=" + buildVisibleRanksSummary(scanResult.visibleRows)
+                            + " signature=" + safeTrim(scanResult.pageSignature));
+                }
+            }
             if (!success) {
                 break;
             }
-            if (scrollCount >= UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_MAX_COUNT
-                    || noProgressScrollCount >= UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_NO_PROGRESS_MAX_COUNT) {
+            int scrollHardLimit = collectAllRankUsers
+                    ? Math.max(
+                    UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_MAX_COUNT + 40,
+                    UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_MAX_COUNT * 8
+            )
+                    : UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_MAX_COUNT;
+            if (scrollCount >= scrollHardLimit) {
                 log("榜单采集停止上滑: type=" + safeTrim(rankType)
                         + " reason=scroll_limit"
                         + " nextRank=" + nextRank
                         + " scrollCount=" + scrollCount
+                        + " scrollLimit=" + scrollHardLimit
                         + " noProgress=" + noProgressScrollCount
+                        + " noProgressLimit=" + Math.max(1, singleRankRetryLimit)
                         + " maxObserved=" + highestObservedRank);
                 break;
             }
-            int before = highestObservedRank;
+            int before = scanResult.maxRank;
             log("榜单采集准备上滑: type=" + safeTrim(rankType)
                     + " nextRank=" + nextRank
                     + " maxRankBefore=" + before
                     + " scrollCount=" + scrollCount
-                    + " noProgress=" + noProgressScrollCount);
+                    + " noProgress=" + noProgressScrollCount
+                    + " confirmPending=" + pendingNoProgressConfirm);
             AccessibilityNodeInfo scrollRoot = obtainTargetRoot();
             boolean scrolled = false;
             try {
@@ -627,10 +772,12 @@ public class LookAccessibilityAdService extends AccessibilityService {
             scrollCount++;
             SystemClock.sleep(UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_WAIT_MS);
             int after = before;
+            RankScanResult afterScan = null;
             AccessibilityNodeInfo rootAfter = obtainTargetRoot();
             if (rootAfter != null) {
                 try {
-                    after = Math.max(after, scanRankRows(rootAfter, rankType, -1).maxRank);
+                    afterScan = scanRankRows(rootAfter, rankType, -1);
+                    after = Math.max(after, afterScan.maxRank);
                 } finally {
                     safeRecycle(rootAfter);
                 }
@@ -674,10 +821,13 @@ public class LookAccessibilityAdService extends AccessibilityService {
                     int compensateAfter = after;
                     if (compensateAfterRoot != null) {
                         try {
-                            compensateAfter = Math.max(
-                                    compensateAfter,
-                                    scanRankRows(compensateAfterRoot, rankType, -1).maxRank
+                            RankScanResult compensateAfterScan = scanRankRows(
+                                    compensateAfterRoot,
+                                    rankType,
+                                    -1
                             );
+                            afterScan = compensateAfterScan;
+                            compensateAfter = Math.max(compensateAfter, compensateAfterScan.maxRank);
                         } finally {
                             safeRecycle(compensateAfterRoot);
                         }
@@ -689,10 +839,45 @@ public class LookAccessibilityAdService extends AccessibilityService {
                 }
             }
             highestObservedRank = Math.max(highestObservedRank, after);
-            if (!scrolled || after <= before) {
-                noProgressScrollCount++;
-            } else {
+            boolean signatureChanged = isRankPageRefreshed(scanResult, afterScan);
+            boolean rankProgressed = scrolled
+                    && (
+                    after > before
+                            || signatureChanged
+            );
+            if (rankProgressed) {
+                pendingNoProgressConfirm = false;
                 noProgressScrollCount = 0;
+            } else {
+                int noProgressLimit = Math.max(1, singleRankRetryLimit);
+                if (!pendingNoProgressConfirm) {
+                    pendingNoProgressConfirm = true;
+                    noProgressScrollCount = 1;
+                    log("榜单采集疑似到底，进入复核上滑: type=" + safeTrim(rankType)
+                            + " nextRank=" + nextRank
+                            + " retry=" + noProgressScrollCount + "/" + noProgressLimit
+                            + " maxRankBefore=" + before
+                            + " maxRankAfter=" + after
+                            + " limit=" + noProgressLimit);
+                } else {
+                    noProgressScrollCount++;
+                    log("榜单采集到底复核: type=" + safeTrim(rankType)
+                            + " nextRank=" + nextRank
+                            + " retry=" + noProgressScrollCount + "/" + noProgressLimit
+                            + " maxRankBefore=" + before
+                            + " maxRankAfter=" + after);
+                }
+                if (noProgressScrollCount >= noProgressLimit) {
+                    stoppedByNoProgressLimit = true;
+                    log("榜单采集停止上滑: type=" + safeTrim(rankType)
+                            + " reason=no_progress_limit"
+                            + " nextRank=" + nextRank
+                            + " scrollCount=" + scrollCount
+                            + " noProgress=" + noProgressScrollCount
+                            + " noProgressLimit=" + noProgressLimit
+                            + " maxObserved=" + highestObservedRank);
+                    break;
+                }
             }
             log("榜单采集上滑: type=" + safeTrim(rankType)
                     + " nextRank=" + nextRank
@@ -700,23 +885,44 @@ public class LookAccessibilityAdService extends AccessibilityService {
                     + " noProgress=" + noProgressScrollCount
                     + " maxRankBefore=" + before
                     + " maxRankAfter=" + after
-                    + " scrolled=" + scrolled);
+                    + " scrolled=" + scrolled
+                    + " progressed=" + rankProgressed
+                    + " signatureChanged=" + signatureChanged
+                    + " confirmPending=" + pendingNoProgressConfirm);
         }
-        if (success && safeTargetCount > 0 && collectedCount <= 0) {
+        if (success && collectedCount <= 0) {
             success = false;
             failDetail = "rank_no_data_collected";
         }
-        boolean countMatched = safeTargetCount <= 0 || collectedCount >= safeTargetCount;
+        boolean countMatched = collectAllRankUsers
+                ? stoppedByNoProgressLimit
+                : (safeTargetCount <= 0 || collectedCount >= safeTargetCount);
         if (success && !countMatched) {
-            success = false;
-            failDetail = "rank_target_not_reached(target=" + safeTargetCount
-                    + ",actual=" + collectedCount
-                    + ",highestObserved=" + highestObservedRank + ")";
+            if (!collectAllRankUsers && stoppedByNoProgressLimit && collectedCount > 0) {
+                countMatched = true;
+                log("榜单采集提前完成: type=" + safeTrim(rankType)
+                        + " reason=no_progress_limit"
+                        + " target=" + safeTargetCount
+                        + " actual=" + collectedCount
+                        + " highestObserved=" + highestObservedRank
+                        + " limit=" + singleRankRetryLimit);
+            } else if (collectAllRankUsers) {
+                success = false;
+                failDetail = "collect_all_not_confirmed_bottom(actual=" + collectedCount
+                        + ",highestObserved=" + highestObservedRank
+                        + ",scrollCount=" + scrollCount + ")";
+            } else {
+                success = false;
+                failDetail = "rank_target_not_reached(target=" + safeTargetCount
+                        + ",actual=" + collectedCount
+                        + ",highestObserved=" + highestObservedRank + ")";
+            }
         }
         RankFlushResult flushResult = flushQueuedRankRows(rankType, contributionRows, charmRows);
         boolean flushOk = flushResult.ioSuccess && flushResult.acceptedCount >= collectedCount;
+        String targetLabel = collectAllRankUsers ? "ALL" : String.valueOf(safeTargetCount);
         log("榜单采集数量核对: type=" + safeTrim(rankType)
-                + " target=" + safeTargetCount
+                + " target=" + targetLabel
                 + " actual=" + collectedCount
                 + " matched=" + countMatched
                 + " maxRank=" + maxCollectedRank
@@ -731,7 +937,7 @@ public class LookAccessibilityAdService extends AccessibilityService {
                 + " ioSuccess=" + flushResult.ioSuccess
                 + " flushOk=" + flushOk
                 + " detailMode=" + (collectDetailEnabled ? "detail" : "list"));
-        String detail = (success ? "collect_done" : safeTrim(failDetail)) + "(target=" + safeTargetCount
+        String detail = (success ? "collect_done" : safeTrim(failDetail)) + "(target=" + targetLabel
                 + ",count=" + collectedCount
                 + ",matched=" + countMatched
                 + ",accepted=" + flushResult.acceptedCount
@@ -937,7 +1143,12 @@ public class LookAccessibilityAdService extends AccessibilityService {
             int expectedRank
     ) {
         if (root == null) {
-            return new RankScanResult(null, 0);
+            return new RankScanResult(
+                    null,
+                    0,
+                    "",
+                    Collections.<RankRowData>emptyList()
+            );
         }
         ArrayDeque<AccessibilityNodeInfo> queue = new ArrayDeque<AccessibilityNodeInfo>();
         ArrayDeque<AccessibilityNodeInfo> allNodes = new ArrayDeque<AccessibilityNodeInfo>();
@@ -946,6 +1157,9 @@ public class LookAccessibilityAdService extends AccessibilityService {
         allNodes.offer(rootCopy);
         RankRowMatch matched = null;
         int maxRank = 0;
+        ArrayList<RankVisibleRow> signatureRows = new ArrayList<RankVisibleRow>();
+        ArrayList<RankRowData> visibleRows = new ArrayList<RankRowData>();
+        HashSet<Integer> visibleRankSet = new HashSet<Integer>();
         try {
             while (!queue.isEmpty()) {
                 AccessibilityNodeInfo current = queue.poll();
@@ -955,7 +1169,36 @@ public class LookAccessibilityAdService extends AccessibilityService {
                 if (isRankRowCandidateNode(current)) {
                     RankRowData rowData = parseRankRowData(current, rankType);
                     if (rowData != null && rowData.rank > 0) {
+                        Rect bounds = new Rect();
+                        boolean hasBounds = false;
+                        try {
+                            current.getBoundsInScreen(bounds);
+                            hasBounds = true;
+                        } catch (Throwable ignore) {
+                            hasBounds = false;
+                        }
+                        if (!hasBounds || !isRectInCurrentScreen(bounds)) {
+                            continue;
+                        }
                         maxRank = Math.max(maxRank, rowData.rank);
+                        if (signatureRows.size() < 50) {
+                            signatureRows.add(
+                                    new RankVisibleRow(
+                                            bounds.top,
+                                            rowData.rank,
+                                            rowData.name
+                                    )
+                            );
+                        }
+                        if (!visibleRankSet.contains(rowData.rank)) {
+                            visibleRankSet.add(rowData.rank);
+                            visibleRows.add(new RankRowData(
+                                    rowData.rank,
+                                    rowData.level,
+                                    rowData.name,
+                                    rowData.dataValue
+                            ));
+                        }
                         if (expectedRank > 0 && rowData.rank == expectedRank && matched == null) {
                             matched = new RankRowMatch(
                                     AccessibilityNodeInfo.obtain(current),
@@ -983,7 +1226,77 @@ public class LookAccessibilityAdService extends AccessibilityService {
                 safeRecycle(allNodes.poll());
             }
         }
-        return new RankScanResult(matched, maxRank);
+        Collections.sort(visibleRows, new Comparator<RankRowData>() {
+            @Override
+            public int compare(RankRowData o1, RankRowData o2) {
+                if (o1 == o2) {
+                    return 0;
+                }
+                if (o1 == null) {
+                    return -1;
+                }
+                if (o2 == null) {
+                    return 1;
+                }
+                return o1.rank - o2.rank;
+            }
+        });
+        return new RankScanResult(
+                matched,
+                maxRank,
+                buildRankPageSignature(signatureRows),
+                visibleRows
+        );
+    }
+
+    private boolean isRankPageRefreshed(RankScanResult before, RankScanResult after) {
+        if (before == null || after == null) {
+            return false;
+        }
+        if (after.maxRank > before.maxRank) {
+            return true;
+        }
+        return !TextUtils.equals(safeTrim(before.pageSignature), safeTrim(after.pageSignature));
+    }
+
+    private String buildRankPageSignature(List<RankVisibleRow> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return "";
+        }
+        Collections.sort(rows, new Comparator<RankVisibleRow>() {
+            @Override
+            public int compare(RankVisibleRow o1, RankVisibleRow o2) {
+                if (o1 == o2) {
+                    return 0;
+                }
+                if (o1 == null) {
+                    return -1;
+                }
+                if (o2 == null) {
+                    return 1;
+                }
+                if (o1.top != o2.top) {
+                    return o1.top - o2.top;
+                }
+                if (o1.rank != o2.rank) {
+                    return o1.rank - o2.rank;
+                }
+                return safeTrim(o1.name).compareTo(safeTrim(o2.name));
+            }
+        });
+        StringBuilder signatureBuilder = new StringBuilder();
+        int maxSignatureCount = Math.min(20, rows.size());
+        for (int i = 0; i < maxSignatureCount; i++) {
+            RankVisibleRow row = rows.get(i);
+            if (row == null) {
+                continue;
+            }
+            if (signatureBuilder.length() > 0) {
+                signatureBuilder.append(';');
+            }
+            signatureBuilder.append(row.rank).append('|').append(safeTrim(row.name));
+        }
+        return signatureBuilder.toString();
     }
 
     private boolean isRankRowCandidateNode(AccessibilityNodeInfo node) {
@@ -1016,10 +1329,7 @@ public class LookAccessibilityAdService extends AccessibilityService {
         if (texts.isEmpty()) {
             return null;
         }
-        int rank = parseRankValue(pickByIndex(texts, 0));
-        if (rank <= 0) {
-            rank = parseFirstRankFromTexts(texts);
-        }
+        int rank = extractRankFromRowNode(rowNode, texts);
         if (rank <= 0) {
             return null;
         }
@@ -1044,6 +1354,93 @@ public class LookAccessibilityAdService extends AccessibilityService {
             dataValue = findLastDataLikeText(texts);
         }
         return new RankRowData(rank, "", name, dataValue);
+    }
+
+    private int extractRankFromRowNode(AccessibilityNodeInfo rowNode, List<String> texts) {
+        if (rowNode == null) {
+            return parseFirstRankFromTexts(texts);
+        }
+        Rect rowRect = new Rect();
+        boolean rowRectOk = false;
+        try {
+            rowNode.getBoundsInScreen(rowRect);
+            rowRectOk = rowRect.width() > 0 && rowRect.height() > 0;
+        } catch (Throwable ignore) {
+            rowRectOk = false;
+        }
+        if (!rowRectOk) {
+            int rankFromFirst = parseRankValue(pickByIndex(texts, 0));
+            if (rankFromFirst > 0) {
+                return rankFromFirst;
+            }
+            return parseFirstRankFromTexts(texts);
+        }
+        ArrayDeque<AccessibilityNodeInfo> queue = new ArrayDeque<AccessibilityNodeInfo>();
+        ArrayDeque<AccessibilityNodeInfo> allNodes = new ArrayDeque<AccessibilityNodeInfo>();
+        AccessibilityNodeInfo rootCopy = AccessibilityNodeInfo.obtain(rowNode);
+        queue.offer(rootCopy);
+        allNodes.offer(rootCopy);
+        int bestRank = 0;
+        int bestScore = Integer.MAX_VALUE;
+        try {
+            while (!queue.isEmpty()) {
+                AccessibilityNodeInfo current = queue.poll();
+                if (current == null) {
+                    continue;
+                }
+                String text = readNodeText(current);
+                int parsedRank = parseRankValue(text);
+                if (parsedRank > 0) {
+                    Rect nodeRect = new Rect();
+                    boolean nodeRectOk = false;
+                    try {
+                        current.getBoundsInScreen(nodeRect);
+                        nodeRectOk = true;
+                    } catch (Throwable ignore) {
+                        nodeRectOk = false;
+                    }
+                    if (nodeRectOk && isRectInCurrentScreen(nodeRect)) {
+                        int rowWidth = Math.max(1, rowRect.width());
+                        int leftOffset = Math.max(0, nodeRect.left - rowRect.left);
+                        float leftRatio = leftOffset / (float) rowWidth;
+                        if (leftRatio <= 0.38f) {
+                            int topOffset = Math.max(0, nodeRect.top - rowRect.top);
+                            int textLen = safeTrim(text).length();
+                            int score = leftOffset * 5 + topOffset * 2 + textLen * 8;
+                            if (score < bestScore) {
+                                bestScore = score;
+                                bestRank = parsedRank;
+                            }
+                        }
+                    }
+                }
+                int childCount = Math.max(0, current.getChildCount());
+                for (int i = 0; i < childCount; i++) {
+                    AccessibilityNodeInfo child = null;
+                    try {
+                        child = current.getChild(i);
+                    } catch (Throwable ignore) {
+                        child = null;
+                    }
+                    if (child != null) {
+                        queue.offer(child);
+                        allNodes.offer(child);
+                    }
+                }
+            }
+        } finally {
+            while (!allNodes.isEmpty()) {
+                safeRecycle(allNodes.poll());
+            }
+        }
+        if (bestRank > 0) {
+            return bestRank;
+        }
+        int rankFromFirst = parseRankValue(pickByIndex(texts, 0));
+        if (rankFromFirst > 0) {
+            return rankFromFirst;
+        }
+        return parseFirstRankFromTexts(texts);
     }
 
     private List<String> collectNodeTexts(AccessibilityNodeInfo root, int maxCount) {
@@ -1106,14 +1503,39 @@ public class LookAccessibilityAdService extends AccessibilityService {
         if (TextUtils.isEmpty(value)) {
             return 0;
         }
-        if (!value.matches("^\\d{1,4}$")) {
-            return 0;
+        String normalized = value
+                .replace("第", "")
+                .replace("名", "")
+                .replace("NO.", "")
+                .replace("No.", "")
+                .replace("no.", "")
+                .replace("NO", "")
+                .replace("No", "")
+                .replace("no", "")
+                .replace("#", "")
+                .replace("、", "")
+                .replace("。", "")
+                .replace(".", "");
+        normalized = safeTrim(normalized);
+        if (normalized.matches("^\\d{1,4}$")) {
+            try {
+                return Integer.parseInt(normalized);
+            } catch (Throwable ignore) {
+                return 0;
+            }
         }
-        try {
-            return Integer.parseInt(value);
-        } catch (Throwable ignore) {
-            return 0;
+        Matcher matcher = RANK_VALUE_LEADING_DIGITS_PATTERN.matcher(value);
+        if (matcher.find()) {
+            String leading = safeTrim(matcher.group(1));
+            if (leading.matches("^\\d{1,4}$")) {
+                try {
+                    return Integer.parseInt(leading);
+                } catch (Throwable ignore) {
+                    return 0;
+                }
+            }
         }
+        return 0;
     }
 
     private String pickByIndex(List<String> values, int index) {
@@ -1121,6 +1543,68 @@ public class LookAccessibilityAdService extends AccessibilityService {
             return "";
         }
         return safeTrim(values.get(index));
+    }
+
+    private int resolveNextMissingRank(Set<Integer> doneRanks, int currentRank) {
+        int nextRank = Math.max(1, currentRank);
+        if (doneRanks == null || doneRanks.isEmpty()) {
+            return nextRank;
+        }
+        while (doneRanks.contains(nextRank) && nextRank < Integer.MAX_VALUE) {
+            nextRank++;
+        }
+        return Math.max(1, nextRank);
+    }
+
+    private int resolveFirstVisibleUncollectedRank(
+            List<RankRowData> visibleRows,
+            Set<Integer> doneRanks,
+            int maxRankLimit
+    ) {
+        if (visibleRows == null || visibleRows.isEmpty()) {
+            return 0;
+        }
+        int safeMaxLimit = maxRankLimit <= 0 ? Integer.MAX_VALUE : maxRankLimit;
+        for (RankRowData row : visibleRows) {
+            if (row == null || row.rank <= 0) {
+                continue;
+            }
+            if (row.rank > safeMaxLimit) {
+                continue;
+            }
+            if (doneRanks != null && doneRanks.contains(row.rank)) {
+                continue;
+            }
+            return row.rank;
+        }
+        return 0;
+    }
+
+    private String buildVisibleRanksSummary(List<RankRowData> visibleRows) {
+        if (visibleRows == null || visibleRows.isEmpty()) {
+            return "[]";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append('[');
+        int count = 0;
+        for (RankRowData row : visibleRows) {
+            if (row == null || row.rank <= 0) {
+                continue;
+            }
+            if (count > 0) {
+                sb.append(',');
+            }
+            sb.append(row.rank);
+            count++;
+            if (count >= 8) {
+                break;
+            }
+        }
+        if (count < visibleRows.size()) {
+            sb.append(",...");
+        }
+        sb.append(']');
+        return sb.toString();
     }
 
     private String findFirstNonNumericText(List<String> values, int startIndex) {
@@ -1284,16 +1768,9 @@ public class LookAccessibilityAdService extends AccessibilityService {
         if (width <= 0 || height <= 0) {
             return new ClickResult(false, "display_invalid");
         }
-        int profile = Math.floorMod(Math.max(0, attemptIndex), 3);
+        int profile = 0;
         float xRatio = UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_X_RATIO;
-        if (profile == 1) {
-            xRatio = UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_X_LEFT_RATIO;
-        } else if (profile == 2) {
-            xRatio = UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_X_RIGHT_RATIO;
-        }
-        float extraDistanceRatio = profile == 0
-                ? 0f
-                : UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_EXTRA_DISTANCE_RATIO;
+        float extraDistanceRatio = 0f;
         int x = Math.round(clampFloat(
                 width * xRatio,
                 1f,
@@ -1921,16 +2398,9 @@ public class LookAccessibilityAdService extends AccessibilityService {
             log("榜单上滑跳过: display_invalid width=" + width + " height=" + height);
             return new ClickResult(false, "display_invalid");
         }
-        int profile = Math.floorMod(Math.max(0, attemptIndex), 3);
+        int profile = 0;
         float xRatio = UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_X_RATIO;
-        if (profile == 1) {
-            xRatio = UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_X_LEFT_RATIO;
-        } else if (profile == 2) {
-            xRatio = UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_X_RIGHT_RATIO;
-        }
-        float extraDistanceRatio = profile == 0
-                ? 0f
-                : UiComponentConfig.LIVE_ROOM_TASK_RANK_SCROLL_SWIPE_EXTRA_DISTANCE_RATIO;
+        float extraDistanceRatio = 0f;
         float x = clampFloat(
                 width * xRatio,
                 1f,
@@ -2311,7 +2781,32 @@ public class LookAccessibilityAdService extends AccessibilityService {
         } catch (Throwable ignore) {
             return false;
         }
-        return rect.width() > 0 && rect.height() > 0;
+        if (rect.width() <= 0 || rect.height() <= 0) {
+            return false;
+        }
+        return isRectInCurrentScreen(rect);
+    }
+
+    private boolean isRectInCurrentScreen(Rect rect) {
+        if (rect == null) {
+            return false;
+        }
+        int screenWidth = 0;
+        int screenHeight = 0;
+        try {
+            screenWidth = getResources().getDisplayMetrics().widthPixels;
+            screenHeight = getResources().getDisplayMetrics().heightPixels;
+        } catch (Throwable ignore) {
+            screenWidth = 0;
+            screenHeight = 0;
+        }
+        if (screenWidth <= 0 || screenHeight <= 0) {
+            return rect.width() > 0 && rect.height() > 0;
+        }
+        return rect.right > 0
+                && rect.bottom > 0
+                && rect.left < screenWidth
+                && rect.top < screenHeight;
     }
 
     private String readNodeText(AccessibilityNodeInfo node) {
@@ -3068,13 +3563,38 @@ public class LookAccessibilityAdService extends AccessibilityService {
         }
     }
 
+    private static final class RankVisibleRow {
+        final int top;
+        final int rank;
+        final String name;
+
+        RankVisibleRow(int top, int rank, String name) {
+            this.top = top;
+            this.rank = Math.max(0, rank);
+            this.name = safeTrim(name);
+        }
+    }
+
     private static final class RankScanResult {
         final RankRowMatch match;
         final int maxRank;
+        final String pageSignature;
+        final List<RankRowData> visibleRows;
 
-        RankScanResult(RankRowMatch match, int maxRank) {
+        RankScanResult(
+                RankRowMatch match,
+                int maxRank,
+                String pageSignature,
+                List<RankRowData> visibleRows
+        ) {
             this.match = match;
             this.maxRank = Math.max(0, maxRank);
+            this.pageSignature = safeTrim(pageSignature);
+            if (visibleRows == null || visibleRows.isEmpty()) {
+                this.visibleRows = Collections.emptyList();
+            } else {
+                this.visibleRows = new ArrayList<RankRowData>(visibleRows);
+            }
         }
     }
 
