@@ -72,6 +72,8 @@ final class RankAiConsumptionAnalyzer {
     private static final String KEY_UP_ID = "消费对象ID（upid）";
     private static final String KEY_HOME_ID = "直播间ID（homeid）";
     private static final String KEY_TOTAL_DATA = "在直播间总消费数据（Data）";
+    private static final String AI_RESULT_CSV_HEADER =
+            "用户昵称,用户ID,用户等级,消费数据,消费计算准确度,消费对象昵称,消费对象ID,直播间ID,在直播间总消费数据,写入时间";
 
     private RankAiConsumptionAnalyzer() {
     }
@@ -1609,46 +1611,49 @@ final class RankAiConsumptionAnalyzer {
             return;
         }
         synchronized (RESULT_FILE_LOCK) {
-            ensureFile(file);
-            StringBuilder sb = new StringBuilder();
-            sb.append("# analyze_at=")
-                    .append(formatTs(System.currentTimeMillis()))
-                    .append(" homeid=")
-                    .append(safeTrim(homeId))
-                    .append(" current_round=")
-                    .append(Math.max(0, currentRound))
-                    .append(" previous_round=")
-                    .append(Math.max(0, previousRound))
-                    .append('\n');
+            int writtenRows = 0;
+            String writeAt = formatTs(System.currentTimeMillis());
+            StringBuilder rowsBuilder = new StringBuilder();
             if (records != null && !records.isEmpty()) {
                 for (AnalysisRecord record : records) {
-                    if (record == null) {
+                    if (record == null || isEffectivelyEmptyRecord(record)) {
                         continue;
                     }
-                    sb.append("----\n");
-                    sb.append(KEY_UESE_NAME).append("：").append(safeTrim(record.userName)).append('\n');
-                    sb.append(KEY_UESE_ID).append("：").append(safeTrim(record.userId)).append('\n');
-                    sb.append(KEY_LEVEL).append("：").append(safeTrim(record.level)).append('\n');
-                    sb.append(KEY_CONSUME).append("：").append(safeTrim(record.consumeData)).append('\n');
-                    sb.append(KEY_ACCURACY).append("：").append(safeTrim(record.accuracy)).append('\n');
-                    sb.append(KEY_UP_NAME).append("：").append(safeTrim(record.targetName)).append('\n');
-                    sb.append(KEY_UP_ID).append("：").append(safeTrim(record.targetId)).append('\n');
-                    sb.append(KEY_HOME_ID).append("：").append(safeTrim(record.homeId)).append('\n');
-                    sb.append(KEY_TOTAL_DATA).append("：").append(safeTrim(record.totalData)).append('\n');
-                    sb.append("----\n");
+                    rowsBuilder.append(csvEscape(record.userName)).append(',')
+                            .append(csvEscape(record.userId)).append(',')
+                            .append(csvEscape(record.level)).append(',')
+                            .append(csvEscape(record.consumeData)).append(',')
+                            .append(csvEscape(record.accuracy)).append(',')
+                            .append(csvEscape(record.targetName)).append(',')
+                            .append(csvEscape(record.targetId)).append(',')
+                            .append(csvEscape(record.homeId)).append(',')
+                            .append(csvEscape(record.totalData)).append(',')
+                            .append(csvEscape(writeAt))
+                            .append('\n');
+                    writtenRows++;
                 }
-            } else {
-                sb.append("----\n");
-                sb.append("raw_reply：").append(safeTrim(rawAiReply)).append('\n');
-                sb.append("----\n");
             }
-            sb.append('\n');
+            if (writtenRows <= 0) {
+                log(context, "analyze result append skipped: no csv content homeId=" + safeTrim(homeId)
+                        + " currentRound=" + Math.max(0, currentRound)
+                        + " previousRound=" + Math.max(0, previousRound)
+                        + " rawReplyPreview=" + truncate(safeTrim(rawAiReply), 120));
+                return;
+            }
+            boolean writeHeader = !file.exists() || file.length() <= 0L;
+            ensureFile(file);
+            StringBuilder sb = new StringBuilder();
+            if (writeHeader) {
+                sb.append(AI_RESULT_CSV_HEADER).append('\n');
+            }
+            sb.append(rowsBuilder);
             writeText(file, sb.toString(), true);
             log(context, "analyze result appended: file=" + file.getAbsolutePath()
                     + " homeId=" + safeTrim(homeId)
                     + " currentRound=" + Math.max(0, currentRound)
                     + " previousRound=" + Math.max(0, previousRound)
-                    + " records=" + (records == null ? 0 : records.size())
+                    + " rows=" + writtenRows
+                    + " headerWritten=" + writeHeader
                     + " bytes=" + sb.toString().getBytes(StandardCharsets.UTF_8).length);
         }
     }
@@ -2003,6 +2008,22 @@ final class RankAiConsumptionAnalyzer {
             return safe;
         }
         return safe.substring(0, Math.max(0, maxLen)) + "...";
+    }
+
+    private static String csvEscape(String value) {
+        String safe = safeTrim(value);
+        if (TextUtils.isEmpty(safe)) {
+            return "";
+        }
+        boolean needQuote = safe.indexOf(',') >= 0
+                || safe.indexOf('"') >= 0
+                || safe.indexOf('\n') >= 0
+                || safe.indexOf('\r') >= 0;
+        if (!needQuote) {
+            return safe;
+        }
+        String escaped = safe.replace("\"", "\"\"");
+        return "\"" + escaped + "\"";
     }
 
     private static void logLargeContent(

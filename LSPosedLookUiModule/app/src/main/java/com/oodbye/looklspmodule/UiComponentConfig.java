@@ -23,10 +23,10 @@ final class UiComponentConfig {
     static final String LIVE_RANK_CSV_CONTRIBUTION_PREFIX = "look_contribution_rank";
     static final String LIVE_RANK_CSV_CHARM_PREFIX = "look_charm_rank";
     static final String LIVE_RANK_CSV_SUFFIX = ".csv";
-    static final String AI_ANALYSIS_EXTERNAL_DIR = "/sdcard/Android/data/com.oodbye.looklspmodule/files/look_ai_analysis";
-    static final String AI_ANALYSIS_FALLBACK_DIR_NAME = "look_ai_analysis";
+    static final String AI_ANALYSIS_EXTERNAL_DIR = LIVE_RANK_CSV_EXTERNAL_DIR;
+    static final String AI_ANALYSIS_FALLBACK_DIR_NAME = LIVE_RANK_CSV_FALLBACK_DIR_NAME;
     static final String AI_ANALYSIS_RESULT_PREFIX = "look_ai_consumption_analysis_";
-    static final String AI_ANALYSIS_RESULT_SUFFIX = ".txt";
+    static final String AI_ANALYSIS_RESULT_SUFFIX = ".csv";
     static final String AI_PROMPT_ASSET_NAME = "look_ai_consumption_prompt.txt";
     static final int AI_HTTP_CONNECT_TIMEOUT_MS = 6000;
     static final int AI_HTTP_READ_TIMEOUT_MS = 18000;
