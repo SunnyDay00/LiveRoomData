@@ -1010,6 +1010,19 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                 logFlow("一起聊页：等待直播间任务执行");
                 return;
             }
+            if (togetherCycleRestartRequested) {
+                long restartDelayMs = resolveTogetherCycleRestartDelayMs();
+                long remainingMs = restartDelayMs;
+                if (togetherLastCycleCompleteAt > 0L) {
+                    remainingMs = Math.max(
+                            0L,
+                            restartDelayMs - Math.max(0L, now - togetherLastCycleCompleteAt)
+                    );
+                }
+                logFlow("一起聊页：本轮已判定完成，等待重启执行，不再点击新卡片。remaining="
+                        + remainingMs + "ms");
+                return;
+            }
             long lastReturnAt = getLastLiveRoomReturnAt();
             long togetherEnteredAt = Math.max(0L, togetherPageEnteredAt);
             long cooldownStartAt = Math.max(lastReturnAt, togetherEnteredAt);

@@ -26,6 +26,10 @@ final class LiveRoomRankCsvStore {
     private static int sPreparedRuntimeCycleIndex = -1;
     private static File sContributionFile;
     private static File sCharmFile;
+    private static final String CONTRIBUTION_HEADER =
+            "homeid,ueseid,uesename,level,Data,Consumption,ueseip,time";
+    private static final String CHARM_HEADER =
+            "homeid,upid,upname,Data,followers,Consumption,upip,time";
 
     private LiveRoomRankCsvStore() {
     }
@@ -110,6 +114,12 @@ final class LiveRoomRankCsvStore {
                         formatEnterTime(row.enterTimeMs)
                 });
             }
+            if (lines.isEmpty()) {
+                return AppendResult.empty();
+            }
+            if (!ensureFileInitializedForAppendLocked(sContributionFile, CONTRIBUTION_HEADER)) {
+                return AppendResult.failed(lines.size(), 0);
+            }
             return appendCsvLinesLocked(sContributionFile, lines);
         }
     }
@@ -145,6 +155,12 @@ final class LiveRoomRankCsvStore {
                         safeTrim(row.upIp),
                         formatEnterTime(row.enterTimeMs)
                 });
+            }
+            if (lines.isEmpty()) {
+                return AppendResult.empty();
+            }
+            if (!ensureFileInitializedForAppendLocked(sCharmFile, CHARM_HEADER)) {
+                return AppendResult.failed(lines.size(), 0);
             }
             return appendCsvLinesLocked(sCharmFile, lines);
         }
@@ -198,24 +214,23 @@ final class LiveRoomRankCsvStore {
                 dir,
                 UiComponentConfig.LIVE_RANK_CSV_CHARM_PREFIX + suffix
         );
-        ensureFile(contribution);
-        ensureFile(charm);
-        if (!contribution.exists() || !charm.exists()) {
-            return false;
-        }
-        writeHeaderIfEmpty(
-                contribution,
-                "homeid,ueseid,uesename,level,Data,Consumption,ueseip,time"
-        );
-        writeHeaderIfEmpty(
-                charm,
-                "homeid,upid,upname,Data,followers,Consumption,upip,time"
-        );
         sContributionFile = contribution;
         sCharmFile = charm;
         sPreparedCommandSeq = commandSeq;
         sPreparedRuntimeCycleIndex = Math.max(1, runtimeCycleIndex);
         return true;
+    }
+
+    private static boolean ensureFileInitializedForAppendLocked(File file, String headerLine) {
+        if (file == null || TextUtils.isEmpty(headerLine)) {
+            return false;
+        }
+        ensureFile(file);
+        if (!file.exists()) {
+            return false;
+        }
+        writeHeaderIfEmpty(file, headerLine);
+        return file.exists();
     }
 
     private static long resolveCurrentCommandSeq(Context context) {
