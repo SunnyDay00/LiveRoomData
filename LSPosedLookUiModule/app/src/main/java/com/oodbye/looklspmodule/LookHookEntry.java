@@ -503,6 +503,7 @@ public class LookHookEntry implements IXposedHookLoadPackage {
         private long lastTogetherRefreshAttemptAt;
         private long togetherScrollAt;
         private long lastTogetherScrollAttemptAt;
+        private long lastUnexpectedPageBackAt;
         private int togetherNoNewCardStreak;
         private int togetherNoNewSameSignatureStreak;
         private int togetherCycleCompletedCount;
@@ -532,6 +533,7 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             this.lastTogetherRefreshAttemptAt = 0L;
             this.togetherScrollAt = 0L;
             this.lastTogetherScrollAttemptAt = 0L;
+            this.lastUnexpectedPageBackAt = 0L;
             this.togetherNoNewCardStreak = 0;
             this.togetherNoNewSameSignatureStreak = 0;
             this.togetherCycleCompletedCount = 0;
@@ -724,6 +726,14 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                     runMainFlow(now);
                     return;
                 }
+                if (root == null) {
+                    logFlow("点击卡片后等待页面根节点就绪");
+                    return;
+                }
+                if (!isLiveRoomActivity()) {
+                    handleUnexpectedPageAfterCardClick(now);
+                    return;
+                }
                 logFlow("点击卡片后已离开一起聊，开始进行广告与直播间校验");
                 runLiveRoomFlow(now);
                 return;
@@ -794,6 +804,7 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                 lastTogetherRefreshAttemptAt = 0L;
                 togetherScrollAt = 0L;
                 lastTogetherScrollAttemptAt = 0L;
+                lastUnexpectedPageBackAt = 0L;
                 togetherNoNewCardStreak = 0;
                 togetherNoNewSameSignatureStreak = 0;
                 togetherCycleCompletedCount = 0;
@@ -827,6 +838,7 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                 lastTogetherRefreshAttemptAt = 0L;
                 togetherScrollAt = 0L;
                 lastTogetherScrollAttemptAt = 0L;
+                lastUnexpectedPageBackAt = 0L;
                 togetherNoNewCardStreak = 0;
                 togetherNoNewSameSignatureStreak = 0;
                 togetherCycleCompletedCount = 0;
@@ -1537,6 +1549,39 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                     liveRoomScriptHandledInSession,
                     liveRoomRuntimeBridge
             );
+        }
+
+        private void handleUnexpectedPageAfterCardClick(long now) {
+            long waitedMs = Math.max(0L, now - getLastCardClickAt());
+            if (waitedMs > UiComponentConfig.ENTER_TOGETHER_TIMEOUT_MS) {
+                resetAwaitingLiveRoomFlag();
+                flowState = RunFlowState.IN_TOGETHER;
+                log("点击卡片后进入非直播间页面并超时，重置待执行任务。activity="
+                        + activity.getClass().getName() + " waited=" + waitedMs + "ms");
+                return;
+            }
+            logFlow("点击卡片后进入非直播间页面，等待自动恢复。activity="
+                    + activity.getClass().getName());
+            long recoverStartMs = Math.max(2000L, UiComponentConfig.LIVE_ROOM_ENTER_WAIT_MS * 2L);
+            if (waitedMs < recoverStartMs) {
+                return;
+            }
+            long backRetryIntervalMs = Math.max(
+                    UiComponentConfig.RETRY_ENTER_TOGETHER_MS,
+                    UiComponentConfig.MAIN_LOOP_INTERVAL_MS * 2L
+            );
+            if (now - lastUnexpectedPageBackAt < backRetryIntervalMs) {
+                return;
+            }
+            lastUnexpectedPageBackAt = now;
+            try {
+                activity.onBackPressed();
+                markLiveRoomReturned(now);
+                log("点击卡片后进入非直播间页面，执行自动返回恢复。activity="
+                        + activity.getClass().getName() + " waited=" + waitedMs + "ms");
+            } catch (Throwable e) {
+                log("点击卡片后非直播页自动返回失败: " + e);
+            }
         }
 
         private void logFlow(String msg) {

@@ -24,6 +24,7 @@ final class LiveRoomRankCsvStore {
 
     private static long sPreparedCommandSeq = Long.MIN_VALUE;
     private static int sPreparedRuntimeCycleIndex = -1;
+    private static String sPreparedDayToken = "";
     private static File sContributionFile;
     private static File sCharmFile;
     private static final String CONTRIBUTION_HEADER =
@@ -171,6 +172,7 @@ final class LiveRoomRankCsvStore {
             if (!ensureFilesReadyLocked(context) || sContributionFile == null) {
                 return "";
             }
+            ensureFileInitializedForAppendLocked(sContributionFile, CONTRIBUTION_HEADER);
             return sContributionFile.getAbsolutePath();
         }
     }
@@ -180,6 +182,7 @@ final class LiveRoomRankCsvStore {
             if (!ensureFilesReadyLocked(context) || sCharmFile == null) {
                 return "";
             }
+            ensureFileInitializedForAppendLocked(sCharmFile, CHARM_HEADER);
             return sCharmFile.getAbsolutePath();
         }
     }
@@ -188,14 +191,14 @@ final class LiveRoomRankCsvStore {
         if (context == null) {
             return false;
         }
+        String dayToken = formatFileDayToken();
         long commandSeq = resolveCurrentCommandSeq(context);
         int runtimeCycleIndex = resolveCurrentCycleIndex(context);
         boolean needPrepare = commandSeq != sPreparedCommandSeq
                 || runtimeCycleIndex != sPreparedRuntimeCycleIndex
                 || sContributionFile == null
                 || sCharmFile == null
-                || !sContributionFile.exists()
-                || !sCharmFile.exists();
+                || !TextUtils.equals(sPreparedDayToken, dayToken);
         if (!needPrepare) {
             return true;
         }
@@ -203,7 +206,6 @@ final class LiveRoomRankCsvStore {
         if (dir == null) {
             return false;
         }
-        String dayToken = formatFileDayToken();
         int cycleVersion = resolveNextDailyCycleVersion(dir, dayToken);
         String suffix = "_" + dayToken + "_" + cycleVersion + UiComponentConfig.LIVE_RANK_CSV_SUFFIX;
         File contribution = new File(
@@ -218,6 +220,7 @@ final class LiveRoomRankCsvStore {
         sCharmFile = charm;
         sPreparedCommandSeq = commandSeq;
         sPreparedRuntimeCycleIndex = Math.max(1, runtimeCycleIndex);
+        sPreparedDayToken = dayToken;
         return true;
     }
 
@@ -242,7 +245,10 @@ final class LiveRoomRankCsvStore {
             }
         } catch (Throwable ignore) {
         }
-        return Math.max(1L, System.currentTimeMillis());
+        if (sPreparedCommandSeq > 0L) {
+            return sPreparedCommandSeq;
+        }
+        return 1L;
     }
 
     private static int resolveCurrentCycleIndex(Context context) {
@@ -408,6 +414,8 @@ final class LiveRoomRankCsvStore {
 
     private static int resolveNextDailyCycleVersion(File dir, String dayToken) {
         int maxVersion = 0;
+        boolean maxHasContribution = false;
+        boolean maxHasCharm = false;
         if (dir != null && dir.exists() && dir.isDirectory()) {
             File[] files = dir.listFiles();
             if (files != null) {
@@ -420,11 +428,32 @@ final class LiveRoomRankCsvStore {
                         continue;
                     }
                     int version = extractCycleVersionFromFileName(name, dayToken);
+                    if (version <= 0) {
+                        continue;
+                    }
+                    boolean isContribution = name.startsWith(
+                            UiComponentConfig.LIVE_RANK_CSV_CONTRIBUTION_PREFIX + "_"
+                    );
+                    boolean isCharm = name.startsWith(
+                            UiComponentConfig.LIVE_RANK_CSV_CHARM_PREFIX + "_"
+                    );
                     if (version > maxVersion) {
                         maxVersion = version;
+                        maxHasContribution = isContribution;
+                        maxHasCharm = isCharm;
+                    } else if (version == maxVersion) {
+                        if (isContribution) {
+                            maxHasContribution = true;
+                        }
+                        if (isCharm) {
+                            maxHasCharm = true;
+                        }
                     }
                 }
             }
+        }
+        if (maxVersion > 0 && (maxHasContribution ^ maxHasCharm)) {
+            return maxVersion;
         }
         return Math.max(1, maxVersion + 1);
     }

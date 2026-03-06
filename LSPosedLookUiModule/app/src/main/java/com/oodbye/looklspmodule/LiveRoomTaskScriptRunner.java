@@ -676,6 +676,10 @@ final class LiveRoomTaskScriptRunner {
                     return;
                 }
             }
+            String redispatchReason = "result_failed";
+            if (!TextUtils.isEmpty(resultDetail)) {
+                redispatchReason = "result_failed:" + clipLogValue(resultDetail, 160);
+            }
             scheduleRankCollectRedispatch(
                     activity,
                     taskContext,
@@ -684,7 +688,7 @@ final class LiveRoomTaskScriptRunner {
                     targetCount,
                     dispatchRound + 1,
                     onDone,
-                    "result_failed"
+                    redispatchReason
             );
             return;
         }
@@ -782,7 +786,8 @@ final class LiveRoomTaskScriptRunner {
                     taskContext,
                     "rank_collect_retry_limit_reached:"
                             + safeTrim(rankName)
-                            + "(maxRound=" + maxRedispatchRound + ")"
+                            + "(maxRound=" + maxRedispatchRound
+                            + ",lastReason=" + clipLogValue(reason, 160) + ")"
             );
             return;
         }
@@ -1967,6 +1972,18 @@ final class LiveRoomTaskScriptRunner {
             return "";
         }
         return s.trim();
+    }
+
+    private static String clipLogValue(String value, int maxLen) {
+        String safe = safeTrim(value);
+        if (TextUtils.isEmpty(safe)) {
+            return "";
+        }
+        int safeMaxLen = Math.max(16, maxLen);
+        if (safe.length() <= safeMaxLen) {
+            return safe;
+        }
+        return safe.substring(0, safeMaxLen) + "...";
     }
 
     private static final class ViewDepth {
