@@ -1255,6 +1255,61 @@ public class ModuleSettingsActivity extends Activity {
         });
         feishuSignRow.addView(feishuSignSaveBtn);
 
+        LinearLayout feishuMinConsumeRow = new LinearLayout(this);
+        feishuMinConsumeRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams feishuMinConsumeRowLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        feishuMinConsumeRowLp.topMargin = dp(10);
+        feishuMinConsumeRow.setLayoutParams(feishuMinConsumeRowLp);
+        container.addView(feishuMinConsumeRow);
+
+        TextView feishuMinConsumeLabel = new TextView(this);
+        feishuMinConsumeLabel.setText("消费数据最低限制");
+        feishuMinConsumeLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        LinearLayout.LayoutParams feishuMinConsumeLabelLp = new LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        feishuMinConsumeLabelLp.weight = 1f;
+        feishuMinConsumeLabel.setLayoutParams(feishuMinConsumeLabelLp);
+        feishuMinConsumeRow.addView(feishuMinConsumeLabel);
+
+        final EditText feishuMinConsumeInput = new EditText(this);
+        feishuMinConsumeInput.setSingleLine(true);
+        feishuMinConsumeInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        feishuMinConsumeInput.setHint("默认0（0=不限制）");
+        feishuMinConsumeInput.setText(String.valueOf(ModuleSettings.getFeishuPushMinConsume(prefs)));
+        LinearLayout.LayoutParams feishuMinConsumeInputLp = new LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        feishuMinConsumeInputLp.weight = 1f;
+        feishuMinConsumeInput.setLayoutParams(feishuMinConsumeInputLp);
+        feishuMinConsumeRow.addView(feishuMinConsumeInput);
+
+        Button feishuMinConsumeSaveBtn = new Button(this);
+        feishuMinConsumeSaveBtn.setText("保存");
+        LinearLayout.LayoutParams feishuMinConsumeSaveLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        feishuMinConsumeSaveLp.leftMargin = dp(10);
+        feishuMinConsumeSaveBtn.setLayoutParams(feishuMinConsumeSaveLp);
+        feishuMinConsumeSaveBtn.setOnClickListener(v -> {
+            String raw = String.valueOf(feishuMinConsumeInput.getText()).trim();
+            int minConsume = safeParseNonNegativeInt(raw, 0);
+            ModuleSettings.setFeishuPushMinConsume(ModuleSettingsActivity.this, minConsume);
+            feishuMinConsumeInput.setText(String.valueOf(minConsume));
+            Toast.makeText(
+                    ModuleSettingsActivity.this,
+                    "已保存飞书消费数据最低限制: " + minConsume,
+                    Toast.LENGTH_SHORT
+            ).show();
+        });
+        feishuMinConsumeRow.addView(feishuMinConsumeSaveBtn);
+
         LinearLayout feishuTestRow = new LinearLayout(this);
         feishuTestRow.setOrientation(LinearLayout.HORIZONTAL);
         LinearLayout.LayoutParams feishuTestRowLp = new LinearLayout.LayoutParams(
@@ -1271,10 +1326,16 @@ public class ModuleSettingsActivity extends Activity {
         feishuTestButton.setOnClickListener(v -> {
             String webhook = String.valueOf(feishuWebhookInput.getText()).trim();
             String signSecret = String.valueOf(feishuSignInput.getText()).trim();
+            int minConsume = safeParseNonNegativeInt(
+                    String.valueOf(feishuMinConsumeInput.getText()).trim(),
+                    0
+            );
             ModuleSettings.setFeishuWebhookUrl(ModuleSettingsActivity.this, webhook);
             ModuleSettings.setFeishuSignSecret(ModuleSettingsActivity.this, signSecret);
+            ModuleSettings.setFeishuPushMinConsume(ModuleSettingsActivity.this, minConsume);
             feishuWebhookInput.setText(webhook);
             feishuSignInput.setText(signSecret);
+            feishuMinConsumeInput.setText(String.valueOf(minConsume));
             if (TextUtils.isEmpty(webhook)) {
                 Toast.makeText(ModuleSettingsActivity.this, "请先填写Webhook地址", Toast.LENGTH_SHORT).show();
                 return;
@@ -1288,16 +1349,12 @@ public class ModuleSettingsActivity extends Activity {
             new Thread(new Runnable() {
                 @Override
                 public void run() {
-                    String message = "LOOK LSP 飞书机器人测试\n"
-                            + "时间戳(ms): " + System.currentTimeMillis() + "\n"
-                            + "结果: 若收到本条消息，说明配置可用。";
                     FeishuWebhookSender.SendResult tempResult;
                     try {
-                        tempResult = FeishuWebhookSender.sendText(
+                        tempResult = FeishuWebhookSender.probeWebhook(
                                 ModuleSettingsActivity.this,
                                 webhook,
-                                signSecret,
-                                message
+                                signSecret
                         );
                     } catch (Throwable e) {
                         tempResult = FeishuWebhookSender.SendResult.fail(
@@ -1357,7 +1414,7 @@ public class ModuleSettingsActivity extends Activity {
         feishuTestRow.addView(feishuTestButton);
 
         TextView feishuHint = new TextView(this);
-        feishuHint.setText("开启“飞书机器人发送数据结果”后，AI分析结果会按用户逐条拆分后推送到飞书Webhook；运行模块前会自动测试机器人连接。签名验证留空则按不签名模式发送。");
+        feishuHint.setText("开启“飞书机器人发送数据结果”后，AI分析结果会按用户逐条拆分后推送到飞书Webhook；“消费数据最低限制”可筛选发送阈值（0=不限制）。运行模块前会自动测试机器人连接。签名验证留空则按不签名模式发送。");
         feishuHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         LinearLayout.LayoutParams feishuHintLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1465,6 +1522,15 @@ public class ModuleSettingsActivity extends Activity {
             return text;
         }
         return text.substring(0, Math.max(0, maxLen)) + "...";
+    }
+
+    private int safeParseNonNegativeInt(String raw, int defaultValue) {
+        try {
+            int value = Integer.parseInt(safeTrim(raw));
+            return Math.max(0, value);
+        } catch (Throwable ignore) {
+            return Math.max(0, defaultValue);
+        }
     }
 
     private String maskWebhook(String webhook) {

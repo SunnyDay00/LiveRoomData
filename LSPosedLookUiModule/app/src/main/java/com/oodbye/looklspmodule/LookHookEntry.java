@@ -201,6 +201,10 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                     String feishuSignSecret = safeTrimStatic(
                             intent.getStringExtra(ModuleSettings.EXTRA_FEISHU_SIGN_SECRET)
                     );
+                    int feishuPushMinConsume = intent.getIntExtra(
+                            ModuleSettings.EXTRA_FEISHU_PUSH_MIN_CONSUME,
+                            ModuleSettings.DEFAULT_FEISHU_PUSH_MIN_CONSUME
+                    );
                     int cycleLimit = intent.getIntExtra(
                             ModuleSettings.EXTRA_TOGETHER_CYCLE_LIMIT,
                             -1
@@ -231,7 +235,8 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                             aiModel,
                             feishuPushEnabled,
                             feishuWebhookUrl,
-                            feishuSignSecret
+                            feishuSignSecret,
+                            feishuPushMinConsume
                     );
                     updateRealtimeEngineState(
                             command,

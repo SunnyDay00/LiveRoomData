@@ -1303,20 +1303,17 @@ public class GlobalFloatService extends Service {
         if (TextUtils.isEmpty(webhook)) {
             return FeishuWebhookSender.SendResult.fail(-1, "webhook_url_empty", "");
         }
-        String message = "LOOK LSP 飞书机器人运行前自动测试\n"
-                + "时间戳(ms): " + System.currentTimeMillis() + "\n"
-                + "结果: 若收到本条消息，说明配置可用。";
         try {
-            log("run precheck feishu: step=send_begin");
+            log("run precheck feishu: step=probe_begin");
             FeishuWebhookSender.SendResult result =
-                    FeishuWebhookSender.sendText(safeContext, webhook, signSecret, message);
-            log("run precheck feishu: step=send_end success="
+                    FeishuWebhookSender.probeWebhook(safeContext, webhook, signSecret);
+            log("run precheck feishu: step=probe_end success="
                     + (result != null && result.success)
                     + " status=" + (result == null ? -1 : result.statusCode));
             return result;
         } catch (Throwable e) {
-            String detail = "send_exception:" + summarizeThrowable(e, 6);
-            log("run precheck feishu: step=send_failed detail=" + detail);
+            String detail = "probe_exception:" + summarizeThrowable(e, 6);
+            log("run precheck feishu: step=probe_failed detail=" + detail);
             return FeishuWebhookSender.SendResult.fail(-1, detail, "");
         }
     }
@@ -1509,6 +1506,10 @@ public class GlobalFloatService extends Service {
             intent.putExtra(
                     ModuleSettings.EXTRA_FEISHU_SIGN_SECRET,
                     ModuleSettings.getFeishuSignSecret(settingsPrefs)
+            );
+            intent.putExtra(
+                    ModuleSettings.EXTRA_FEISHU_PUSH_MIN_CONSUME,
+                    ModuleSettings.getFeishuPushMinConsume(settingsPrefs)
             );
             sendBroadcast(intent);
         } catch (Throwable ignore) {

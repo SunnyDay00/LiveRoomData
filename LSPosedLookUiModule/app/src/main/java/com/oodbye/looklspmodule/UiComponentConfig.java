@@ -27,6 +27,8 @@ final class UiComponentConfig {
     static final String AI_ANALYSIS_FALLBACK_DIR_NAME = LIVE_RANK_CSV_FALLBACK_DIR_NAME;
     static final String AI_ANALYSIS_RESULT_PREFIX = "look_ai_consumption_analysis_";
     static final String AI_ANALYSIS_RESULT_SUFFIX = ".csv";
+    static final String AI_ANALYSIS_RAW_REPLY_LOG_PREFIX = "look_ai_raw_reply_";
+    static final String AI_ANALYSIS_RAW_REPLY_LOG_SUFFIX = ".log";
     static final String AI_PROMPT_ASSET_NAME = "look_ai_consumption_prompt.txt";
     static final int AI_HTTP_CONNECT_TIMEOUT_MS = 6000;
     static final int AI_HTTP_READ_TIMEOUT_MS = 18000;

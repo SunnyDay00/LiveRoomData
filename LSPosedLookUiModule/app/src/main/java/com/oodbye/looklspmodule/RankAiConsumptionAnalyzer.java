@@ -43,6 +43,7 @@ final class RankAiConsumptionAnalyzer {
     private static final String LOGCAT_TAG = "RankAiAnalyzer";
     private static final ExecutorService EXECUTOR = Executors.newFixedThreadPool(3);
     private static final Object RESULT_FILE_LOCK = new Object();
+    private static final Object RAW_REPLY_FILE_LOCK = new Object();
     private static final Object RUNTIME_CONFIG_LOCK = new Object();
     private static final Pattern FILE_ROUND_PATTERN = Pattern.compile(".*_(\\d{8})_(\\d+)\\.csv$");
     private static final Pattern DATA_NUMERIC_PATTERN = Pattern.compile("^(\\d+(?:\\.\\d+)?)([万亿wW]?)$");
@@ -58,20 +59,23 @@ final class RankAiConsumptionAnalyzer {
     private static final String DIRECT_KEY_FEISHU_PUSH_ENABLED = "feishu_push_enabled";
     private static final String DIRECT_KEY_FEISHU_WEBHOOK_URL = "feishu_webhook_url";
     private static final String DIRECT_KEY_FEISHU_SIGN_SECRET = "feishu_sign_secret";
+    private static final String DIRECT_KEY_FEISHU_PUSH_MIN_CONSUME = "feishu_push_min_consume";
     private static final boolean DIRECT_DEFAULT_AI_ANALYSIS_ENABLED = true;
     private static final boolean DIRECT_DEFAULT_FEISHU_PUSH_ENABLED = true;
+    private static final int DIRECT_DEFAULT_FEISHU_PUSH_MIN_CONSUME = 0;
     private static long sEngineConfigSeq = -1L;
     private static RuntimeConfigSnapshot sEngineConfigSnapshot;
 
-    private static final String KEY_UESE_NAME = "用户昵称（uesename）";
-    private static final String KEY_UESE_ID = "用户ID（ueseid）";
-    private static final String KEY_LEVEL = "用户等级（level）";
-    private static final String KEY_CONSUME = "消费数据（需计算）";
-    private static final String KEY_ACCURACY = "消费计算准确度（百分百）";
-    private static final String KEY_UP_NAME = "消费对象昵称（upname）";
-    private static final String KEY_UP_ID = "消费对象ID（upid）";
-    private static final String KEY_HOME_ID = "直播间ID（homeid）";
-    private static final String KEY_TOTAL_DATA = "在直播间总消费数据（Data）";
+    private static final String KEY_UESE_NAME = "用户昵称";
+    private static final String KEY_UESE_ID = "用户ID";
+    private static final String KEY_LEVEL = "用户等级";
+    private static final String KEY_CONSUME = "消费数据";
+    private static final String KEY_ACCURACY = "消费计算准确度";
+    private static final String KEY_UP_NAME = "消费对象昵称";
+    private static final String KEY_UP_ID = "消费对象ID";
+    private static final String KEY_HOME_ID = "直播间ID";
+    private static final String KEY_TOTAL_DATA = "在直播间总消费数据";
+    private static final String KEY_CALC_STEPS = "计算步骤说明";
     private static final String AI_RESULT_CSV_HEADER =
             "用户昵称,用户ID,用户等级,消费数据,消费计算准确度,消费对象昵称,消费对象ID,直播间ID,在直播间总消费数据,写入时间";
 
@@ -105,7 +109,8 @@ final class RankAiConsumptionAnalyzer {
             String aiModel,
             boolean feishuPushEnabled,
             String feishuWebhookUrl,
-            String feishuSignSecret
+            String feishuSignSecret,
+            int feishuPushMinConsume
     ) {
         String cmd = safeTrim(command);
         RuntimeConfigSnapshot snapshot = new RuntimeConfigSnapshot(
@@ -116,6 +121,7 @@ final class RankAiConsumptionAnalyzer {
                 feishuPushEnabled,
                 feishuWebhookUrl,
                 feishuSignSecret,
+                feishuPushMinConsume,
                 "engine_broadcast"
         );
         synchronized (RUNTIME_CONFIG_LOCK) {
@@ -135,6 +141,7 @@ final class RankAiConsumptionAnalyzer {
                         + " aiEnabled=" + aiEnabled
                         + " aiUrlSet=" + (!TextUtils.isEmpty(safeTrim(aiUrl)))
                         + " feishuEnabled=" + feishuPushEnabled
+                        + " feishuMinConsume=" + Math.max(0, feishuPushMinConsume)
                         + " webhookSet=" + (!TextUtils.isEmpty(safeTrim(feishuWebhookUrl)))
         );
     }
@@ -147,6 +154,7 @@ final class RankAiConsumptionAnalyzer {
         final boolean feishuPushEnabled;
         final String feishuWebhookUrl;
         final String feishuSignSecret;
+        final int feishuPushMinConsume;
         final String source;
 
         RuntimeConfigSnapshot(
@@ -157,6 +165,7 @@ final class RankAiConsumptionAnalyzer {
                 boolean feishuPushEnabled,
                 String feishuWebhookUrl,
                 String feishuSignSecret,
+                int feishuPushMinConsume,
                 String source
         ) {
             this.aiEnabled = aiEnabled;
@@ -166,6 +175,7 @@ final class RankAiConsumptionAnalyzer {
             this.feishuPushEnabled = feishuPushEnabled;
             this.feishuWebhookUrl = safeTrim(feishuWebhookUrl);
             this.feishuSignSecret = safeTrim(feishuSignSecret);
+            this.feishuPushMinConsume = Math.max(0, feishuPushMinConsume);
             this.source = safeTrim(source);
         }
     }
@@ -209,6 +219,7 @@ final class RankAiConsumptionAnalyzer {
                 + " configSource=" + runtimeConfig.source
                 + " aiUrlSet=" + (!TextUtils.isEmpty(runtimeConfig.aiUrl))
                 + " feishuEnabled=" + runtimeConfig.feishuPushEnabled
+                + " feishuMinConsume=" + runtimeConfig.feishuPushMinConsume
                 + " homeId=" + safeHomeId
                 + " executor=" + getExecutorStats());
         final long enqueueAtMs = SystemClock.elapsedRealtime();
@@ -392,6 +403,14 @@ final class RankAiConsumptionAnalyzer {
                 log(context, "analyze failed: ai empty response, traceId=" + traceId);
                 return;
             }
+            appendRawAiReplyLog(
+                    context,
+                    homeId,
+                    currentData.roundIndex,
+                    previous.data.roundIndex,
+                    traceId,
+                    aiText
+            );
             log(context, "analyze ai reply begin: traceId=" + traceId
                     + " chars=" + aiText.length());
             logLargeContent(context, "analyze ai reply", traceId, aiText);
@@ -514,6 +533,7 @@ final class RankAiConsumptionAnalyzer {
                 direct.feishuPushEnabled,
                 direct.feishuWebhookUrl,
                 direct.feishuSignSecret,
+                direct.feishuPushMinConsume,
                 "direct_fallback"
         );
     }
@@ -545,6 +565,10 @@ final class RankAiConsumptionAnalyzer {
                     prefs.getBoolean(DIRECT_KEY_FEISHU_PUSH_ENABLED, DIRECT_DEFAULT_FEISHU_PUSH_ENABLED),
                     safeTrim(prefs.getString(DIRECT_KEY_FEISHU_WEBHOOK_URL, "")),
                     safeTrim(prefs.getString(DIRECT_KEY_FEISHU_SIGN_SECRET, "")),
+                    sanitizeNonNegativeInt(prefs.getInt(
+                            DIRECT_KEY_FEISHU_PUSH_MIN_CONSUME,
+                            DIRECT_DEFAULT_FEISHU_PUSH_MIN_CONSUME
+                    )),
                     "module_context"
             );
         } catch (Throwable e) {
@@ -580,6 +604,7 @@ final class RankAiConsumptionAnalyzer {
         boolean feishuPushEnabled = DIRECT_DEFAULT_FEISHU_PUSH_ENABLED;
         String feishuWebhookUrl = "";
         String feishuSignSecret = "";
+        int feishuPushMinConsume = DIRECT_DEFAULT_FEISHU_PUSH_MIN_CONSUME;
         if (context != null) {
             try {
                 SharedPreferences prefs = context.getSharedPreferences(
@@ -599,6 +624,10 @@ final class RankAiConsumptionAnalyzer {
                 );
                 feishuWebhookUrl = safeTrim(prefs.getString(DIRECT_KEY_FEISHU_WEBHOOK_URL, ""));
                 feishuSignSecret = safeTrim(prefs.getString(DIRECT_KEY_FEISHU_SIGN_SECRET, ""));
+                feishuPushMinConsume = sanitizeNonNegativeInt(prefs.getInt(
+                        DIRECT_KEY_FEISHU_PUSH_MIN_CONSUME,
+                        DIRECT_DEFAULT_FEISHU_PUSH_MIN_CONSUME
+                ));
             } catch (Throwable ignore) {
             }
         }
@@ -610,6 +639,7 @@ final class RankAiConsumptionAnalyzer {
                 feishuPushEnabled,
                 feishuWebhookUrl,
                 feishuSignSecret,
+                feishuPushMinConsume,
                 "direct"
         );
     }
@@ -624,6 +654,7 @@ final class RankAiConsumptionAnalyzer {
                     ModuleSettings.isFeishuPushEnabled(),
                     ModuleSettings.getFeishuWebhookUrl(),
                     ModuleSettings.getFeishuSignSecret(),
+                    ModuleSettings.getFeishuPushMinConsume(),
                     "xsp"
             );
         } catch (Throwable e) {
@@ -975,6 +1006,10 @@ final class RankAiConsumptionAnalyzer {
         } catch (Throwable ignore) {
             return 0;
         }
+    }
+
+    private static int sanitizeNonNegativeInt(int value) {
+        return Math.max(0, value);
     }
 
     private static long parseDataValue(String raw) {
@@ -1354,6 +1389,8 @@ final class RankAiConsumptionAnalyzer {
                 current.homeId = parseLineValue(line);
             } else if (matchesFieldKey(line, KEY_TOTAL_DATA)) {
                 current.totalData = parseLineValue(line);
+            } else if (matchesFieldKey(line, KEY_CALC_STEPS)) {
+                current.calcSteps = parseLineValue(line);
             }
         }
         if (current != null && current.hasAnyField()) {
@@ -1445,6 +1482,7 @@ final class RankAiConsumptionAnalyzer {
         String upName = safeTrim(record.targetName);
         String upId = safeTrim(record.targetId);
         String totalData = safeTrim(record.totalData);
+        String calcSteps = safeTrim(record.calcSteps);
 
         boolean allCoreEmpty = TextUtils.isEmpty(userName)
                 && TextUtils.isEmpty(userId)
@@ -1453,7 +1491,8 @@ final class RankAiConsumptionAnalyzer {
                 && TextUtils.isEmpty(accuracy)
                 && TextUtils.isEmpty(upName)
                 && TextUtils.isEmpty(upId)
-                && TextUtils.isEmpty(totalData);
+                && TextUtils.isEmpty(totalData)
+                && TextUtils.isEmpty(calcSteps);
         if (allCoreEmpty) {
             return true;
         }
@@ -1658,6 +1697,44 @@ final class RankAiConsumptionAnalyzer {
         }
     }
 
+    private static void appendRawAiReplyLog(
+            Context context,
+            String homeId,
+            int currentRound,
+            int previousRound,
+            String traceId,
+            String rawReply
+    ) {
+        String reply = safeTrim(rawReply);
+        if (TextUtils.isEmpty(reply)) {
+            return;
+        }
+        File file = resolveAiRawReplyLogFile(context);
+        if (file == null) {
+            log(context, "append ai raw reply log failed: file null");
+            return;
+        }
+        synchronized (RAW_REPLY_FILE_LOCK) {
+            ensureFile(file);
+            StringBuilder sb = new StringBuilder(Math.max(512, reply.length() + 240));
+            sb.append("# write_at=").append(formatTs(System.currentTimeMillis()))
+                    .append(" homeid=").append(safeTrim(homeId))
+                    .append(" current_round=").append(Math.max(0, currentRound))
+                    .append(" previous_round=").append(Math.max(0, previousRound))
+                    .append(" trace_id=").append(safeTrim(traceId))
+                    .append('\n')
+                    .append(reply)
+                    .append('\n')
+                    .append('\n');
+            writeText(file, sb.toString(), true);
+            log(context, "analyze ai raw reply logged: file=" + file.getAbsolutePath()
+                    + " homeId=" + safeTrim(homeId)
+                    + " currentRound=" + Math.max(0, currentRound)
+                    + " previousRound=" + Math.max(0, previousRound)
+                    + " chars=" + reply.length());
+        }
+    }
+
     private static void dispatchFeishuWebhook(
             Context context,
             String homeId,
@@ -1678,21 +1755,50 @@ final class RankAiConsumptionAnalyzer {
         }
         String webhookUrl = activeConfig == null ? "" : safeTrim(activeConfig.feishuWebhookUrl);
         String signSecret = activeConfig == null ? "" : safeTrim(activeConfig.feishuSignSecret);
+        int minConsume = activeConfig == null
+                ? 0
+                : Math.max(0, activeConfig.feishuPushMinConsume);
         if (TextUtils.isEmpty(webhookUrl)) {
             log(context, "feishu push skipped: webhook_empty source="
                     + (activeConfig == null ? "unknown" : activeConfig.source));
             return;
         }
         ArrayList<AnalysisRecord> safeRecords = new ArrayList<AnalysisRecord>();
+        int filteredByMinConsume = 0;
+        int filteredByInvalidConsume = 0;
         if (records != null) {
             for (AnalysisRecord record : records) {
                 if (record == null || !record.hasAnyField()) {
                     continue;
                 }
+                if (minConsume > 0) {
+                    long consumeValue = parseDataValue(safeTrim(record.consumeData));
+                    if (consumeValue < 0L) {
+                        filteredByMinConsume++;
+                        filteredByInvalidConsume++;
+                        continue;
+                    }
+                    if (consumeValue < minConsume) {
+                        filteredByMinConsume++;
+                        continue;
+                    }
+                }
                 safeRecords.add(record);
             }
         }
+        if (filteredByMinConsume > 0) {
+            log(context, "feishu push filter applied: homeId=" + safeTrim(homeId)
+                    + " minConsume=" + minConsume
+                    + " filtered=" + filteredByMinConsume
+                    + " invalidConsume=" + filteredByInvalidConsume);
+        }
         if (safeRecords.isEmpty()) {
+            if (minConsume > 0 && filteredByMinConsume > 0) {
+                log(context, "feishu push skipped: below_min_consume homeId=" + safeTrim(homeId)
+                        + " minConsume=" + minConsume
+                        + " filtered=" + filteredByMinConsume);
+                return;
+            }
             log(context, "feishu push skipped: no_valid_records homeId=" + safeTrim(homeId)
                     + " rawPreview=" + truncate(safeTrim(rawAiReply).replace('\n', ' '), 200));
             return;
@@ -1703,6 +1809,7 @@ final class RankAiConsumptionAnalyzer {
                 + " currentRound=" + currentRound
                 + " previousRound=" + previousRound
                 + " recordCount=" + total
+                + " minConsume=" + minConsume
                 + " source=" + (activeConfig == null ? "unknown" : activeConfig.source)
                 + " signEnabled=" + (!TextUtils.isEmpty(signSecret)));
         for (int i = 0; i < safeRecords.size(); i++) {
@@ -1755,7 +1862,8 @@ final class RankAiConsumptionAnalyzer {
         sb.append(KEY_UP_NAME).append("：").append(safeTrim(record.targetName)).append('\n');
         sb.append(KEY_UP_ID).append("：").append(safeTrim(record.targetId)).append('\n');
         sb.append(KEY_HOME_ID).append("：").append(safeTrim(record.homeId)).append('\n');
-        sb.append(KEY_TOTAL_DATA).append("：").append(safeTrim(record.totalData));
+        sb.append(KEY_TOTAL_DATA).append("：").append(safeTrim(record.totalData)).append('\n');
+        sb.append(KEY_CALC_STEPS).append("：").append(safeTrim(record.calcSteps));
         return sb.toString();
     }
 
@@ -1773,6 +1881,23 @@ final class RankAiConsumptionAnalyzer {
                 UiComponentConfig.AI_ANALYSIS_RESULT_PREFIX
                         + dayToken
                         + UiComponentConfig.AI_ANALYSIS_RESULT_SUFFIX
+        );
+    }
+
+    private static File resolveAiRawReplyLogFile(Context context) {
+        File dir = resolveAnalysisDir(context);
+        if (dir == null) {
+            return null;
+        }
+        String dayToken;
+        synchronized (DAY_FORMAT) {
+            dayToken = DAY_FORMAT.format(new Date());
+        }
+        return new File(
+                dir,
+                UiComponentConfig.AI_ANALYSIS_RAW_REPLY_LOG_PREFIX
+                        + dayToken
+                        + UiComponentConfig.AI_ANALYSIS_RAW_REPLY_LOG_SUFFIX
         );
     }
 
@@ -1821,10 +1946,11 @@ final class RankAiConsumptionAnalyzer {
                 + "3. 全体分配金额总和应尽量逼近魅力榜正向总增量。\n"
                 + "4. 消费数据必须为整数数值，禁止输出估算/约/大概等文字。\n"
                 + "5. 消费计算准确度必须是百分比格式（如100%、86%），禁止估值/不确定等文字。\n"
-                + "6. 输出字段名不要包含括号中的英文标识；不要输出解释段落/JSON/Markdown。\n"
-                + "7. 仅当本轮无任何可推断的正向差值时，输出 NO_VALID_RECORDS。\n"
+                + "6. 优先基于 payload 中的 dataValue/previousDataValue/deltaDataValue 计算；dataRaw 仅作展示参考。\n"
+                + "7. dataRaw 可能包含“万/亿”，不要按字符串直接运算，必须按数值字段计算。\n"
+                + "8. 输出字段名不要包含括号中的英文标识；不要输出解释段落/JSON/Markdown。\n"
+                + "9. 仅当本轮无任何可推断的正向差值时，输出 NO_VALID_RECORDS。\n"
                 + "输出格式：\n"
-                + "----\n"
                 + "用户昵称：\n"
                 + "用户ID：\n"
                 + "用户等级：\n"
@@ -1834,7 +1960,7 @@ final class RankAiConsumptionAnalyzer {
                 + "消费对象ID：\n"
                 + "直播间ID：\n"
                 + "在直播间总消费数据：\n"
-                + "----\n";
+                + "计算步骤说明：\n";
     }
 
     private static File resolveAnalysisDir(Context context) {
@@ -2281,6 +2407,7 @@ final class RankAiConsumptionAnalyzer {
         String targetId = "";
         String homeId = "";
         String totalData = "";
+        String calcSteps = "";
 
         boolean hasAnyField() {
             return !TextUtils.isEmpty(userName)
@@ -2291,7 +2418,8 @@ final class RankAiConsumptionAnalyzer {
                     || !TextUtils.isEmpty(targetName)
                     || !TextUtils.isEmpty(targetId)
                     || !TextUtils.isEmpty(homeId)
-                    || !TextUtils.isEmpty(totalData);
+                    || !TextUtils.isEmpty(totalData)
+                    || !TextUtils.isEmpty(calcSteps);
         }
 
         void fillDefaultHomeId(String fallbackHomeId) {

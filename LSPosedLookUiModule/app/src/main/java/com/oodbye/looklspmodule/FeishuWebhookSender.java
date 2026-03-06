@@ -108,6 +108,45 @@ final class FeishuWebhookSender {
         return lastResult == null ? SendResult.fail(-1, "send_failed_unknown", "") : lastResult;
     }
 
+    static SendResult probeWebhook(
+            Context context,
+            String webhookUrl,
+            String signSecret
+    ) {
+        String url = safeTrim(webhookUrl);
+        if (TextUtils.isEmpty(url)) {
+            return SendResult.fail(-1, "webhook_url_empty", "");
+        }
+        String secret = safeTrim(signSecret);
+        if (TextUtils.isEmpty(secret)) {
+            return sendProbeOnce(context, url, "", null);
+        }
+        SendResult lastResult = null;
+        SignProfile[] profiles = new SignProfile[] {
+                SignProfile.FEISHU_DOC_SECONDS_EMPTY,
+                SignProfile.ALT_SECRET_KEY_SECONDS_DATA,
+                SignProfile.FEISHU_DOC_MILLIS_EMPTY
+        };
+        for (int i = 0; i < profiles.length; i++) {
+            SignProfile profile = profiles[i];
+            SendResult result = sendProbeOnce(context, url, secret, profile);
+            lastResult = result;
+            if (result != null && result.success) {
+                return result;
+            }
+            boolean signFail = isFeishuSignError(result);
+            if (!signFail) {
+                return result;
+            }
+            if (i < profiles.length - 1) {
+                log(context, "probe sign profile retry: from=" + profile.tag
+                        + " next=" + profiles[i + 1].tag
+                        + " status=" + (result == null ? -1 : result.statusCode));
+            }
+        }
+        return lastResult == null ? SendResult.fail(-1, "probe_failed_unknown", "") : lastResult;
+    }
+
     private static SendResult sendTextOnce(
             Context context,
             String webhookUrl,
@@ -192,12 +231,105 @@ final class FeishuWebhookSender {
         }
     }
 
+    private static SendResult sendProbeOnce(
+            Context context,
+            String webhookUrl,
+            String signSecret,
+            SignProfile signProfile
+    ) {
+        HttpURLConnection connection = null;
+        OutputStream os = null;
+        InputStream is = null;
+        int statusCode = -1;
+        String body = "";
+        try {
+            JSONObject requestJson = buildProbeRequestBody(safeTrim(signSecret), signProfile);
+            String tsForLog = safeTrim(requestJson.optString("timestamp"));
+            String signForLog = safeTrim(requestJson.optString("sign"));
+            log(context, "probe request: profile=" + (signProfile == null ? "none" : signProfile.tag)
+                    + " webhook=" + maskWebhook(webhookUrl)
+                    + " timestamp=" + (TextUtils.isEmpty(tsForLog) ? "none" : tsForLog)
+                    + " signLen=" + (TextUtils.isEmpty(signForLog) ? 0 : signForLog.length())
+                    + " signPrefix=" + (TextUtils.isEmpty(signForLog) ? "" : truncate(signForLog, 12)));
+            byte[] payload = requestJson.toString().getBytes(StandardCharsets.UTF_8);
+            connection = (HttpURLConnection) new URL(webhookUrl).openConnection();
+            connection.setConnectTimeout(UiComponentConfig.AI_HTTP_CONNECT_TIMEOUT_MS);
+            connection.setReadTimeout(UiComponentConfig.AI_HTTP_READ_TIMEOUT_MS);
+            connection.setRequestMethod("POST");
+            connection.setDoInput(true);
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            connection.setRequestProperty("Accept", "application/json");
+            connection.setRequestProperty("User-Agent", "LOOK-LSP-FeishuProbe/1.0");
+            os = connection.getOutputStream();
+            os.write(payload);
+            os.flush();
+            statusCode = connection.getResponseCode();
+            if (statusCode >= 200 && statusCode < 300) {
+                is = connection.getInputStream();
+            } else {
+                is = connection.getErrorStream();
+            }
+            body = readAllText(is);
+            if (statusCode < 200 || statusCode >= 300) {
+                log(context, "probe failed: http=" + statusCode
+                        + " profile=" + (signProfile == null ? "none" : signProfile.tag)
+                        + " body=" + truncate(body, 220));
+                return SendResult.fail(statusCode, "http_" + statusCode, body);
+            }
+            SendResult raw = SendResult.fail(statusCode, parseFeishuResponseDetail(body), body);
+            if (isFeishuSignError(raw)) {
+                log(context, "probe failed: sign_error"
+                        + " profile=" + (signProfile == null ? "none" : signProfile.tag)
+                        + " body=" + truncate(body, 220));
+                return raw;
+            }
+            String detail = parseFeishuResponseDetail(body);
+            log(context, "probe ok: http=" + statusCode
+                    + " profile=" + (signProfile == null ? "none" : signProfile.tag)
+                    + " detail=" + detail);
+            return SendResult.ok(statusCode, "probe_ok " + detail, body);
+        } catch (Throwable e) {
+            String detail = "probe_exception:" + safeTrim(String.valueOf(e));
+            log(context, "probe exception: " + detail
+                    + " profile=" + (signProfile == null ? "none" : signProfile.tag));
+            return SendResult.fail(statusCode, detail, body);
+        } finally {
+            closeQuietly(os);
+            closeQuietly(is);
+            if (connection != null) {
+                try {
+                    connection.disconnect();
+                } catch (Throwable ignore) {
+                }
+            }
+        }
+    }
+
     private static JSONObject buildRequestBody(String text, String signSecret, SignProfile profile) throws Exception {
         JSONObject body = new JSONObject();
         body.put("msg_type", "text");
         JSONObject content = new JSONObject();
         content.put("text", text);
         body.put("content", content);
+        if (!TextUtils.isEmpty(signSecret)) {
+            SignProfile actualProfile = profile == null
+                    ? SignProfile.FEISHU_DOC_SECONDS_EMPTY : profile;
+            boolean millisTimestamp = actualProfile == SignProfile.FEISHU_DOC_MILLIS_EMPTY;
+            String timestamp = millisTimestamp
+                    ? String.valueOf(System.currentTimeMillis())
+                    : String.valueOf(System.currentTimeMillis() / 1000L);
+            body.put("timestamp", timestamp);
+            body.put("sign", buildSign(timestamp, signSecret, actualProfile));
+        }
+        return body;
+    }
+
+    private static JSONObject buildProbeRequestBody(String signSecret, SignProfile profile) throws Exception {
+        JSONObject body = new JSONObject();
+        // 使用无效 msg_type 做探测，不会触发机器人消息投递。
+        body.put("msg_type", "probe_only");
+        body.put("content", new JSONObject());
         if (!TextUtils.isEmpty(signSecret)) {
             SignProfile actualProfile = profile == null
                     ? SignProfile.FEISHU_DOC_SECONDS_EMPTY : profile;

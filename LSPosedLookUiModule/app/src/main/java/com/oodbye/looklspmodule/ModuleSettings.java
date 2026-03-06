@@ -34,6 +34,7 @@ final class ModuleSettings {
     static final String KEY_FEISHU_PUSH_ENABLED = "feishu_push_enabled";
     static final String KEY_FEISHU_WEBHOOK_URL = "feishu_webhook_url";
     static final String KEY_FEISHU_SIGN_SECRET = "feishu_sign_secret";
+    static final String KEY_FEISHU_PUSH_MIN_CONSUME = "feishu_push_min_consume";
     static final String KEY_A11Y_PANEL_MARKER_COUNT = "a11y_panel_marker_count";
     static final String KEY_A11Y_PANEL_PRIMARY_COUNT = "a11y_panel_primary_count";
     static final String KEY_A11Y_PANEL_UPDATED_AT = "a11y_panel_updated_at";
@@ -70,6 +71,7 @@ final class ModuleSettings {
     static final String EXTRA_FEISHU_PUSH_ENABLED = "feishu_push_enabled";
     static final String EXTRA_FEISHU_WEBHOOK_URL = "feishu_webhook_url";
     static final String EXTRA_FEISHU_SIGN_SECRET = "feishu_sign_secret";
+    static final String EXTRA_FEISHU_PUSH_MIN_CONSUME = "feishu_push_min_consume";
     static final String EXTRA_DEBUG_COMMAND = "debug_command";
     static final String EXTRA_DEBUG_TRIGGER = "debug_trigger";
     static final String EXTRA_A11Y_PANEL_MARKER_COUNT = "a11y_panel_marker_count";
@@ -135,6 +137,7 @@ final class ModuleSettings {
     static final boolean DEFAULT_FEISHU_PUSH_ENABLED = true;
     static final String DEFAULT_FEISHU_WEBHOOK_URL = "";
     static final String DEFAULT_FEISHU_SIGN_SECRET = "";
+    static final int DEFAULT_FEISHU_PUSH_MIN_CONSUME = 0;
     static final int DEFAULT_A11Y_PANEL_MARKER_COUNT = 0;
     static final int DEFAULT_A11Y_PANEL_PRIMARY_COUNT = 0;
     static final long DEFAULT_A11Y_PANEL_UPDATED_AT = 0L;
@@ -380,6 +383,16 @@ final class ModuleSettings {
             return DEFAULT_FEISHU_SIGN_SECRET;
         }
         return safeTrim(xsp.getString(KEY_FEISHU_SIGN_SECRET, DEFAULT_FEISHU_SIGN_SECRET));
+    }
+
+    static synchronized int getFeishuPushMinConsume() {
+        XSharedPreferences xsp = getXsp();
+        if (xsp == null) {
+            return DEFAULT_FEISHU_PUSH_MIN_CONSUME;
+        }
+        return sanitizeNonNegativeInt(
+                xsp.getInt(KEY_FEISHU_PUSH_MIN_CONSUME, DEFAULT_FEISHU_PUSH_MIN_CONSUME)
+        );
     }
 
     static synchronized int getA11yPanelMarkerCount() {
@@ -660,6 +673,15 @@ final class ModuleSettings {
         return safeTrim(prefs.getString(KEY_FEISHU_SIGN_SECRET, DEFAULT_FEISHU_SIGN_SECRET));
     }
 
+    static synchronized int getFeishuPushMinConsume(SharedPreferences prefs) {
+        if (prefs == null) {
+            return DEFAULT_FEISHU_PUSH_MIN_CONSUME;
+        }
+        return sanitizeNonNegativeInt(
+                prefs.getInt(KEY_FEISHU_PUSH_MIN_CONSUME, DEFAULT_FEISHU_PUSH_MIN_CONSUME)
+        );
+    }
+
     static synchronized long getRuntimeRunStartAt(SharedPreferences prefs) {
         if (prefs == null) {
             return 0L;
@@ -901,6 +923,16 @@ final class ModuleSettings {
         }
         SharedPreferences prefs = appPrefs(context);
         prefs.edit().putString(KEY_FEISHU_SIGN_SECRET, safeTrim(secret)).commit();
+        ensurePrefsReadable(context);
+    }
+
+    static synchronized void setFeishuPushMinConsume(Context context, int value) {
+        if (context == null) {
+            return;
+        }
+        int safeValue = sanitizeNonNegativeInt(value);
+        SharedPreferences prefs = appPrefs(context);
+        prefs.edit().putInt(KEY_FEISHU_PUSH_MIN_CONSUME, safeValue).commit();
         ensurePrefsReadable(context);
     }
 
@@ -1165,6 +1197,9 @@ final class ModuleSettings {
         }
         if (!prefs.contains(KEY_FEISHU_SIGN_SECRET)) {
             editor.putString(KEY_FEISHU_SIGN_SECRET, DEFAULT_FEISHU_SIGN_SECRET);
+        }
+        if (!prefs.contains(KEY_FEISHU_PUSH_MIN_CONSUME)) {
+            editor.putInt(KEY_FEISHU_PUSH_MIN_CONSUME, DEFAULT_FEISHU_PUSH_MIN_CONSUME);
         }
         if (!prefs.contains(KEY_A11Y_PANEL_MARKER_COUNT)) {
             editor.putInt(KEY_A11Y_PANEL_MARKER_COUNT, DEFAULT_A11Y_PANEL_MARKER_COUNT);
