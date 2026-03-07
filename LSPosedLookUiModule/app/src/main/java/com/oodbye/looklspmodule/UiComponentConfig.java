@@ -88,7 +88,7 @@ final class UiComponentConfig {
     static final int LIVE_ROOM_TASK_PANEL_PRIMARY_MIN_MATCH_COUNT = 1;
     static final long LIVE_ROOM_TASK_RANK_COLLECT_START_DELAY_MS = 600L;
     static final long LIVE_ROOM_TASK_RANK_COLLECT_RESULT_POLL_INTERVAL_MS = 260L;
-    static final long LIVE_ROOM_TASK_RANK_COLLECT_RESULT_TIMEOUT_MS = 120000L;
+    static final long LIVE_ROOM_TASK_RANK_COLLECT_RESULT_TIMEOUT_MS = 0L;
     static final long LIVE_ROOM_TASK_RANK_COLLECT_REDISPATCH_DELAY_MS = 1000L;
     static final long LIVE_ROOM_TASK_RANK_DETAIL_WAIT_AFTER_CLICK_MS = 900L;
     static final int LIVE_ROOM_TASK_RANK_DETAIL_READY_MAX_RETRY = 16;
@@ -127,6 +127,11 @@ final class UiComponentConfig {
     static final int LIVE_ROOM_TASK_CHARM_ROW_NAME_TEXT_INDEX = 1;
     static final int LIVE_ROOM_TASK_CHARM_ROW_DATA_TEXT_INDEX = 2;
     static final long LIVE_ROOM_TASK_MIN_RETURN_DELAY_MS = 13000L;
+    static final long LIVE_ROOM_TASK_TOTAL_TIMEOUT_MS = 0L;
+    static final int LIVE_ROOM_TASK_NAV_RECOVER_MAX_RETRY = 3;
+    static final int LIVE_ROOM_TASK_NAV_RECOVER_MAX_RESTART = 2;
+    static final long LIVE_ROOM_TASK_NAV_RECOVER_RETRY_INTERVAL_MS = 500L;
+    static final long LIVE_ROOM_TASK_NAV_RECOVER_SETTLE_MS = 450L;
     static final long LIVE_ROOM_SCRIPT_BACK_DELAY_MS = 500L;
     static final long A11Y_PANEL_SNAPSHOT_MIN_UPDATE_INTERVAL_MS = 400L;
     static final long A11Y_PANEL_SNAPSHOT_MAX_WRITE_INTERVAL_MS = 1200L;

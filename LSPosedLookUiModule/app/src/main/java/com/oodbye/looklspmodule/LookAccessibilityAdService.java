@@ -30,6 +30,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
@@ -53,6 +54,7 @@ public class LookAccessibilityAdService extends AccessibilityService {
             Pattern.compile("^(\\d+(?:\\.\\d+)?)([万亿wW]?)$");
     private static final Pattern RANK_DATA_NUMERIC_FALLBACK_PATTERN =
             Pattern.compile("(\\d+(?:\\.\\d+)?)([万亿wW]?)");
+    private static final int RANK_COLLECT_SESSION_CACHE_MAX = 128;
 
     private Handler handler;
     private AccessibilityCustomRulesAdEngine adEngine;
@@ -66,7 +68,11 @@ public class LookAccessibilityAdService extends AccessibilityService {
     private BroadcastReceiver panelClickRequestReceiver;
     private boolean panelClickRequestReceiverRegistered;
     private final Object rankCollectLock = new Object();
+    private final Object rankCollectSessionLock = new Object();
+    private final LinkedHashMap<String, HashSet<Integer>> rankCollectedRanksBySession =
+            new LinkedHashMap<String, HashSet<Integer>>();
     private long activeRankCollectRequestId = -1L;
+    private Thread activeRankCollectWorker;
     private long lastShizukuPermissionRequestAt = 0L;
     private final Runnable realtimeLoopTask = new Runnable() {
         @Override
@@ -113,6 +119,7 @@ public class LookAccessibilityAdService extends AccessibilityService {
     public boolean onUnbind(android.content.Intent intent) {
         stopRealtimeLoop();
         unregisterPanelClickRequestReceiver();
+        cancelActiveRankCollect("service_unbind");
         resetPanelSnapshot("service_unbind");
         return super.onUnbind(intent);
     }
@@ -121,6 +128,7 @@ public class LookAccessibilityAdService extends AccessibilityService {
     public void onDestroy() {
         stopRealtimeLoop();
         unregisterPanelClickRequestReceiver();
+        cancelActiveRankCollect("service_destroy");
         resetPanelSnapshot("service_destroy");
         super.onDestroy();
         log("无障碍广告服务已销毁");
@@ -163,6 +171,30 @@ public class LookAccessibilityAdService extends AccessibilityService {
         loopStarted = false;
         if (handler != null) {
             handler.removeCallbacks(realtimeLoopTask);
+        }
+    }
+
+    private void cancelActiveRankCollect(String reason) {
+        long requestId;
+        Thread worker;
+        synchronized (rankCollectLock) {
+            requestId = activeRankCollectRequestId;
+            worker = activeRankCollectWorker;
+            activeRankCollectRequestId = -1L;
+            activeRankCollectWorker = null;
+        }
+        if (requestId > 0L) {
+            log("取消榜单采集活动请求: reason=" + safeTrim(reason)
+                    + " requestId=" + requestId);
+        }
+        if (worker != null && worker.isAlive()) {
+            try {
+                worker.interrupt();
+            } catch (Throwable ignore) {
+            }
+        }
+        synchronized (rankCollectSessionLock) {
+            rankCollectedRanksBySession.clear();
         }
     }
 
@@ -327,29 +359,21 @@ public class LookAccessibilityAdService extends AccessibilityService {
             );
             return;
         }
-        synchronized (rankCollectLock) {
-            if (activeRankCollectRequestId > 0L) {
-                dispatchRankCollectResult(
-                        requestId,
-                        rankType,
-                        false,
-                        "collector_busy(requestId=" + activeRankCollectRequestId + ")",
-                        0,
-                        0
-                );
-                return;
-            }
-            activeRankCollectRequestId = requestId;
-        }
         final long finalRequestId = requestId;
         final String finalRankType = rankType;
         final String finalHomeId = homeId;
         final long finalEnterTimeMs = Math.max(0L, enterTimeMs);
         final int finalTargetCount = targetCount;
+        final long[] preemptedRequestHolder = new long[] { -1L };
+        final Thread[] preemptedWorkerHolder = new Thread[] { null };
         Thread worker = new Thread(new Runnable() {
             @Override
             public void run() {
                 try {
+                    if (!isRankCollectRequestActive(finalRequestId)) {
+                        log("榜单采集请求启动前已失效: requestId=" + finalRequestId);
+                        return;
+                    }
                     RankCollectSummary summary = executeRankCollectRequest(
                             finalRequestId,
                             finalRankType,
@@ -357,6 +381,11 @@ public class LookAccessibilityAdService extends AccessibilityService {
                             finalEnterTimeMs,
                             finalTargetCount
                     );
+                    if (!isRankCollectRequestActive(finalRequestId)) {
+                        log("榜单采集请求已被接管，忽略旧结果: requestId=" + finalRequestId
+                                + " detail=" + safeTrim(summary.detail));
+                        return;
+                    }
                     dispatchRankCollectResult(
                             finalRequestId,
                             finalRankType,
@@ -366,6 +395,11 @@ public class LookAccessibilityAdService extends AccessibilityService {
                             summary.maxRank
                     );
                 } catch (Throwable e) {
+                    if (!isRankCollectRequestActive(finalRequestId)) {
+                        log("榜单采集旧请求异常已忽略: requestId=" + finalRequestId
+                                + " error=" + safeTrim(e.toString()));
+                        return;
+                    }
                     dispatchRankCollectResult(
                             finalRequestId,
                             finalRankType,
@@ -379,11 +413,53 @@ public class LookAccessibilityAdService extends AccessibilityService {
                         if (activeRankCollectRequestId == finalRequestId) {
                             activeRankCollectRequestId = -1L;
                         }
+                        if (activeRankCollectWorker == Thread.currentThread()) {
+                            activeRankCollectWorker = null;
+                        }
                     }
                 }
             }
         }, "look_rank_collect_" + requestId);
-        worker.start();
+        synchronized (rankCollectLock) {
+            if (activeRankCollectRequestId > 0L && activeRankCollectRequestId != requestId) {
+                preemptedRequestHolder[0] = activeRankCollectRequestId;
+                preemptedWorkerHolder[0] = activeRankCollectWorker;
+            }
+            activeRankCollectRequestId = requestId;
+            activeRankCollectWorker = worker;
+        }
+        if (preemptedRequestHolder[0] > 0L) {
+            log("榜单采集请求接管: previousRequestId=" + preemptedRequestHolder[0]
+                    + " newRequestId=" + requestId
+                    + " type=" + safeTrim(rankType));
+            Thread preemptedWorker = preemptedWorkerHolder[0];
+            if (preemptedWorker != null && preemptedWorker.isAlive()) {
+                try {
+                    preemptedWorker.interrupt();
+                } catch (Throwable ignore) {
+                }
+            }
+        }
+        try {
+            worker.start();
+        } catch (Throwable e) {
+            synchronized (rankCollectLock) {
+                if (activeRankCollectRequestId == requestId) {
+                    activeRankCollectRequestId = -1L;
+                }
+                if (activeRankCollectWorker == worker) {
+                    activeRankCollectWorker = null;
+                }
+            }
+            dispatchRankCollectResult(
+                    requestId,
+                    rankType,
+                    false,
+                    "collector_worker_start_failed:" + safeTrim(e.toString()),
+                    0,
+                    0
+            );
+        }
     }
 
     private RankCollectSummary executeRankCollectRequest(
@@ -417,6 +493,14 @@ public class LookAccessibilityAdService extends AccessibilityService {
                     0
             );
         }
+        if (!isRankCollectRequestActive(requestId)) {
+            return new RankCollectSummary(
+                    false,
+                    "request_preempted_before_start",
+                    0,
+                    0
+            );
+        }
         String csvPath = "";
         if (isContributionCollectType(type)) {
             csvPath = LiveRoomRankCsvStore.getContributionCsvPath(this);
@@ -432,6 +516,7 @@ public class LookAccessibilityAdService extends AccessibilityService {
                 + " enterTime=" + enterTimeMs
                 + " csv=" + safeTrim(csvPath));
         RankCollectSummary summary = collectRankRows(
+                requestId,
                 type,
                 homeId,
                 enterTimeMs,
@@ -450,6 +535,7 @@ public class LookAccessibilityAdService extends AccessibilityService {
     }
 
     private RankCollectSummary collectRankRows(
+            long requestId,
             String rankType,
             String homeId,
             long enterTimeMs,
@@ -466,6 +552,7 @@ public class LookAccessibilityAdService extends AccessibilityService {
         }
         int nextRank = 1;
         int collectedCount = 0;
+        int appendCandidateCount = 0;
         int maxCollectedRank = 0;
         int scrollCount = 0;
         int noProgressScrollCount = 0;
@@ -487,19 +574,44 @@ public class LookAccessibilityAdService extends AccessibilityService {
         boolean success = true;
         String failDetail = "";
         Set<Integer> doneRanks = new HashSet<Integer>();
+        Set<Integer> requestCollectedRanks = new HashSet<Integer>();
         List<LiveRoomRankCsvStore.ContributionCsvRow> contributionRows =
                 new ArrayList<LiveRoomRankCsvStore.ContributionCsvRow>();
         List<LiveRoomRankCsvStore.CharmCsvRow> charmRows =
                 new ArrayList<LiveRoomRankCsvStore.CharmCsvRow>();
+        String collectSessionKey = "";
+        if (!collectAllRankUsers && safeTargetCount > 0) {
+            collectSessionKey = buildRankCollectSessionKey(rankType, homeId, enterTimeMs);
+            if (!TextUtils.isEmpty(collectSessionKey)) {
+                doneRanks.addAll(snapshotCollectedRanksForSession(collectSessionKey));
+                collectedCount = countRanksWithinLimit(doneRanks, safeTargetCount);
+                nextRank = resolveNextMissingRank(doneRanks, nextRank);
+            }
+        }
         while (collectAllRankUsers || nextRank <= safeTargetCount) {
+            if (!isRankCollectRequestActive(requestId)) {
+                success = false;
+                failDetail = "request_preempted";
+                break;
+            }
             if (!isEngineRunningForRankCollect()) {
                 success = false;
                 failDetail = "engine_stopped";
                 break;
             }
-            if (!waitSlidingContainerGone("rank_collect_loop_" + nextRank)) {
+            if (!waitSlidingContainerGone(requestId, "rank_collect_loop_" + nextRank)) {
+                if (!isRankCollectRequestActive(requestId)) {
+                    success = false;
+                    failDetail = "request_preempted";
+                } else {
+                    success = false;
+                    failDetail = "sliding_container_block_timeout";
+                }
+                break;
+            }
+            if (!isRankCollectRequestActive(requestId)) {
                 success = false;
-                failDetail = "sliding_container_block_timeout";
+                failDetail = "request_preempted";
                 break;
             }
             AccessibilityNodeInfo root = obtainTargetRoot();
@@ -613,8 +725,11 @@ public class LookAccessibilityAdService extends AccessibilityService {
                         log("榜单采集入队失败: type=" + safeTrim(rankType) + " rank=" + visibleRow.rank);
                         continue;
                     }
-                    doneRanks.add(visibleRow.rank);
-                    collectedCount++;
+                    if (doneRanks.add(visibleRow.rank)) {
+                        collectedCount++;
+                        appendCandidateCount++;
+                        requestCollectedRanks.add(visibleRow.rank);
+                    }
                     pageCollected++;
                     maxCollectedRank = Math.max(maxCollectedRank, visibleRow.rank);
                     log("榜单采集完成一条: type=" + safeTrim(rankType)
@@ -733,7 +848,12 @@ public class LookAccessibilityAdService extends AccessibilityService {
                         continue;
                     }
                     SystemClock.sleep(UiComponentConfig.LIVE_ROOM_TASK_RANK_DETAIL_WAIT_AFTER_CLICK_MS);
-                    detailData = collectDetailData(rankType);
+                    detailData = collectDetailData(requestId, rankType);
+                    if (!isRankCollectRequestActive(requestId)) {
+                        success = false;
+                        failDetail = "request_preempted";
+                        break;
+                    }
                     if (detailData.enteredDetail) {
                         performGlobalAction(GLOBAL_ACTION_BACK);
                         SystemClock.sleep(UiComponentConfig.LIVE_ROOM_TASK_RANK_BACK_TO_LIST_WAIT_MS);
@@ -783,8 +903,11 @@ public class LookAccessibilityAdService extends AccessibilityService {
                 if (!queued) {
                     log("榜单采集入队失败: type=" + safeTrim(rankType) + " rank=" + row.rank);
                 }
-                doneRanks.add(row.rank);
-                collectedCount++;
+                if (doneRanks.add(row.rank)) {
+                    collectedCount++;
+                    appendCandidateCount++;
+                    requestCollectedRanks.add(row.rank);
+                }
                 maxCollectedRank = Math.max(maxCollectedRank, row.rank);
                 nextRank = resolveNextMissingRank(doneRanks, nextRank);
                 pendingNoProgressConfirm = false;
@@ -1007,7 +1130,20 @@ public class LookAccessibilityAdService extends AccessibilityService {
             }
         }
         RankFlushResult flushResult = flushQueuedRankRows(rankType, contributionRows, charmRows);
-        boolean flushOk = flushResult.ioSuccess && flushResult.acceptedCount >= collectedCount;
+        boolean flushOk = flushResult.ioSuccess && flushResult.acceptedCount >= appendCandidateCount;
+        if (!collectAllRankUsers
+                && flushOk
+                && !TextUtils.isEmpty(collectSessionKey)
+                && !requestCollectedRanks.isEmpty()) {
+            mergeCollectedRanksForSession(collectSessionKey, requestCollectedRanks);
+        }
+        if (!collectAllRankUsers
+                && flushOk
+                && success
+                && countMatched
+                && !TextUtils.isEmpty(collectSessionKey)) {
+            clearCollectedRanksForSession(collectSessionKey);
+        }
         String targetLabel = collectAllRankUsers ? "ALL" : String.valueOf(safeTargetCount);
         log("榜单采集数量核对: type=" + safeTrim(rankType)
                 + " target=" + targetLabel
@@ -1018,7 +1154,7 @@ public class LookAccessibilityAdService extends AccessibilityService {
                 + " scrollCount=" + scrollCount
                 + " noProgress=" + noProgressScrollCount);
         log("榜单采集写入汇总: type=" + safeTrim(rankType)
-                + " queued=" + collectedCount
+                + " queued=" + appendCandidateCount
                 + " accepted=" + flushResult.acceptedCount
                 + " written=" + flushResult.writtenCount
                 + " dedupSkipped=" + flushResult.duplicateSkippedCount
@@ -1027,6 +1163,7 @@ public class LookAccessibilityAdService extends AccessibilityService {
                 + " detailMode=" + (collectDetailEnabled ? "detail" : "list"));
         String detail = (success ? "collect_done" : safeTrim(failDetail)) + "(target=" + targetLabel
                 + ",count=" + collectedCount
+                + ",newCount=" + appendCandidateCount
                 + ",matched=" + countMatched
                 + ",accepted=" + flushResult.acceptedCount
                 + ",written=" + flushResult.writtenCount
@@ -1036,7 +1173,7 @@ public class LookAccessibilityAdService extends AccessibilityService {
         return new RankCollectSummary(success && flushOk, detail, collectedCount, maxCollectedRank);
     }
 
-    private DetailCollectData collectDetailData(String rankType) {
+    private DetailCollectData collectDetailData(long requestId, String rankType) {
         int maxRetry = Math.max(1, UiComponentConfig.LIVE_ROOM_TASK_RANK_DETAIL_READY_MAX_RETRY);
         int invalidDataRetryCount = 0;
         int maxInvalidDataRetry = Math.max(
@@ -1045,7 +1182,13 @@ public class LookAccessibilityAdService extends AccessibilityService {
         );
         DetailCollectData lastInvalidData = null;
         for (int i = 0; i < maxRetry; i++) {
-            if (!waitSlidingContainerGone("detail_collect_" + (i + 1))) {
+            if (!isRankCollectRequestActive(requestId)) {
+                break;
+            }
+            if (!waitSlidingContainerGone(requestId, "detail_collect_" + (i + 1))) {
+                break;
+            }
+            if (!isRankCollectRequestActive(requestId)) {
                 break;
             }
             AccessibilityNodeInfo root = obtainTargetRoot();
@@ -1642,6 +1785,87 @@ public class LookAccessibilityAdService extends AccessibilityService {
             nextRank++;
         }
         return Math.max(1, nextRank);
+    }
+
+    private int countRanksWithinLimit(Set<Integer> ranks, int maxRankLimit) {
+        if (ranks == null || ranks.isEmpty()) {
+            return 0;
+        }
+        int safeMaxLimit = maxRankLimit <= 0 ? Integer.MAX_VALUE : maxRankLimit;
+        int count = 0;
+        for (Integer rank : ranks) {
+            if (rank == null) {
+                continue;
+            }
+            int safeRank = Math.max(0, rank.intValue());
+            if (safeRank <= 0 || safeRank > safeMaxLimit) {
+                continue;
+            }
+            count++;
+        }
+        return count;
+    }
+
+    private String buildRankCollectSessionKey(String rankType, String homeId, long enterTimeMs) {
+        String safeType = safeTrim(rankType);
+        String safeHomeId = safeTrim(homeId);
+        long safeEnterTime = Math.max(0L, enterTimeMs);
+        if (TextUtils.isEmpty(safeType) || TextUtils.isEmpty(safeHomeId) || safeEnterTime <= 0L) {
+            return "";
+        }
+        return safeType + "|" + safeHomeId + "|" + safeEnterTime;
+    }
+
+    private Set<Integer> snapshotCollectedRanksForSession(String sessionKey) {
+        String key = safeTrim(sessionKey);
+        if (TextUtils.isEmpty(key)) {
+            return Collections.emptySet();
+        }
+        synchronized (rankCollectSessionLock) {
+            HashSet<Integer> cached = rankCollectedRanksBySession.get(key);
+            if (cached == null || cached.isEmpty()) {
+                return Collections.emptySet();
+            }
+            return new HashSet<Integer>(cached);
+        }
+    }
+
+    private void mergeCollectedRanksForSession(String sessionKey, Set<Integer> ranks) {
+        String key = safeTrim(sessionKey);
+        if (TextUtils.isEmpty(key) || ranks == null || ranks.isEmpty()) {
+            return;
+        }
+        synchronized (rankCollectSessionLock) {
+            HashSet<Integer> cached = rankCollectedRanksBySession.get(key);
+            if (cached == null) {
+                cached = new HashSet<Integer>();
+                rankCollectedRanksBySession.put(key, cached);
+            }
+            for (Integer rank : ranks) {
+                if (rank == null) {
+                    continue;
+                }
+                int safeRank = Math.max(0, rank.intValue());
+                if (safeRank <= 0) {
+                    continue;
+                }
+                cached.add(safeRank);
+            }
+            while (rankCollectedRanksBySession.size() > RANK_COLLECT_SESSION_CACHE_MAX) {
+                String eldestKey = rankCollectedRanksBySession.keySet().iterator().next();
+                rankCollectedRanksBySession.remove(eldestKey);
+            }
+        }
+    }
+
+    private void clearCollectedRanksForSession(String sessionKey) {
+        String key = safeTrim(sessionKey);
+        if (TextUtils.isEmpty(key)) {
+            return;
+        }
+        synchronized (rankCollectSessionLock) {
+            rankCollectedRanksBySession.remove(key);
+        }
     }
 
     private int resolveFirstVisibleUncollectedRank(
@@ -2826,6 +3050,10 @@ public class LookAccessibilityAdService extends AccessibilityService {
     }
 
     private boolean waitSlidingContainerGone(String stage) {
+        return waitSlidingContainerGone(-1L, stage);
+    }
+
+    private boolean waitSlidingContainerGone(long requestId, String stage) {
         long timeoutMs = Math.max(
                 UiComponentConfig.LIVE_ROOM_TASK_PANEL_DETECT_BLOCK_WAIT_INTERVAL_MS,
                 UiComponentConfig.LIVE_ROOM_TASK_PANEL_DETECT_BLOCK_WAIT_TIMEOUT_MS
@@ -2836,7 +3064,7 @@ public class LookAccessibilityAdService extends AccessibilityService {
         );
         long startAt = SystemClock.uptimeMillis();
         int checkCount = 0;
-        while (isEngineRunningForRankCollect()) {
+        while (shouldContinueRankCollect(requestId)) {
             checkCount++;
             AccessibilityNodeInfo root = obtainTargetRoot();
             boolean blocked = false;
@@ -3083,6 +3311,22 @@ public class LookAccessibilityAdService extends AccessibilityService {
         } finally {
             safeRecycle(node);
         }
+    }
+
+    private boolean isRankCollectRequestActive(long requestId) {
+        if (requestId <= 0L) {
+            return true;
+        }
+        synchronized (rankCollectLock) {
+            return activeRankCollectRequestId == requestId;
+        }
+    }
+
+    private boolean shouldContinueRankCollect(long requestId) {
+        if (requestId > 0L && !isRankCollectRequestActive(requestId)) {
+            return false;
+        }
+        return isEngineRunningForRankCollect();
     }
 
     private boolean isEngineRunningForRankCollect() {

@@ -31,6 +31,9 @@ final class LiveRoomRankCsvStore {
             "homeid,ueseid,uesename,level,Data,Consumption,ueseip,time";
     private static final String CHARM_HEADER =
             "homeid,upid,upname,Data,followers,Consumption,upip,time";
+    private static final String KEY_RUNTIME_CSV_BASE_DAY = "runtime_csv_base_day";
+    private static final String KEY_RUNTIME_CSV_BASE_COMMAND_SEQ = "runtime_csv_base_command_seq";
+    private static final String KEY_RUNTIME_CSV_BASE_VERSION = "runtime_csv_base_version";
 
     private LiveRoomRankCsvStore() {
     }
@@ -206,7 +209,7 @@ final class LiveRoomRankCsvStore {
         if (dir == null) {
             return false;
         }
-        int cycleVersion = resolveNextDailyCycleVersion(dir, dayToken);
+        int cycleVersion = resolveCycleVersion(context, dir, dayToken, commandSeq, runtimeCycleIndex);
         String suffix = "_" + dayToken + "_" + cycleVersion + UiComponentConfig.LIVE_RANK_CSV_SUFFIX;
         File contribution = new File(
                 dir,
@@ -252,15 +255,75 @@ final class LiveRoomRankCsvStore {
     }
 
     private static int resolveCurrentCycleIndex(Context context) {
+        int completed = 0;
+        int entered = 0;
         try {
             SharedPreferences prefs = ModuleSettings.appPrefs(context);
-            int completed = ModuleSettings.getRuntimeCycleCompleted(prefs);
-            if (completed >= 0) {
-                return completed + 1;
-            }
+            completed = ModuleSettings.getRuntimeCycleCompleted(prefs);
+            entered = ModuleSettings.getRuntimeCycleEntered(prefs);
         } catch (Throwable ignore) {
         }
-        return 1;
+        if (completed <= 0) {
+            return 1;
+        }
+        if (entered > 0) {
+            return completed + 1;
+        }
+        return completed;
+    }
+
+    private static int resolveCycleVersion(
+            Context context,
+            File dir,
+            String dayToken,
+            long commandSeq,
+            int runtimeCycleIndex
+    ) {
+        int baseVersion = resolveRunBaseVersion(context, dir, dayToken, commandSeq);
+        int safeBase = Math.max(1, baseVersion);
+        int safeCycleIndex = Math.max(1, runtimeCycleIndex);
+        return safeBase + safeCycleIndex - 1;
+    }
+
+    private static int resolveRunBaseVersion(
+            Context context,
+            File dir,
+            String dayToken,
+            long commandSeq
+    ) {
+        String safeDayToken = safeTrim(dayToken);
+        long safeCommandSeq = Math.max(0L, commandSeq);
+        SharedPreferences prefs = null;
+        try {
+            prefs = ModuleSettings.appPrefs(context);
+        } catch (Throwable ignore) {
+            prefs = null;
+        }
+        if (prefs != null && !TextUtils.isEmpty(safeDayToken) && safeCommandSeq > 0L) {
+            String storedDayToken = safeTrim(prefs.getString(KEY_RUNTIME_CSV_BASE_DAY, ""));
+            long storedCommandSeq = Math.max(
+                    0L,
+                    prefs.getLong(KEY_RUNTIME_CSV_BASE_COMMAND_SEQ, 0L)
+            );
+            int storedBaseVersion = Math.max(0, prefs.getInt(KEY_RUNTIME_CSV_BASE_VERSION, 0));
+            if (storedBaseVersion > 0
+                    && TextUtils.equals(storedDayToken, safeDayToken)
+                    && storedCommandSeq == safeCommandSeq) {
+                return storedBaseVersion;
+            }
+        }
+        int allocatedBaseVersion = resolveNextDailyCycleVersion(dir, safeDayToken);
+        if (prefs != null && !TextUtils.isEmpty(safeDayToken) && safeCommandSeq > 0L) {
+            try {
+                prefs.edit()
+                        .putString(KEY_RUNTIME_CSV_BASE_DAY, safeDayToken)
+                        .putLong(KEY_RUNTIME_CSV_BASE_COMMAND_SEQ, safeCommandSeq)
+                        .putInt(KEY_RUNTIME_CSV_BASE_VERSION, allocatedBaseVersion)
+                        .commit();
+            } catch (Throwable ignore) {
+            }
+        }
+        return allocatedBaseVersion;
     }
 
     private static boolean appendCsvLineLocked(File file, String[] fields) {

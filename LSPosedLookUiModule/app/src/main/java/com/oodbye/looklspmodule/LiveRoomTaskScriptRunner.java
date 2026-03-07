@@ -26,6 +26,15 @@ final class LiveRoomTaskScriptRunner {
     private static final int VIEW_TREE_DUMP_MAX_DEPTH = 18;
     private static final int VIEW_TREE_DUMP_MAX_TEXT_LENGTH = 80;
 
+    private enum TaskExecutionState {
+        ALLOWED,
+        TASK_FINISHED,
+        TASK_TIMEOUT,
+        ACTIVITY_INVALID,
+        OUT_OF_LIVE_ROOM,
+        ENGINE_STOPPED
+    }
+
     interface TaskFinishListener {
         void onTaskFinished(String reason);
     }
@@ -46,6 +55,7 @@ final class LiveRoomTaskScriptRunner {
                 Math.max(0L, enterTimeMs),
                 listener
         );
+        markTaskStage(taskContext, "run_task_start");
         long configuredWaitMs = Math.max(0L, UiComponentConfig.LIVE_ROOM_ENTER_TASK_WAIT_MS);
         long flowWaitMs = Math.max(configuredWaitMs, UiComponentConfig.LIVE_ROOM_TASK_MIN_RETURN_DELAY_MS);
         String taskName = UiComponentConfig.LIVE_ROOM_ENTER_TASK_NAME;
@@ -56,9 +66,32 @@ final class LiveRoomTaskScriptRunner {
             log(activity, "task=" + taskName + " done, wait=" + flowWaitMs + "ms");
             return flowWaitMs;
         }
-        if (!isTaskExecutionAllowed(activity)) {
-            log(activity, "task=" + taskName + " skip: engine_not_running_or_activity_invalid");
-            finishTask(activity, taskContext, "engine_not_running_or_activity_invalid");
+        TaskExecutionState startState = resolveTaskExecutionState(activity, taskContext);
+        if (startState != TaskExecutionState.ALLOWED) {
+            if (startState == TaskExecutionState.OUT_OF_LIVE_ROOM) {
+                log(activity, "task=" + taskName + " start recover: out_of_live_room");
+                handleOutOfLiveRoomNavigation(
+                        activity,
+                        taskContext,
+                        "run_task_start",
+                        new Runnable() {
+                            @Override
+                            public void run() {
+                                scheduleFindVFlipperAndRun(activity, taskContext, startedAt, 1);
+                            }
+                        }
+                );
+            } else {
+                log(
+                        activity,
+                        "task=" + taskName + " skip: state=" + startState.name().toLowerCase()
+                );
+                finishTask(
+                        activity,
+                        taskContext,
+                        "task_start_unavailable(state=" + startState.name().toLowerCase() + ")"
+                );
+            }
             log(activity, "task=" + taskName + " done, wait=" + flowWaitMs + "ms");
             return flowWaitMs;
         }
@@ -74,7 +107,17 @@ final class LiveRoomTaskScriptRunner {
             final long startedAt,
             final int findAttempt
     ) {
-        if (!isTaskExecutionAllowed(activity)) {
+        if (!guardTaskExecution(
+                activity,
+                taskContext,
+                "schedule_find_vflipper(attempt=" + findAttempt + ")",
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        scheduleFindVFlipperAndRun(activity, taskContext, startedAt, findAttempt);
+                    }
+                }
+        )) {
             return;
         }
         View root = resolveRootView(activity);
@@ -139,7 +182,23 @@ final class LiveRoomTaskScriptRunner {
             final int findAttempt,
             final int panelRetryIndex
     ) {
-        if (!isTaskExecutionAllowed(activity)) {
+        if (!guardTaskExecution(
+                activity,
+                taskContext,
+                "verify_panel(retry=" + panelRetryIndex + ",findAttempt=" + findAttempt + ")",
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        verifyPanelAndStartRankSequence(
+                                activity,
+                                taskContext,
+                                startedAt,
+                                findAttempt,
+                                panelRetryIndex
+                        );
+                    }
+                }
+        )) {
             return;
         }
         View root = resolveRootView(activity);
@@ -286,7 +345,17 @@ final class LiveRoomTaskScriptRunner {
             final TaskContext taskContext,
             PanelState panelState
     ) {
-        if (!isTaskExecutionAllowed(activity)) {
+        if (!guardTaskExecution(
+                activity,
+                taskContext,
+                "start_rank_sequence",
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        resumeTaskFromProgress(activity, taskContext, "recover_from_start_rank_sequence");
+                    }
+                }
+        )) {
             return;
         }
         int markerCount = panelState == null ? 0 : panelState.markerCount;
@@ -323,7 +392,17 @@ final class LiveRoomTaskScriptRunner {
     }
 
     private static void clickCharmAndCollect(final Activity activity, final TaskContext taskContext) {
-        if (!isTaskExecutionAllowed(activity)) {
+        if (!guardTaskExecution(
+                activity,
+                taskContext,
+                "click_charm_and_collect",
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        clickCharmAndCollect(activity, taskContext);
+                    }
+                }
+        )) {
             return;
         }
         clickRankThenCollectWithRetry(
@@ -355,7 +434,27 @@ final class LiveRoomTaskScriptRunner {
             final int clickRetryIndex,
             final Runnable onDone
     ) {
-        if (!isTaskExecutionAllowed(activity)) {
+        if (!guardTaskExecution(
+                activity,
+                taskContext,
+                "click_rank_then_collect(rank=" + safeTrim(rankName)
+                        + ",retry=" + clickRetryIndex + ")",
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        clickRankThenCollectWithRetry(
+                                activity,
+                                taskContext,
+                                rankClickTarget,
+                                rankType,
+                                rankName,
+                                targetCount,
+                                clickRetryIndex,
+                                onDone
+                        );
+                    }
+                }
+        )) {
             return;
         }
         requestRankTabClickAsync(
@@ -365,7 +464,27 @@ final class LiveRoomTaskScriptRunner {
                 new RankTabClickCallback() {
                     @Override
                     public void onResult(boolean clicked) {
-                        if (!isTaskExecutionAllowed(activity)) {
+                        if (!guardTaskExecution(
+                                activity,
+                                taskContext,
+                                "rank_click_callback(rank=" + safeTrim(rankName)
+                                        + ",retry=" + clickRetryIndex + ")",
+                                new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        clickRankThenCollectWithRetry(
+                                                activity,
+                                                taskContext,
+                                                rankClickTarget,
+                                                rankType,
+                                                rankName,
+                                                targetCount,
+                                                clickRetryIndex,
+                                                onDone
+                                        );
+                                    }
+                                }
+                        )) {
                             return;
                         }
                         if (!clicked) {
@@ -552,7 +671,26 @@ final class LiveRoomTaskScriptRunner {
             final Runnable onDone,
             final int dispatchRound
     ) {
-        if (!isTaskExecutionAllowed(activity)) {
+        if (!guardTaskExecution(
+                activity,
+                taskContext,
+                "start_rank_collect(rank=" + safeTrim(rankName)
+                        + ",round=" + dispatchRound + ")",
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        startRankCollect(
+                                activity,
+                                taskContext,
+                                rankType,
+                                rankName,
+                                targetCount,
+                                onDone,
+                                dispatchRound
+                        );
+                    }
+                }
+        )) {
             return;
         }
         final int safeTargetCount = Math.max(0, targetCount);
@@ -630,7 +768,24 @@ final class LiveRoomTaskScriptRunner {
             final int dispatchRound,
             final Runnable onDone
     ) {
-        if (!isTaskExecutionAllowed(activity)) {
+        if (!guardTaskExecution(
+                activity,
+                taskContext,
+                "wait_rank_collect_result(rank=" + safeTrim(rankName)
+                        + ",poll=" + pollIndex + ",round=" + dispatchRound + ")",
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        resumeTaskFromProgress(
+                                activity,
+                                taskContext,
+                                "recover_from_wait_rank_collect_result(rank="
+                                        + safeTrim(rankName)
+                                        + ",round=" + dispatchRound + ")"
+                        );
+                    }
+                }
+        )) {
             return;
         }
         LookHookEntry.A11yRankCollectResult result =
@@ -693,11 +848,18 @@ final class LiveRoomTaskScriptRunner {
             return;
         }
         long elapsed = Math.max(0L, SystemClock.uptimeMillis() - waitStartedAt);
-        long timeoutMs = Math.max(
-                UiComponentConfig.LIVE_ROOM_TASK_RANK_COLLECT_RESULT_POLL_INTERVAL_MS,
+        long configuredTimeoutMs = Math.max(
+                0L,
                 UiComponentConfig.LIVE_ROOM_TASK_RANK_COLLECT_RESULT_TIMEOUT_MS
         );
-        if (elapsed >= timeoutMs) {
+        boolean timeoutEnabled = configuredTimeoutMs > 0L;
+        long timeoutMs = timeoutEnabled
+                ? Math.max(
+                UiComponentConfig.LIVE_ROOM_TASK_RANK_COLLECT_RESULT_POLL_INTERVAL_MS,
+                configuredTimeoutMs
+        )
+                : 0L;
+        if (timeoutEnabled && elapsed >= timeoutMs) {
             log(
                     activity,
                     "task=live_room_enter_task rank collect timeout: "
@@ -766,7 +928,27 @@ final class LiveRoomTaskScriptRunner {
             final Runnable onDone,
             final String reason
     ) {
-        if (!isTaskExecutionAllowed(activity)) {
+        if (!guardTaskExecution(
+                activity,
+                taskContext,
+                "schedule_rank_collect_redispatch(rank=" + safeTrim(rankName)
+                        + ",nextRound=" + nextDispatchRound + ")",
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        scheduleRankCollectRedispatch(
+                                activity,
+                                taskContext,
+                                rankType,
+                                rankName,
+                                targetCount,
+                                nextDispatchRound,
+                                onDone,
+                                reason
+                        );
+                    }
+                }
+        )) {
             return;
         }
         int maxRedispatchRound = Math.max(1, ModuleSettings.getSingleRankRetryLimit());
@@ -991,7 +1173,17 @@ final class LiveRoomTaskScriptRunner {
             final TaskContext taskContext,
             final int backRetryIndex
     ) {
-        if (!isTaskExecutionAllowed(activity)) {
+        if (!guardTaskExecution(
+                activity,
+                taskContext,
+                "request_close_panel(retry=" + backRetryIndex + ")",
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        requestClosePanel(activity, taskContext, backRetryIndex);
+                    }
+                }
+        )) {
             return;
         }
         try {
@@ -1025,7 +1217,17 @@ final class LiveRoomTaskScriptRunner {
             final TaskContext taskContext,
             final int backRetryIndex
     ) {
-        if (!isTaskExecutionAllowed(activity)) {
+        if (!guardTaskExecution(
+                activity,
+                taskContext,
+                "verify_panel_closed(retry=" + backRetryIndex + ")",
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        verifyPanelClosed(activity, taskContext, backRetryIndex);
+                    }
+                }
+        )) {
             return;
         }
         PanelState panelState = resolvePanelState();
@@ -1083,7 +1285,23 @@ final class LiveRoomTaskScriptRunner {
             final int currentAttempt,
             final String reason
     ) {
-        if (!isTaskExecutionAllowed(activity)) {
+        if (!guardTaskExecution(
+                activity,
+                taskContext,
+                "schedule_find_retry(attempt=" + currentAttempt + ")",
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        scheduleFindRetry(
+                                activity,
+                                taskContext,
+                                startedAt,
+                                currentAttempt,
+                                reason
+                        );
+                    }
+                }
+        )) {
             return;
         }
         long timeoutMs = Math.max(0L, UiComponentConfig.LIVE_ROOM_TASK_VFLIPPER_FIND_TIMEOUT_MS);
@@ -1282,6 +1500,295 @@ final class LiveRoomTaskScriptRunner {
         } catch (Throwable ignore) {
             return false;
         }
+    }
+
+    private static boolean guardTaskExecution(
+            final Activity activity,
+            final TaskContext taskContext,
+            final String stage,
+            final Runnable resumeAction
+    ) {
+        markTaskStage(taskContext, stage);
+        TaskExecutionState state = resolveTaskExecutionState(activity, taskContext);
+        if (state == TaskExecutionState.ALLOWED) {
+            clearNavigationRecoveringState(taskContext, true);
+            return true;
+        }
+        if (state == TaskExecutionState.TASK_FINISHED) {
+            return false;
+        }
+        if (state == TaskExecutionState.TASK_TIMEOUT) {
+            long elapsed = resolveTaskElapsedMs(taskContext);
+            finishTask(
+                    activity,
+                    taskContext,
+                    "task_total_timeout(stage=" + safeTrim(stage) + ",elapsed=" + elapsed + "ms)"
+            );
+            return false;
+        }
+        if (state == TaskExecutionState.OUT_OF_LIVE_ROOM) {
+            handleOutOfLiveRoomNavigation(activity, taskContext, stage, resumeAction);
+            return false;
+        }
+        finishTask(
+                activity,
+                taskContext,
+                "task_execution_unavailable(stage=" + safeTrim(stage)
+                        + ",state=" + state.name().toLowerCase() + ")"
+        );
+        return false;
+    }
+
+    private static TaskExecutionState resolveTaskExecutionState(Activity activity, TaskContext taskContext) {
+        if (isTaskFinished(taskContext)) {
+            return TaskExecutionState.TASK_FINISHED;
+        }
+        if (isTaskTimedOut(taskContext)) {
+            return TaskExecutionState.TASK_TIMEOUT;
+        }
+        if (!isActivityUsable(activity)) {
+            return TaskExecutionState.ACTIVITY_INVALID;
+        }
+        if (!isEngineRunning()) {
+            return TaskExecutionState.ENGINE_STOPPED;
+        }
+        if (!isLiveRoomActivity(activity)) {
+            return TaskExecutionState.OUT_OF_LIVE_ROOM;
+        }
+        return TaskExecutionState.ALLOWED;
+    }
+
+    private static boolean isTaskFinished(TaskContext taskContext) {
+        if (taskContext == null) {
+            return true;
+        }
+        synchronized (taskContext.lock) {
+            return taskContext.finished;
+        }
+    }
+
+    private static boolean isTaskTimedOut(TaskContext taskContext) {
+        if (taskContext == null) {
+            return true;
+        }
+        long timeoutMs = Math.max(0L, UiComponentConfig.LIVE_ROOM_TASK_TOTAL_TIMEOUT_MS);
+        if (timeoutMs <= 0L) {
+            return false;
+        }
+        return resolveTaskElapsedMs(taskContext) >= timeoutMs;
+    }
+
+    private static long resolveTaskElapsedMs(TaskContext taskContext) {
+        if (taskContext == null) {
+            return 0L;
+        }
+        return Math.max(0L, System.currentTimeMillis() - taskContext.startedAt);
+    }
+
+    private static void markTaskStage(TaskContext taskContext, String stage) {
+        if (taskContext == null) {
+            return;
+        }
+        synchronized (taskContext.lock) {
+            taskContext.currentStage = safeTrim(stage);
+        }
+    }
+
+    private static void clearNavigationRecoveringState(TaskContext taskContext, boolean resetAttempt) {
+        if (taskContext == null) {
+            return;
+        }
+        synchronized (taskContext.lock) {
+            taskContext.recoveringNavigation = false;
+            if (resetAttempt) {
+                taskContext.navigationRecoverAttempt = 0;
+            }
+        }
+    }
+
+    private static void handleOutOfLiveRoomNavigation(
+            final Activity activity,
+            final TaskContext taskContext,
+            final String stage,
+            final Runnable resumeAction
+    ) {
+        if (taskContext == null) {
+            return;
+        }
+        final String safeStage = safeTrim(stage);
+        final int maxRetry = Math.max(1, UiComponentConfig.LIVE_ROOM_TASK_NAV_RECOVER_MAX_RETRY);
+        final int maxRestart = Math.max(0, UiComponentConfig.LIVE_ROOM_TASK_NAV_RECOVER_MAX_RESTART);
+        final long retryIntervalMs = Math.max(
+                120L,
+                UiComponentConfig.LIVE_ROOM_TASK_NAV_RECOVER_RETRY_INTERVAL_MS
+        );
+        final long settleMs = Math.max(80L, UiComponentConfig.LIVE_ROOM_TASK_NAV_RECOVER_SETTLE_MS);
+        final long nowUptime = SystemClock.uptimeMillis();
+        int attempt;
+        int restartCount;
+        synchronized (taskContext.lock) {
+            if (taskContext.finished) {
+                return;
+            }
+            long sinceLast = nowUptime - taskContext.lastNavigationRecoverAt;
+            if (taskContext.recoveringNavigation && sinceLast < retryIntervalMs) {
+                return;
+            }
+            taskContext.recoveringNavigation = true;
+            taskContext.lastNavigationRecoverAt = nowUptime;
+            taskContext.navigationRecoverAttempt = Math.max(0, taskContext.navigationRecoverAttempt) + 1;
+            attempt = taskContext.navigationRecoverAttempt;
+            restartCount = Math.max(0, taskContext.navigationRestartCount);
+        }
+        if (attempt > maxRetry) {
+            int nextRestartCount;
+            synchronized (taskContext.lock) {
+                taskContext.navigationRecoverAttempt = 0;
+                taskContext.recoveringNavigation = false;
+                nextRestartCount = Math.max(0, taskContext.navigationRestartCount) + 1;
+                taskContext.navigationRestartCount = nextRestartCount;
+            }
+            if (nextRestartCount > maxRestart) {
+                finishTask(
+                        activity,
+                        taskContext,
+                        "navigation_recover_failed(stage=" + safeStage
+                                + ",maxRetry=" + maxRetry
+                                + ",maxRestart=" + maxRestart + ")"
+                );
+                return;
+            }
+            log(
+                    activity,
+                    "task=live_room_enter_task navigation recover restart: stage="
+                            + safeStage
+                            + " restart=" + nextRestartCount + "/" + maxRestart
+                            + " afterRetry=" + maxRetry
+            );
+            resumeTaskFromProgress(
+                    activity,
+                    taskContext,
+                    "navigation_recover_restart(stage=" + safeStage
+                            + ",restart=" + nextRestartCount + ")"
+            );
+            return;
+        }
+        log(
+                activity,
+                "task=live_room_enter_task navigation recover back: stage="
+                        + safeStage
+                        + " attempt=" + attempt + "/" + maxRetry
+                        + " restart=" + restartCount + "/" + maxRestart
+        );
+        try {
+            activity.onBackPressed();
+        } catch (Throwable e) {
+            log(
+                    activity,
+                    "task=live_room_enter_task navigation recover back failed: stage="
+                            + safeStage + " error=" + safeTrim(String.valueOf(e))
+            );
+        }
+        final Runnable settleCheck = new Runnable() {
+            @Override
+            public void run() {
+                TaskExecutionState state = resolveTaskExecutionState(activity, taskContext);
+                if (state == TaskExecutionState.ALLOWED) {
+                    clearNavigationRecoveringState(taskContext, true);
+                    log(
+                            activity,
+                            "task=live_room_enter_task navigation recover success: stage="
+                                    + safeStage
+                    );
+                    if (resumeAction != null) {
+                        try {
+                            resumeAction.run();
+                        } catch (Throwable e) {
+                            finishTask(
+                                    activity,
+                                    taskContext,
+                                    "navigation_resume_failed(stage=" + safeStage
+                                            + ",error=" + clipLogValue(String.valueOf(e), 120) + ")"
+                            );
+                        }
+                    } else {
+                        resumeTaskFromProgress(
+                                activity,
+                                taskContext,
+                                "navigation_recover_default_resume(stage=" + safeStage + ")"
+                        );
+                    }
+                    return;
+                }
+                if (state == TaskExecutionState.OUT_OF_LIVE_ROOM) {
+                    clearNavigationRecoveringState(taskContext, false);
+                    handleOutOfLiveRoomNavigation(activity, taskContext, safeStage, resumeAction);
+                    return;
+                }
+                if (state == TaskExecutionState.TASK_TIMEOUT) {
+                    long elapsed = resolveTaskElapsedMs(taskContext);
+                    finishTask(
+                            activity,
+                            taskContext,
+                            "task_total_timeout(stage=" + safeStage + ",elapsed=" + elapsed + "ms)"
+                    );
+                    return;
+                }
+                if (state == TaskExecutionState.TASK_FINISHED) {
+                    return;
+                }
+                clearNavigationRecoveringState(taskContext, false);
+                finishTask(
+                        activity,
+                        taskContext,
+                        "task_execution_unavailable(stage=" + safeStage
+                                + ",state=" + state.name().toLowerCase() + ")"
+                );
+            }
+        };
+        boolean posted = postOnUi(activity, settleCheck, settleMs);
+        if (!posted) {
+            settleCheck.run();
+        }
+    }
+
+    private static void resumeTaskFromProgress(
+            final Activity activity,
+            final TaskContext taskContext,
+            final String reason
+    ) {
+        if (taskContext == null) {
+            return;
+        }
+        if (!guardTaskExecution(
+                activity,
+                taskContext,
+                "resume_task_from_progress(" + safeTrim(reason) + ")",
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        resumeTaskFromProgress(activity, taskContext, reason);
+                    }
+                }
+        )) {
+            return;
+        }
+        PanelState panelState = resolvePanelState();
+        boolean panelReady = isPanelReady(panelState);
+        log(
+                activity,
+                "task=live_room_enter_task resume from progress: reason="
+                        + safeTrim(reason)
+                        + " panelReady=" + panelReady
+                        + " contributionCollected=" + isContributionCollected(taskContext)
+                        + " charmCollected=" + isCharmCollected(taskContext)
+                        + " panelDetail=" + buildPanelMatchDetail(panelState)
+        );
+        if (panelReady) {
+            startRankSequence(activity, taskContext, panelState);
+            return;
+        }
+        scheduleFindVFlipperAndRun(activity, taskContext, taskContext.startedAt, 1);
     }
 
     private static boolean isLiveRoomActivity(Activity activity) {
@@ -1942,11 +2449,13 @@ final class LiveRoomTaskScriptRunner {
             safeReason = "unspecified";
         }
         boolean shouldNotify = false;
+        String stage;
         synchronized (taskContext.lock) {
             if (!taskContext.finished) {
                 taskContext.finished = true;
                 shouldNotify = true;
             }
+            stage = safeTrim(taskContext.currentStage);
         }
         if (!shouldNotify) {
             return;
@@ -1955,7 +2464,9 @@ final class LiveRoomTaskScriptRunner {
         log(
                 activity,
                 "task=live_room_enter_task sequence complete, reason="
-                        + safeReason + " elapsed=" + elapsed + "ms"
+                        + safeReason
+                        + " stage=" + stage
+                        + " elapsed=" + elapsed + "ms"
         );
         if (taskContext.listener == null) {
             return;
@@ -2008,6 +2519,11 @@ final class LiveRoomTaskScriptRunner {
         String contributionCsvPath;
         String charmCsvPath;
         boolean aiAnalysisDispatched;
+        boolean recoveringNavigation;
+        int navigationRecoverAttempt;
+        int navigationRestartCount;
+        long lastNavigationRecoverAt;
+        String currentStage;
 
         TaskContext(long startedAt, String homeId, long enterTimeMs, TaskFinishListener listener) {
             this.startedAt = Math.max(0L, startedAt);
@@ -2021,6 +2537,11 @@ final class LiveRoomTaskScriptRunner {
             this.contributionCsvPath = "";
             this.charmCsvPath = "";
             this.aiAnalysisDispatched = false;
+            this.recoveringNavigation = false;
+            this.navigationRecoverAttempt = 0;
+            this.navigationRestartCount = 0;
+            this.lastNavigationRecoverAt = 0L;
+            this.currentStage = "init";
         }
     }
 
