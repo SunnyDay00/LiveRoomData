@@ -107,6 +107,7 @@ final class ModuleSettings {
     static final String EXTRA_AI_ANALYZE_ENTER_TIME = "ai_analyze_enter_time";
     static final String EXTRA_AI_ANALYZE_CONTRIBUTION_CSV = "ai_analyze_contribution_csv";
     static final String EXTRA_AI_ANALYZE_CHARM_CSV = "ai_analyze_charm_csv";
+    static final String EXTRA_A11Y_SESSION_ID = "a11y_session_id";
 
     static final String ENGINE_CMD_RUN = "RUN";
     static final String ENGINE_CMD_STOP = "STOP";

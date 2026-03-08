@@ -742,6 +742,7 @@ final class LiveRoomTaskScriptRunner {
                         + " homeId=" + safeTrim(taskContext.homeId)
                         + " enterAt=" + taskContext.enterTimeMs
         );
+        final long dispatchSessionId = LookHookEntry.getRealtimeA11ySessionIdForTaskRunner();
         waitRankCollectResult(
                 activity,
                 taskContext,
@@ -752,7 +753,8 @@ final class LiveRoomTaskScriptRunner {
                 SystemClock.uptimeMillis(),
                 1,
                 dispatchRound,
-                onDone
+                onDone,
+                dispatchSessionId
         );
     }
 
@@ -766,7 +768,8 @@ final class LiveRoomTaskScriptRunner {
             final long waitStartedAt,
             final int pollIndex,
             final int dispatchRound,
-            final Runnable onDone
+            final Runnable onDone,
+            final long dispatchSessionId
     ) {
         if (!guardTaskExecution(
                 activity,
@@ -892,6 +895,33 @@ final class LiveRoomTaskScriptRunner {
                             + " elapsed=" + elapsed + "ms"
             );
         }
+        long currentSessionId = LookHookEntry.getRealtimeA11ySessionIdForTaskRunner();
+        if (dispatchSessionId > 0L
+                && currentSessionId > 0L
+                && currentSessionId != dispatchSessionId) {
+            log(
+                    activity,
+                    "task=live_room_enter_task rank collect a11y_session_changed: "
+                            + safeTrim(rankName)
+                            + " dispatchRound=" + dispatchRound
+                            + " requestId=" + requestId
+                            + " dispatchSession=" + dispatchSessionId
+                            + " currentSession=" + currentSessionId
+                            + " poll=" + pollIndex
+                            + " elapsed=" + elapsed + "ms"
+            );
+            scheduleRankCollectRedispatch(
+                    activity,
+                    taskContext,
+                    rankType,
+                    rankName,
+                    targetCount,
+                    dispatchRound + 1,
+                    onDone,
+                    "a11y_session_changed"
+            );
+            return;
+        }
         boolean posted = postOnUi(
                 activity,
                 new Runnable() {
@@ -907,7 +937,8 @@ final class LiveRoomTaskScriptRunner {
                                 waitStartedAt,
                                 pollIndex + 1,
                                 dispatchRound,
-                                onDone
+                                onDone,
+                                dispatchSessionId
                         );
                     }
                 },

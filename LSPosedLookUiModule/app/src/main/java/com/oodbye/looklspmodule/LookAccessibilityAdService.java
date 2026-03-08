@@ -74,6 +74,7 @@ public class LookAccessibilityAdService extends AccessibilityService {
     private long activeRankCollectRequestId = -1L;
     private Thread activeRankCollectWorker;
     private long lastShizukuPermissionRequestAt = 0L;
+    private long serviceSessionId = 0L;
     private final Runnable realtimeLoopTask = new Runnable() {
         @Override
         public void run() {
@@ -89,13 +90,14 @@ public class LookAccessibilityAdService extends AccessibilityService {
     protected void onServiceConnected() {
         super.onServiceConnected();
         handler = new Handler(Looper.getMainLooper());
+        serviceSessionId = SystemClock.uptimeMillis();
         ModuleSettings.ensureDefaults(this);
         resetPanelSnapshot("service_connected");
         ensurePanelClickRequestReceiver();
         adEngine = new AccessibilityCustomRulesAdEngine(this);
         configureServiceInfo();
         startRealtimeLoop();
-        log("无障碍广告服务已连接");
+        log("无障碍广告服务已连接 sessionId=" + serviceSessionId);
     }
 
     @Override
@@ -3877,6 +3879,10 @@ public class LookAccessibilityAdService extends AccessibilityService {
             intent.putExtra(
                     ModuleSettings.EXTRA_A11Y_PANEL_DETAIL,
                     safeTrim(detail)
+            );
+            intent.putExtra(
+                    ModuleSettings.EXTRA_A11Y_SESSION_ID,
+                    serviceSessionId
             );
             sendBroadcast(intent);
         } catch (Throwable e) {

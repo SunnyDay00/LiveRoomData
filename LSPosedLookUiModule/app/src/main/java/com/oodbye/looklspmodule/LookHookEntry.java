@@ -73,6 +73,7 @@ public class LookHookEntry implements IXposedHookLoadPackage {
     private static int sRealtimeA11yPanelPrimaryCount = 0;
     private static long sRealtimeA11yPanelUpdatedAt = 0L;
     private static String sRealtimeA11yPanelDetail = "";
+    private static long sRealtimeA11ySessionId = 0L;
     private static boolean sHookInstalled = false;
     private static boolean sAwaitingLiveRoomScript = false;
     private static long sLastCardClickAt = 0L;
@@ -330,6 +331,13 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             sRealtimeA11yPanelPrimaryCount = Math.max(0, primaryCount);
             sRealtimeA11yPanelUpdatedAt = Math.max(0L, updatedAt);
             sRealtimeA11yPanelDetail = detail;
+            long sessionId = intent.getLongExtra(
+                    ModuleSettings.EXTRA_A11Y_SESSION_ID,
+                    0L
+            );
+            if (sessionId > 0L) {
+                sRealtimeA11ySessionId = sessionId;
+            }
         }
     }
 
@@ -2879,6 +2887,12 @@ public class LookHookEntry implements IXposedHookLoadPackage {
     static String getRealtimeA11yPanelDetailForTaskRunner() {
         synchronized (FLOW_STATE_LOCK) {
             return safeTrimStatic(sRealtimeA11yPanelDetail);
+        }
+    }
+
+    static long getRealtimeA11ySessionIdForTaskRunner() {
+        synchronized (FLOW_STATE_LOCK) {
+            return Math.max(0L, sRealtimeA11ySessionId);
         }
     }
 
