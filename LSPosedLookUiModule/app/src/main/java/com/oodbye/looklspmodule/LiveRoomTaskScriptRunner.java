@@ -32,7 +32,8 @@ final class LiveRoomTaskScriptRunner {
         TASK_TIMEOUT,
         ACTIVITY_INVALID,
         OUT_OF_LIVE_ROOM,
-        ENGINE_STOPPED
+        ENGINE_STOPPED,
+        KICKED_FROM_ROOM
     }
 
     interface TaskFinishListener {
@@ -1561,6 +1562,10 @@ final class LiveRoomTaskScriptRunner {
             handleOutOfLiveRoomNavigation(activity, taskContext, stage, resumeAction);
             return false;
         }
+        if (state == TaskExecutionState.KICKED_FROM_ROOM) {
+            handleKickedFromRoom(activity, taskContext, stage);
+            return false;
+        }
         finishTask(
                 activity,
                 taskContext,
@@ -1586,7 +1591,60 @@ final class LiveRoomTaskScriptRunner {
         if (!isLiveRoomActivity(activity)) {
             return TaskExecutionState.OUT_OF_LIVE_ROOM;
         }
+        if (isKickedFromRoomDialogShowing(activity)) {
+            return TaskExecutionState.KICKED_FROM_ROOM;
+        }
         return TaskExecutionState.ALLOWED;
+    }
+
+    private static boolean isKickedFromRoomDialogShowing(Activity activity) {
+        try {
+            View root = resolveRootView(activity);
+            if (root == null) {
+                return false;
+            }
+            View titleNode = findFirstNode(root, UiComponentConfig.KICKED_DIALOG_TITLE_NODE);
+            return titleNode != null;
+        } catch (Throwable e) {
+            return false;
+        }
+    }
+
+    private static void handleKickedFromRoom(
+            Activity activity,
+            TaskContext taskContext,
+            String stage
+    ) {
+        String safeStage = safeTrim(stage);
+        log(
+                activity,
+                "task=live_room_enter_task kicked_from_room detected: stage=" + safeStage
+        );
+        try {
+            View root = resolveRootView(activity);
+            if (root != null) {
+                View acceptBtn = findFirstNode(root, UiComponentConfig.KICKED_DIALOG_ACCEPT_NODE);
+                if (acceptBtn != null) {
+                    ClickResult click = clickWithParentFallbackDetailed(
+                            activity, acceptBtn, "kicked_dialog_accept"
+                    );
+                    log(
+                            activity,
+                            "task=live_room_enter_task kicked_from_room accept click: " + click.detail
+                    );
+                }
+            }
+        } catch (Throwable e) {
+            log(
+                    activity,
+                    "task=live_room_enter_task kicked_from_room click failed: " + e
+            );
+        }
+        finishTask(
+                activity,
+                taskContext,
+                "kicked_from_room(stage=" + safeStage + ")"
+        );
     }
 
     private static boolean isTaskFinished(TaskContext taskContext) {

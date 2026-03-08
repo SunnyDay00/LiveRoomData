@@ -520,6 +520,7 @@ public class LookHookEntry implements IXposedHookLoadPackage {
         private long togetherLastCycleCompleteAt;
         private boolean togetherCycleRestartRequested;
         private long lastLoginBlockHandleAt;
+        private long lastKickedDialogHandleAt;
         private ModuleSettings.EngineStatus lastStatus;
         private RunFlowState flowState;
         private boolean liveRoomScriptHandledInSession;
@@ -550,6 +551,7 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             this.togetherLastCycleCompleteAt = 0L;
             this.togetherCycleRestartRequested = false;
             this.lastLoginBlockHandleAt = 0L;
+            this.lastKickedDialogHandleAt = 0L;
             this.lastStatus = ModuleSettings.EngineStatus.STOPPED;
             this.flowState = RunFlowState.IDLE;
             this.liveRoomScriptHandledInSession = false;
@@ -823,6 +825,7 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                 togetherLastCycleCompleteAt = 0L;
                 togetherCycleRestartRequested = false;
                 lastLoginBlockHandleAt = 0L;
+                lastKickedDialogHandleAt = 0L;
                 togetherRefreshedInRun = false;
                 resetGlobalCardFlowState();
                 log("运行流程开始：启动软件 -> 判断首页 -> 点击一起聊 -> 校验一起聊界面");
@@ -858,6 +861,7 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                 togetherLastCycleCompleteAt = 0L;
                 togetherCycleRestartRequested = false;
                 lastLoginBlockHandleAt = 0L;
+                lastKickedDialogHandleAt = 0L;
                 togetherRefreshedInRun = false;
                 liveRoomScriptHandledInSession = false;
                 lastFlowLogMessage = "";
@@ -891,6 +895,9 @@ public class LookHookEntry implements IXposedHookLoadPackage {
                 return;
             }
             if (handleLoginBlockDialog(root, now)) {
+                return;
+            }
+            if (handleKickedFromRoomDialog(root, now)) {
                 return;
             }
             if (!isHomeActivity()) {
@@ -990,6 +997,33 @@ public class LookHookEntry implements IXposedHookLoadPackage {
             } catch (Throwable e) {
                 log("检测到登录拦截界面，但返回失败: " + e);
             }
+            return true;
+        }
+
+        private boolean handleKickedFromRoomDialog(View root, long now) {
+            if (root == null) {
+                return false;
+            }
+            if (!hasAllNodes(root, UiComponentConfig.KICKED_DIALOG_NODES)) {
+                return false;
+            }
+            if (now - lastKickedDialogHandleAt < 1500L) {
+                return true;
+            }
+            lastKickedDialogHandleAt = now;
+            View acceptBtn = findFirstNode(root, UiComponentConfig.KICKED_DIALOG_ACCEPT_NODE);
+            if (acceptBtn != null) {
+                ClickResult click = clickWithParentFallbackDetailed(acceptBtn, "kicked_dialog_accept");
+                log("detected_kicked_from_room_dialog, clicked accept: " + click.target);
+            } else {
+                try {
+                    activity.onBackPressed();
+                    log("detected_kicked_from_room_dialog, accept not found, executed back");
+                } catch (Throwable e) {
+                    log("detected_kicked_from_room_dialog, back failed: " + e);
+                }
+            }
+            liveRoomScriptHandledInSession = true;
             return true;
         }
 

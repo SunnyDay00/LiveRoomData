@@ -4,7 +4,7 @@ LOOK 直播间数据采集与分析模块（目标包：`com.netease.play`）。
 
 ## 当前版本
 
-- 文档对齐版本：`2.2.29`
+- 文档对齐版本：`2.2.32`
 - 详细运行说明：`MODULE_RUNTIME_FLOW.md`
 
 ## 模块做什么
@@ -74,6 +74,15 @@ LOOK 直播间数据采集与分析模块（目标包：`com.netease.play`）。
 - AI 无有效记录（如 `NO_VALID_RECORDS`、空模板）时：
   - 不写入 AI 结果 CSV；
   - 不发送飞书。
+
+## 异常场景自动处理
+
+| 场景 | 处理方式 |
+|------|----------|
+| 登录拦截弹窗 | 主循环检测到组合节点后执行 `onBackPressed`，跳过当前卡片 |
+| 被请出直播间弹窗 | **第一层**：主循环 `handleKickedFromRoomDialog` 点击"已知并关闭"，回到一起聊 |
+| | **第二层**：`LiveRoomTaskScriptRunner` 兜底 `KICKED_FROM_ROOM` → `finishTask` |
+| 无障碍服务崩溃重启 | Session ID 检测机制自动重派发采集请求（`a11y_session_changed`） |
 
 ## 关键日志标签
 

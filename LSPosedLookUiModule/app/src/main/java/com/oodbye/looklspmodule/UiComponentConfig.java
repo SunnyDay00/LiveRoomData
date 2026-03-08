@@ -234,6 +234,27 @@ final class UiComponentConfig {
             )
     ));
 
+    static final UiNodeSpec KICKED_DIALOG_TITLE_NODE = new UiNodeSpec(
+            "很抱歉，你已被请出直播间",
+            "com.netease.play:id/tipsDialogTitle",
+            "android.widget.TextView",
+            "com.netease.play",
+            null
+    );
+
+    static final UiNodeSpec KICKED_DIALOG_ACCEPT_NODE = new UiNodeSpec(
+            "已知并关闭",
+            "com.netease.play:id/tipsDialogAccept",
+            "android.widget.TextView",
+            "com.netease.play",
+            null
+    );
+
+    static final List<UiNodeSpec> KICKED_DIALOG_NODES = Collections.unmodifiableList(Arrays.asList(
+            KICKED_DIALOG_TITLE_NODE,
+            KICKED_DIALOG_ACCEPT_NODE
+    ));
+
     static final UiNodeSpec LIVE_ROOM_ROOM_NO_NODE = new UiNodeSpec(
             "",
             "com.netease.play:id/roomNo",

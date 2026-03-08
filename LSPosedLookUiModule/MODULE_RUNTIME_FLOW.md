@@ -1,12 +1,12 @@
 # LSPosedLookUiModule 运行逻辑说明
 
-最后更新：2026-03-05（v2.2.29，已补充 AI 结果CSV统一目录、空结果不落盘/不推飞书、提示词与分支流程更新）
+最后更新：2026-03-08（v2.2.29，补充无障碍服务重启检测 Session ID 机制、被请出直播间弹窗自动处理）
 
 ## 1. 长期维护约定
 
 - 后续每次新增或修改功能，必须同步更新本文件。
 - 所有 UI 参数统一维护在 `UiComponentConfig.java`。
-- 每次修改模块代码后，必须同步更新 `app/build.gradle` 中的 `versionCode` 与 `versionName`（当前基线：`2.2.29`）。
+- 每次修改模块代码后，必须同步更新 `app/build.gradle` 中的 `versionCode` 与 `versionName`（当前基线：`2.2.32`）。
 - 版本号规则：采用 `主.次.修订` 三段十进制进位（每段 `0~9`，满 `10` 向前一段进位）。
 
 ## 2. 关键文件
@@ -428,6 +428,17 @@
 - 榜单上滑幅度中档回调（v2.1.6）：
   - 按反馈将上滑幅度从“偏小档”上调到“中间档”：适度降低 `endY`、提高 `extraDistance` 与 `minDistance`。
   - 目标：保持稳定翻页，同时避免单次位移过大导致跨项过多。
+- 无障碍服务重启检测 — Session ID 机制（v2.2.29）：
+  - `LookAccessibilityAdService` 在 `onServiceConnected` 时生成唯一 `serviceSessionId`（`SystemClock.uptimeMillis()`），并随每次面板快照广播附带。
+  - `LookHookEntry` 收到广播后更新 `sRealtimeA11ySessionId`，通过 `getRealtimeA11ySessionIdForTaskRunner()` 提供给任务侧。
+  - `LiveRoomTaskScriptRunner.startRankCollect` 下发采集请求前快照当前 `dispatchSessionId`；轮询期间若检测到 sessionId 变化，立即触发重派发，避免服务重启后任务永久等待旧结果导致卡死。
+  - 新增常量：`ModuleSettings.EXTRA_A11Y_SESSION_ID`；诊断日志关键字：`a11y_session_changed`。
+- 被请出直播间弹窗自动处理（v2.2.29）：
+  - 弹窗 UI：`com.netease.play:id/tipsDialogTitle`（"很抱歉，你已被请出直播间"）+ `com.netease.play:id/tipsDialogAccept`（"已知并关闭"）。
+  - 第一层检测（`LookHookEntry` 主循环，~500ms 轮询）：`handleKickedFromRoomDialog` 检测到弹窗后立即点击"已知并关闭"；找不到按钮时执行 `onBackPressed`；设置 `liveRoomScriptHandledInSession=true`，流程自然回到一起聊界面。
+  - 第二层检测（`LiveRoomTaskScriptRunner` 兜底）：`resolveTaskExecutionState` 新增 `KICKED_FROM_ROOM` 判定；`guardTaskExecution` 命中后调用 `handleKickedFromRoom` 点击关闭按钮，再立即 `finishTask("kicked_from_room")` 结束当前采集任务。
+  - 节点定义收敛至 `UiComponentConfig.java`：`KICKED_DIALOG_TITLE_NODE`、`KICKED_DIALOG_ACCEPT_NODE`、`KICKED_DIALOG_NODES`。
+  - 诊断日志关键字：`detected_kicked_from_room_dialog`（第一层）、`kicked_from_room`（第二层）。
 
 ## 4. 当前主流程
 
@@ -440,18 +451,20 @@
 4. 进入一起聊界面后，先执行一次“下滑刷新”，等待页面稳定。
 5. 在一起聊页识别直播卡片并点击“下一个未处理卡片”。
 6. 若当前可见区域没有新卡片，则自动执行“上滑加载更多”后继续识别并点击下方卡片。
-6. 点击卡片后先做“是否离开一起聊界面”检测：
+7. 点击卡片后先做“是否离开一起聊界面”检测：
    - 若点击后仍在一起聊页：继续等待，超时后判定本次点击未生效，恢复列表点击。
    - 若已离开一起聊页：判定点击生效，进入下一步。
-7. 点击生效后，先执行广告处理（若设置中开启“广告处理”）。
-8. 再做“直播间进入校验”：
+8. 点击生效后，先执行广告处理（若设置中开启“广告处理”）。
+9. 再做“直播间进入校验”：
    - 页面中必须同时存在 `roomNo`、`title`、`closeBtn` 三个组件。
    - 直播间 `title` 文本需与该卡片 `index=1..4` 子节点文本之一一致。
-9. 校验通过后执行直播间任务。
-10. 当“贡献榜 + 魅力榜”都采集成功后，若开启 AI 分析，会异步触发“消费对象推断分析”：
-   - 从当前轮 CSV 与上一轮同直播间 CSV 构造对比数据；
-   - 调用 AI 大模型计算；
-   - 先落盘 AI 结果，再按用户拆分逐条推送飞书（如配置了 Webhook）。
+10. 校验通过后执行直播间任务。
+11. 当“贡献榜 + 魅力榜”都采集成功后，若开启 AI 分析，会异步触发“消费对象推断分析”：
+
+- 从当前轮 CSV 与上一轮同直播间 CSV 构造对比数据；
+- 调用 AI 大模型计算；
+- 先落盘 AI 结果，再按用户拆分逐条推送飞书（如配置了 Webhook）。
+
 11. 直播间任务执行完成后自动返回上一页（退出直播间）。
 12. 从直播间返回到一起聊后，先等待 `3秒`，再点击下一个直播卡片。
 13. 回到一起聊后继续点击后续卡片；无新卡片时继续上滑，循环处理。
@@ -604,6 +617,19 @@
   - 面板就绪判定收紧为“主按钮组命中”（贡献榜/魅力榜），避免仅命中弱标记时提前进入榜单点击导致 `target_missing`。
   - 关闭校验：通过检测上述按钮组是否消失来确认面板关闭；若仍存在会按配置重试返回。
   - 主流程仅在任务链条全部结束后才触发“直播间任务完成，执行返回退出直播间”。
+- 无障碍服务重启检测 — Session ID（v2.2.29）：
+  - 采集等待期间若无障碍服务崩溃重启，新服务实例生成新 `sessionId`。
+  - `LiveRoomTaskScriptRunner` 在轮询期间持续对比 `dispatchSessionId` 与当前 `sRealtimeA11ySessionId`；
+    一旦检测到变化，立即取消旧等待并重新派发采集请求（日志关键字：`a11y_session_changed`）。
+  - 防止服务重启后任务永久挂起、榜单采集卡死的问题。
+- 被请出直播间弹窗自动处理（v2.2.29）：
+  - 被踢出时弹窗覆盖在直播间 Activity 上，`isLiveRoomActivity=true`，模块此前无法操作底层 UI 导致卡死。
+  - **第一层检测**（`LookHookEntry` 主循环，~500ms 轮询）：`handleKickedFromRoomDialog` 检测到弹窗后点击"已知并关闭"；
+    找不到按钮时执行 `onBackPressed`；设置 `liveRoomScriptHandledInSession=true`，流程自动回到一起聊。
+  - **第二层检测**（`LiveRoomTaskScriptRunner` 兜底）：`resolveTaskExecutionState` 新增 `KICKED_FROM_ROOM`；
+    `guardTaskExecution` 命中后调用 `handleKickedFromRoom`：点击关闭按钮 → `finishTask("kicked_from_room")`。
+  - 节点定义：`UiComponentConfig.KICKED_DIALOG_TITLE_NODE`（`tipsDialogTitle`）、`KICKED_DIALOG_ACCEPT_NODE`（`tipsDialogAccept`）。
+  - 日志关键字：`detected_kicked_from_room_dialog`（第一层）、`kicked_from_room`（第二层）。
 - CSV 批量落盘去重口径调整（v2.1.8）：
   - 去重范围调整为“单次批量落盘前去重”：仅对本次待写入队列按整行 CSV 内容去重，避免界面重复采集导致同批次重复写入。
   - 取消“历史 CSV 文件全量去重”行为：不再基于已落盘文件内容过滤后续批次数据。
