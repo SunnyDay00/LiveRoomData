@@ -1,0 +1,170 @@
+================================================================================
+Android UI 树获取方式说明
+================================================================================
+
+本项目提供两个脚本用于抓取 Android 手机当前界面的 UI 树（XML 格式）：
+  - uiautomator2.py     功能全面，支持多种抓取方式，推荐使用
+  - appium_dump_ui.py   轻量脚本，依赖 Appium 服务
+
+================================================================================
+一、前置条件
+================================================================================
+
+1. 手机通过 USB 连接电脑，并开启「开发者选项」+「USB 调试」
+2. 确认设备在线：
+     adb devices
+   输出中应有 device 状态的设备
+
+3. 根据选用的抓取方式安装对应依赖：
+   - adb 方式：无需额外依赖（系统已有 adb 即可）
+   - u2 方式：pip install uiautomator2
+   - appium 方式：
+       npm i -g appium
+       appium driver install uiautomator2
+
+================================================================================
+二、uiautomator2.py（推荐）
+================================================================================
+
+支持四种抓取方式：adb / u2 / u2-no-idle / appium，可通过 --method 切换。
+默认使用 auto 模式（adb 失败后自动回退到 appium）。
+
+------------------------------------------------------------------------
+基础用法
+------------------------------------------------------------------------
+
+# 最简单，adb 自动抓取（自动选择唯一在线设备）
+python uiautomator2.py
+
+# 指定输出文件路径
+python uiautomator2.py --output my_ui.xml
+
+# 多台设备时指定序列号
+python uiautomator2.py --serial <device-serial>
+
+# 开启详细日志
+python uiautomator2.py --verbose
+
+------------------------------------------------------------------------
+抓取方式选择（--method）
+------------------------------------------------------------------------
+
+# adb 方式（默认，调用 uiautomator dump）
+python uiautomator2.py --method adb
+
+# adb 方式 + 遇到 idle 错误时重试
+python uiautomator2.py --method adb --retry 3 --retry-interval 0.5
+
+# uiautomator2 库方式
+python uiautomator2.py --method u2
+
+# uiautomator2 库方式 + 关闭 idle 等待（直播/视频界面推荐）
+python uiautomator2.py --method u2-no-idle
+
+# appium 方式（自动拉起本地 Appium 服务）
+python uiautomator2.py --method appium
+
+# auto 模式：adb 失败后自动切换 appium（推荐用于直播场景）
+python uiautomator2.py --method auto --retry 3
+
+------------------------------------------------------------------------
+直播场景专用命令（动态内容/视频画面）
+------------------------------------------------------------------------
+
+# 方式1：关闭 idle 等待，避免 "could not get idle state" 错误
+python uiautomator2.py --method u2-no-idle
+
+# 方式2：auto 模式 + 重试
+python uiautomator2.py --method auto --retry 3 --retry-interval 0.5
+
+# 方式3：appium 方式 + 关闭 idle 等待
+python uiautomator2.py --method appium --appium-wait-for-idle-timeout 0
+
+------------------------------------------------------------------------
+其他常用参数
+------------------------------------------------------------------------
+
+--output <路径>                  输出 XML 文件路径（默认 live_ui.xml）
+--serial <序列号>                 指定设备序列号（多台设备时必填）
+--adb-path <adb路径>              手动指定 adb 可执行文件路径
+--compressed                     adb 模式下启用压缩（过滤不可见节点）
+--raw                            不美化 XML，输出原始单行内容
+--retry <次数>                    adb 模式下遇到 idle 错误时的最大重试次数
+--retry-interval <秒>             重试间隔（默认 0.6 秒）
+--check-window-package <包名>     检查指定包名是否有窗口（悬浮窗巡检）
+--verbose                        打印 adb 子命令详细日志
+--appium-url <地址>               Appium 服务地址（默认 http://127.0.0.1:4723）
+--no-appium-auto-start           禁用自动拉起本地 Appium
+--appium-log-file <路径>          Appium 日志输出路径
+
+================================================================================
+三、appium_dump_ui.py（轻量版，需手动启动 Appium）
+================================================================================
+
+依赖 appium-python-client，且需要 Appium 服务已在运行。
+
+------------------------------------------------------------------------
+准备工作
+------------------------------------------------------------------------
+
+# 安装依赖
+pip install Appium-Python-Client
+
+# 启动 Appium 服务（需提前在终端运行）
+appium --port 4723
+
+------------------------------------------------------------------------
+基础用法
+------------------------------------------------------------------------
+
+# 抓取当前界面 UI 树
+python appium_dump_ui.py
+
+# 指定设备和输出文件
+python appium_dump_ui.py --serial <device-serial> --output ui.xml
+
+# 针对特定应用抓取
+python appium_dump_ui.py --app-package com.example.app
+
+------------------------------------------------------------------------
+常用参数
+------------------------------------------------------------------------
+
+--serial <序列号>                  指定设备序列号
+--adb-path <adb路径>               手动指定 adb 路径
+--appium-url <地址>                Appium 服务地址（默认 http://127.0.0.1:4723）
+--output <路径>                   输出 XML 文件路径（默认 current_ui_appium.xml）
+--app-package <包名>               可选，附着到指定应用
+--app-activity <Activity>         可选，配合 --app-package 使用
+--wait-for-idle-timeout <毫秒>     waitForIdleTimeout 设置（默认 0）
+--wait-for-selector-timeout <毫秒> waitForSelectorTimeout 设置（默认 0）
+
+================================================================================
+四、两种脚本对比
+================================================================================
+
+                    uiautomator2.py         appium_dump_ui.py
+  抓取方式          adb/u2/appium 可选       仅 Appium
+  需要 Appium      可选（auto/appium 模式）   必须手动启动
+  自动启动 Appium  ✅ 支持                   ❌ 不支持
+  重试机制         ✅ 支持                   ❌ 不支持
+  XML 美化         ✅ 支持（默认开启）         ❌ 不支持
+  推荐场景         日常抓取 / 直播场景        已有 Appium 环境的快速调试
+
+================================================================================
+五、输出说明
+================================================================================
+
+抓取成功后会生成 XML 文件，包含完整 Android 界面控件树。
+每个节点包含以下关键属性：
+
+  index         子节点序号
+  resource-id   控件资源 ID，如 com.example.app:id/chat_list
+  class         控件类型，如 android.widget.TextView
+  text          控件显示文本
+  content-desc  无障碍描述
+  bounds        控件矩形坐标 [left,top][right,bottom]
+  clickable     是否可点击
+  enabled       是否可用
+
+================================================================================

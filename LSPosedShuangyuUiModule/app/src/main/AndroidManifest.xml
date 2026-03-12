@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+
+    <application
+        android:allowBackup="true"
+        android:label="双鱼直播数据采集"
+        android:supportsRtl="true"
+        tools:ignore="MissingApplicationIcon">
+
+        <meta-data
+            android:name="xposedmodule"
+            android:value="true" />
+        <meta-data
+            android:name="xposeddescription"
+            android:value="双鱼直播数据采集模块" />
+        <meta-data
+            android:name="xposedminversion"
+            android:value="82" />
+        <meta-data
+            android:name="xposedscope"
+            android:resource="@array/xposed_scope" />
+
+        <activity
+            android:name="com.oodbye.shuangyulspmodule.ModuleSettingsActivity"
+            android:exported="true"
+            android:label="双鱼模块设置">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name="com.oodbye.shuangyulspmodule.GlobalFloatService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            tools:ignore="ForegroundServicePermission" />
+
+        <service
+            android:name="com.oodbye.shuangyulspmodule.ShuangyuAccessibilityAdService"
+            android:exported="true"
+            android:label="双鱼直播数据采集辅助服务"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/shuangyu_accessibility_service_config" />
+        </service>
+
+        <receiver
+            android:name="com.oodbye.shuangyulspmodule.ModuleStartupReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.USER_UNLOCKED" />
+                <action android:name="com.oodbye.shuangyulspmodule.ACTION_SYNC_FLOAT_STATE" />
+                <action android:name="com.oodbye.shuangyulspmodule.ACTION_ENGINE_STATUS_REPORT" />
+                <action android:name="com.oodbye.shuangyulspmodule.ACTION_RUNTIME_STATS_REPORT" />
+                <action android:name="com.oodbye.shuangyulspmodule.ACTION_CYCLE_COMPLETE_NOTICE" />
+                <action android:name="com.oodbye.shuangyulspmodule.ACTION_CYCLE_LIMIT_FINISHED" />
+                <action android:name="com.oodbye.shuangyulspmodule.ACTION_AI_ANALYSIS_REQUEST" />
+            </intent-filter>
+        </receiver>
+
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+    </application>
+
+</manifest>

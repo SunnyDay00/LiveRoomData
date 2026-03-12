@@ -74,3 +74,13 @@ look_rank_csv
 魅力榜.txt
 贡献榜.txt
 LSPosedLookUiModule/提示词记录.txt
+
+# ===== LSPosedShuangyuUiModule (Android/Gradle) =====
+LSPosedShuangyuUiModule/.gradle/
+LSPosedShuangyuUiModule/**/build/
+LSPosedShuangyuUiModule/local.properties
+LSPosedShuangyuUiModule/.idea/
+LSPosedShuangyuUiModule/**/*.iml
+LSPosedShuangyuUiModule/captures/
+LSPosedShuangyuUiModule/runtime-logs
+LSPosedShuangyuUiModule/提示词.txt
