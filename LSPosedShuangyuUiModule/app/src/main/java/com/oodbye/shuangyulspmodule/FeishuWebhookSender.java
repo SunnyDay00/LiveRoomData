@@ -78,7 +78,7 @@ final class FeishuWebhookSender {
 
     // ─────────────────────── 发送实现 ───────────────────────
 
-    private static SendResult doSendText(String webhookUrl, String signSecret, String text) {
+    static SendResult doSendText(String webhookUrl, String signSecret, String text) {
         try {
             JSONObject body = new JSONObject();
             body.put("msg_type", "text");

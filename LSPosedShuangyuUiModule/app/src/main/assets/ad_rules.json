@@ -1,0 +1,93 @@
+[
+  {
+    "name": "通用关闭按钮",
+    "matchText": "",
+    "matchResourceId": "",
+    "matchClassName": "android.app.Dialog",
+    "actionText": "关闭",
+    "actionResourceId": "",
+    "actionClassName": "android.widget.TextView"
+  },
+  {
+    "name": "通用跳过按钮",
+    "matchText": "",
+    "matchResourceId": "",
+    "matchClassName": "android.app.Dialog",
+    "actionText": "跳过",
+    "actionResourceId": "",
+    "actionClassName": "android.widget.TextView"
+  },
+  {
+    "name": "通用确定按钮弹窗",
+    "matchText": "",
+    "matchResourceId": "",
+    "matchClassName": "android.app.Dialog",
+    "actionText": "确定",
+    "actionResourceId": "",
+    "actionClassName": "android.widget.Button"
+  },
+  {
+    "name": "通用我知道了弹窗",
+    "matchText": "",
+    "matchResourceId": "",
+    "matchClassName": "android.app.Dialog",
+    "actionText": "我知道了",
+    "actionResourceId": "",
+    "actionClassName": "android.widget.TextView"
+  },
+  {
+    "name": "通用知道了弹窗",
+    "matchText": "",
+    "matchResourceId": "",
+    "matchClassName": "android.app.Dialog",
+    "actionText": "知道了",
+    "actionResourceId": "",
+    "actionClassName": "android.widget.TextView"
+  },
+  {
+    "name": "广告X关闭按钮",
+    "matchText": "",
+    "matchResourceId": "",
+    "matchClassName": "",
+    "actionText": "",
+    "actionResourceId": "",
+    "actionClassName": "",
+    "actionContentDesc": "关闭"
+  },
+  {
+    "name": "踢出房间确认",
+    "matchText": "已被请出该房间",
+    "matchResourceId": "",
+    "matchClassName": "",
+    "actionText": "知道了",
+    "actionResourceId": "",
+    "actionClassName": ""
+  },
+  {
+    "name": "踢出房间确定",
+    "matchText": "已被请出该房间",
+    "matchResourceId": "",
+    "matchClassName": "",
+    "actionText": "确定",
+    "actionResourceId": "",
+    "actionClassName": ""
+  },
+  {
+    "name": "更新提示弹窗",
+    "matchText": "去更新",
+    "matchResourceId": "com.sybl.voiceroom:id/tv_upgrade",
+    "matchClassName": "",
+    "actionText": "",
+    "actionResourceId": "com.sybl.voiceroom:id/iv_close",
+    "actionClassName": ""
+  },
+  {
+    "name": "青少年模式弹窗",
+    "matchText": "设置青少年模式",
+    "matchResourceId": "com.sybl.voiceroom:id/tvSubmit",
+    "matchClassName": "",
+    "actionText": "知道了",
+    "actionResourceId": "com.sybl.voiceroom:id/tvIKnow",
+    "actionClassName": ""
+  }
+]

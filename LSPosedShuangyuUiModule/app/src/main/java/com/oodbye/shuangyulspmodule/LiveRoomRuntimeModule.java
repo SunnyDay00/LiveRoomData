@@ -49,15 +49,20 @@ final class LiveRoomRuntimeModule {
             if (listener != null) listener.onTaskFinished(false, "模块未运行");
             return;
         }
-        Activity activity = bridge.getActivity();
         Handler handler = bridge.getHandler();
-        if (activity == null || handler == null) {
-            if (listener != null) listener.onTaskFinished(false, "Activity 或 Handler 为空");
+        if (handler == null) {
+            if (listener != null) listener.onTaskFinished(false, "Handler 为空");
+            return;
+        }
+        ShuangyuAccessibilityAdService a11y = ShuangyuAccessibilityAdService.getInstance();
+        if (a11y == null) {
+            Log.e(TAG, "⚠️ 无障碍服务未运行，无法执行采集");
+            if (listener != null) listener.onTaskFinished(false, "无障碍服务未运行");
             return;
         }
         bridge.updateStatus("开始采集循环");
         LiveRoomTaskScriptRunner runner = new LiveRoomTaskScriptRunner(
-                activity, handler, new LiveRoomTaskScriptRunner.TaskBridge() {
+                a11y, handler, new LiveRoomTaskScriptRunner.TaskBridge() {
             @Override
             public boolean shouldStop() {
                 return bridge.shouldStop() || !running;
@@ -66,11 +71,6 @@ final class LiveRoomRuntimeModule {
             @Override
             public void updateStatus(String status) {
                 bridge.updateStatus(status);
-            }
-
-            @Override
-            public void postDelayed(Runnable r, long delayMs) {
-                bridge.postDelayed(r, delayMs);
             }
         });
         runner.execute(listener);

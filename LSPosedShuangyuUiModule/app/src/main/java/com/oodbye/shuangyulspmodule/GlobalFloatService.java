@@ -12,7 +12,9 @@ import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.Typeface;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.provider.Settings;
 import android.text.TextUtils;
 import android.util.Log;
@@ -24,6 +26,12 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
+
+import android.content.pm.PackageManager;
+import android.content.ComponentName;
+import android.net.Uri;
+import android.text.TextUtils;
 
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -52,6 +60,9 @@ public class GlobalFloatService extends Service {
     private int lastX, lastY;
     private int downX, downY;
     private boolean isDragging;
+    private int currentDisplayId = -1;
+    private Handler keepAliveHandler;
+    private static final long KEEP_ALIVE_INTERVAL_MS = 5000L;
 
     @Override
     public void onCreate() {
@@ -60,6 +71,7 @@ public class GlobalFloatService extends Service {
         createNotificationChannel();
         startForeground(NOTIFICATION_ID, buildNotification());
         addFloatButton();
+        startKeepAlive();
     }
 
     @Override
@@ -77,6 +89,7 @@ public class GlobalFloatService extends Service {
 
     @Override
     public void onDestroy() {
+        stopKeepAlive();
         removeFloatButton();
         removeInfoWindow();
         super.onDestroy();
@@ -119,11 +132,50 @@ public class GlobalFloatService extends Service {
     // ─────────────────────── 意图处理 ───────────────────────
 
     private void handleIntent(Intent intent) {
-        // 处理引擎状态变更、显示 ID 切换等
         int displayId = intent.getIntExtra(ModuleSettings.EXTRA_TARGET_DISPLAY_ID, -1);
         boolean restart = intent.getBooleanExtra(
                 ModuleSettings.EXTRA_REQUEST_RESTART_TARGET_APP, false);
         Log.i(TAG, "FloatService intent: displayId=" + displayId + " restart=" + restart);
+
+        // 如果 displayId 变化，重建悬浮按钮以确保可见
+        if (displayId >= 0 && displayId != currentDisplayId) {
+            Log.i(TAG, "Display 变更: " + currentDisplayId + " -> " + displayId + "，重建悬浮按钮");
+            currentDisplayId = displayId;
+            recreateFloatButton();
+        }
+    }
+
+    // ─────────────────────── 保活机制 ───────────────────────
+
+    private void startKeepAlive() {
+        keepAliveHandler = new Handler(Looper.getMainLooper());
+        keepAliveHandler.postDelayed(keepAliveRunnable, KEEP_ALIVE_INTERVAL_MS);
+    }
+
+    private void stopKeepAlive() {
+        if (keepAliveHandler != null) {
+            keepAliveHandler.removeCallbacks(keepAliveRunnable);
+        }
+    }
+
+    private final Runnable keepAliveRunnable = new Runnable() {
+        @Override
+        public void run() {
+            // 检查悬浮按钮是否仍然存在
+            if (floatButton == null || !floatButton.isAttachedToWindow()) {
+                Log.w(TAG, "悬浮按钮丢失，重新创建");
+                recreateFloatButton();
+            }
+            if (keepAliveHandler != null) {
+                keepAliveHandler.postDelayed(this, KEEP_ALIVE_INTERVAL_MS);
+            }
+        }
+    };
+
+    private void recreateFloatButton() {
+        removeFloatButton();
+        removeInfoWindow();
+        addFloatButton();
     }
 
     // ─────────────────────── 悬浮按钮 ───────────────────────
@@ -333,7 +385,7 @@ public class GlobalFloatService extends Service {
         startBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                sendEngineCommand(ModuleSettings.ENGINE_CMD_START);
+                onStartButtonClick();
             }
         });
         btnRow.addView(startBtn);
@@ -348,6 +400,12 @@ public class GlobalFloatService extends Service {
         stopBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+                ShuangyuAccessibilityAdService a11y =
+                        ShuangyuAccessibilityAdService.getInstance();
+                if (a11y != null) {
+                    a11y.stopCollection();
+                    appendLog("🛑 采集已停止");
+                }
                 sendEngineCommand(ModuleSettings.ENGINE_CMD_STOP);
             }
         });
@@ -423,16 +481,19 @@ public class GlobalFloatService extends Service {
         editor.apply();
 
         // 广播命令到目标应用进程
-        Intent intent = new Intent(ModuleSettings.ACTION_ENGINE_STATUS_REPORT);
+        Intent intent = new Intent(ModuleSettings.ACTION_ENGINE_COMMAND);
         intent.setPackage(UiComponentConfig.TARGET_PACKAGE);
         intent.putExtra(ModuleSettings.EXTRA_ENGINE_COMMAND, command);
         intent.putExtra(ModuleSettings.EXTRA_ENGINE_COMMAND_SEQ, seq);
         try {
             sendBroadcast(intent);
+            Log.i(TAG, "已发送引擎命令: " + command + " seq=" + seq + " -> " + UiComponentConfig.TARGET_PACKAGE);
         } catch (Throwable e) {
             Log.e(TAG, "Failed to send engine command", e);
         }
 
+        // 用户反馈
+        appendLog(ModuleSettings.ENGINE_CMD_START.equals(command) ? "已发送启动命令" : "已发送停止命令");
         refreshInfoContent();
     }
 
@@ -459,5 +520,256 @@ public class GlobalFloatService extends Service {
     private int dp(int value) {
         float density = getResources().getDisplayMetrics().density;
         return (int) (value * density + 0.5f);
+    }
+
+    // ════════════════════ 启动前置检查 ════════════════════
+
+    /**
+     * 启动按钮点击处理：执行一系列前置检查，全部通过后才启动目标应用并发送命令。
+     */
+    private void onStartButtonClick() {
+        Log.i(TAG, "启动按钮被点击，开始前置检查...");
+        appendLog("开始前置检查...");
+
+        // 1. 检查目标应用是否已安装
+        if (!isTargetAppInstalled()) {
+            String msg = "目标应用未安装: " + UiComponentConfig.TARGET_PACKAGE;
+            Log.e(TAG, msg);
+            appendLog("❌ " + msg);
+            Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
+            return;
+        }
+        appendLog("✅ 目标应用已安装");
+
+        // 2. 检查悬浮窗权限
+        if (!canDrawOverlays()) {
+            appendLog("❌ 未授予悬浮窗权限");
+            Toast.makeText(this, "请授予悬浮窗权限", Toast.LENGTH_LONG).show();
+            openOverlayPermissionSettings();
+            return;
+        }
+        appendLog("✅ 悬浮窗权限已授予");
+
+        // 3. 检查无障碍服务权限
+        if (!isAccessibilityServiceEnabled()) {
+            appendLog("❌ 无障碍服务未开启");
+            Toast.makeText(this, "请开启无障碍服务权限", Toast.LENGTH_LONG).show();
+            openAccessibilitySettings();
+            return;
+        }
+        appendLog("✅ 无障碍服务已开启");
+
+        // 4. 检查飞书 Webhook（如果启用了飞书推送）
+        SharedPreferences prefs = ModuleSettings.appPrefs(this);
+        if (ModuleSettings.getFeishuPushEnabled(prefs)) {
+            appendLog("⛳ 正在测试飞书连接...");
+            final String webhookUrl = ModuleSettings.getFeishuWebhookUrl(prefs);
+            final String signSecret = ModuleSettings.getFeishuSignSecret(prefs);
+            if (TextUtils.isEmpty(webhookUrl)) {
+                appendLog("❌ 飞书 Webhook URL 未配置");
+                Toast.makeText(this, "飞书 Webhook URL 未配置，请先设置", Toast.LENGTH_LONG).show();
+                return;
+            }
+            // 在后台线程测试飞书连接
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    final FeishuWebhookSender.SendResult result =
+                            FeishuWebhookSender.probeWebhook(
+                                    GlobalFloatService.this, webhookUrl, signSecret);
+                    new Handler(Looper.getMainLooper()).post(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (result.success) {
+                                appendLog("✅ 飞书连接成功");
+                                // 飞书检查通过，继续启动流程
+                                proceedToLaunchAndStart();
+                            } else {
+                                String msg = "飞书连接失败: " + result.detail;
+                                appendLog("❌ " + msg);
+                                Toast.makeText(GlobalFloatService.this, msg, Toast.LENGTH_LONG).show();
+                            }
+                        }
+                    });
+                }
+            }).start();
+            return; // 等待飞书检查回调
+        }
+
+        // 无需检查飞书，直接启动
+        proceedToLaunchAndStart();
+    }
+
+    /**
+     * 所有前置检查通过后，强制关闭目标应用 → 重新启动 → 通过无障碍服务运行采集。
+     */
+    private void proceedToLaunchAndStart() {
+        appendLog("✅ 所有检查通过");
+
+        // Step 1: 强制关闭目标应用（确保干净启动）
+        appendLog("⏳ 正在强制关闭目标应用...");
+        forceStopTargetApp();
+
+        // Step 2: 等待 2 秒后重新启动
+        new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                appendLog("⏳ 正在启动目标应用...");
+                boolean launched = launchTargetApp();
+                if (!launched) {
+                    appendLog("❌ 无法启动目标应用");
+                    Toast.makeText(GlobalFloatService.this, "无法启动目标应用", Toast.LENGTH_LONG).show();
+                    return;
+                }
+                appendLog("✅ 目标应用已启动");
+
+                // Step 3: 等待 8 秒让界面加载完成
+                appendLog("⏳ 等待 8 秒让界面加载...");
+                new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        // 等待无障碍服务实例就绪（APK 安装后可能需要重连）
+                        waitForA11yAndStart(0);
+                    }
+                }, 8000L);
+            }
+        }, 2000L);
+    }
+
+    /**
+     * 等待无障碍服务实例就绪，最多重试 10 次（每次 500ms）。
+     * APK 重装后服务可能需要几秒才能重新连接。
+     */
+    private void waitForA11yAndStart(final int attempt) {
+        ShuangyuAccessibilityAdService a11y =
+                ShuangyuAccessibilityAdService.getInstance();
+        if (a11y != null) {
+            appendLog("📤 通过无障碍服务启动采集");
+            a11y.startCollection(GlobalFloatService.this);
+            return;
+        }
+
+        if (attempt >= 10) {
+            appendLog("❌ 无障碍服务未就绪（等待 5 秒后超时）");
+            Toast.makeText(this, "无障碍服务未运行，请重新开启", Toast.LENGTH_LONG).show();
+            openAccessibilitySettings();
+            return;
+        }
+
+        if (attempt == 0) {
+            appendLog("⏳ 等待无障碍服务就绪...");
+        }
+        Log.i(TAG, "等待无障碍服务实例... 第 " + (attempt + 1) + " 次");
+
+        new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                waitForA11yAndStart(attempt + 1);
+            }
+        }, 500L);
+    }
+
+    private void forceStopTargetApp() {
+        try {
+            Runtime.getRuntime().exec(new String[]{
+                    "am", "force-stop", UiComponentConfig.TARGET_PACKAGE
+            });
+            Log.i(TAG, "已强制关闭: " + UiComponentConfig.TARGET_PACKAGE);
+        } catch (Throwable e) {
+            Log.e(TAG, "force-stop 失败", e);
+        }
+    }
+
+    // ──────────────────── 检查方法 ────────────────────
+
+    private boolean isTargetAppInstalled() {
+        try {
+            getPackageManager().getPackageInfo(UiComponentConfig.TARGET_PACKAGE, 0);
+            return true;
+        } catch (PackageManager.NameNotFoundException e) {
+            return false;
+        }
+    }
+
+    private boolean launchTargetApp() {
+        try {
+            Intent launchIntent = getPackageManager()
+                    .getLaunchIntentForPackage(UiComponentConfig.TARGET_PACKAGE);
+            if (launchIntent != null) {
+                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(launchIntent);
+                Log.i(TAG, "已启动目标应用: " + UiComponentConfig.TARGET_PACKAGE);
+                return true;
+            } else {
+                Log.w(TAG, "无法获取目标应用启动 Intent");
+                return false;
+            }
+        } catch (Throwable e) {
+            Log.e(TAG, "启动目标应用失败", e);
+            return false;
+        }
+    }
+
+    private boolean isAccessibilityServiceEnabled() {
+        int accessibilityEnabled = 0;
+        final String service = getPackageName() + "/"
+                + ShuangyuAccessibilityAdService.class.getCanonicalName();
+        try {
+            accessibilityEnabled = Settings.Secure.getInt(
+                    getApplicationContext().getContentResolver(),
+                    Settings.Secure.ACCESSIBILITY_ENABLED);
+        } catch (Settings.SettingNotFoundException e) {
+            // ignore
+        }
+        if (accessibilityEnabled == 1) {
+            String settingValue = Settings.Secure.getString(
+                    getApplicationContext().getContentResolver(),
+                    Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            if (settingValue != null) {
+                TextUtils.SimpleStringSplitter splitter = new TextUtils.SimpleStringSplitter(':');
+                splitter.setString(settingValue);
+                while (splitter.hasNext()) {
+                    String accessibilityService = splitter.next();
+                    if (accessibilityService.equalsIgnoreCase(service)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private void openOverlayPermissionSettings() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:" + getPackageName()));
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(intent);
+            } catch (Throwable e) {
+                Log.e(TAG, "无法打开悬浮窗权限设置", e);
+            }
+        }
+    }
+
+    private void openAccessibilitySettings() {
+        try {
+            Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        } catch (Throwable e) {
+            Log.e(TAG, "无法打开无障碍设置", e);
+            Toast.makeText(this, "无法打开无障碍设置", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    // ─────────────────────── 供外部启动服务 ───────────────────────
+
+    static void startServiceCompat(Context context) {
+        FloatServiceBootstrap.startFloatService(context);
+    }
+
+    static void stopServiceCompat(Context context) {
+        FloatServiceBootstrap.stopFloatService(context);
     }
 }

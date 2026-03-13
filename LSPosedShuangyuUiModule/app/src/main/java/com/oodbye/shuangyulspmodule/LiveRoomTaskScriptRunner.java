@@ -1,15 +1,10 @@
 package com.oodbye.shuangyulspmodule;
 
-import android.app.Activity;
-import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Handler;
+import android.os.Looper;
 import android.text.TextUtils;
 import android.util.Log;
-import android.view.View;
-import android.view.ViewGroup;
-import android.view.accessibility.AccessibilityNodeInfo;
-import android.widget.TextView;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -17,22 +12,14 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * 双鱼直播数据采集任务脚本执行器。
+ * 双鱼直播数据采集任务脚本执行器 v3（基于无障碍服务 API）。
  *
- * 工作流：
- * 1. 点击「娱乐」Tab
- * 2. 切换到目标榜单 Tab（女神/男神/点唱）
- * 3. 遍历房间列表中的房间卡片
- * 4. 进入房间 → 获取房间名+ID → 点击在线榜 → 遍历用户卡片
- * 5. 过滤用户（管理员/房主、等级、忽略ID）
- * 6. 点击有效用户 → 读取地区+年龄 → 保存CSV + 推送飞书
- * 7. 返回房间列表 → 下一个房间
- * 8. 所有房间完成后切换榜单 → 重复
+ * 所有 UI 操作（点击、滑动、查找）均通过 ShuangyuAccessibilityAdService 的
+ * AccessibilityNodeInfo API 执行，确保跨进程、跨 Display 可靠性。
  */
 final class LiveRoomTaskScriptRunner {
     private static final String TAG = "SYLspModule";
 
-    // ─────────────────────── 回调接口 ───────────────────────
     interface TaskFinishListener {
         void onTaskFinished(boolean success, String message);
     }
@@ -40,11 +27,9 @@ final class LiveRoomTaskScriptRunner {
     interface TaskBridge {
         boolean shouldStop();
         void updateStatus(String status);
-        void postDelayed(Runnable r, long delayMs);
     }
 
-    // ─────────────────────── 成员变量 ───────────────────────
-    private final Activity activity;
+    private final ShuangyuAccessibilityAdService a11y;
     private final Handler handler;
     private final TaskBridge bridge;
     private final Set<String> visitedRoomNames = new HashSet<>();
@@ -52,85 +37,165 @@ final class LiveRoomTaskScriptRunner {
     private int totalCollected = 0;
     private int totalRoomsEntered = 0;
 
-    LiveRoomTaskScriptRunner(Activity activity, Handler handler, TaskBridge bridge) {
-        this.activity = activity;
+    LiveRoomTaskScriptRunner(ShuangyuAccessibilityAdService a11yService,
+                              Handler handler, TaskBridge bridge) {
+        this.a11y = a11yService;
         this.handler = handler;
         this.bridge = bridge;
     }
 
-    // ─────────────────────── 主入口 ───────────────────────
+    // ═══════════════════════ 通用验证循环 ═══════════════════════
 
-    void execute(final TaskFinishListener listener) {
-        ModuleRunFileLogger.i(TAG, "=== 采集任务开始 ===");
+    interface Condition { boolean check(); }
 
-        // 获取要采集的榜单列表
-        final List<RankTab> enabledTabs = getEnabledRankTabs();
-        if (enabledTabs.isEmpty()) {
-            ModuleRunFileLogger.w(TAG, "没有启用任何榜单");
-            if (listener != null) listener.onTaskFinished(false, "没有启用任何榜单");
+    /**
+     * 先延迟 initialDelayMs，再开始验证循环。
+     */
+    private void delayThenVerify(final String label, final long initialDelayMs,
+                                  final Condition condition,
+                                  final int maxRetries, final int tryBackEvery,
+                                  final Runnable onSuccess, final Runnable onFail) {
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                verifyLoop(label, condition, 0, maxRetries, tryBackEvery, onSuccess, onFail);
+            }
+        }, initialDelayMs);
+    }
+
+    private void verifyLoop(final String label, final Condition condition,
+                             final int attempt, final int maxRetries,
+                             final int tryBackEvery,
+                             final Runnable onSuccess, final Runnable onFail) {
+        if (shouldStop()) return;
+
+        if (condition.check()) {
+            ModuleRunFileLogger.i(TAG, "✅ 验证通过: " + label + " (第" + attempt + "次)");
+            onSuccess.run();
             return;
         }
 
-        // Step 1: 点击娱乐 Tab
-        bridge.updateStatus("正在点击娱乐Tab");
-        clickEntertainmentTab(new Runnable() {
+        if (attempt >= maxRetries) {
+            ModuleRunFileLogger.w(TAG, "❌ 验证超时: " + label + " (尝试 " + maxRetries + " 次)");
+            if (onFail != null) onFail.run();
+            return;
+        }
+
+        if (tryBackEvery > 0 && attempt > 0 && attempt % tryBackEvery == 0) {
+            ModuleRunFileLogger.i(TAG, "⏳ " + label + " 未通过 (" + attempt + "), 按返回关闭弹窗");
+            a11y.performGlobalBack();
+        } else {
+            ModuleRunFileLogger.i(TAG, "⏳ " + label + " 等待中 (" + attempt + ")");
+        }
+
+        handler.postDelayed(new Runnable() {
             @Override
             public void run() {
-                // Step 2: 开始遍历榜单
+                verifyLoop(label, condition, attempt + 1, maxRetries,
+                        tryBackEvery, onSuccess, onFail);
+            }
+        }, UiComponentConfig.VERIFY_INTERVAL_MS);
+    }
+
+    // ═══════════════════════ 主入口 ═══════════════════════
+
+    void execute(final TaskFinishListener listener) {
+        ModuleRunFileLogger.i(TAG, "📋 === 采集任务开始（无障碍 API 模式）===");
+
+        final List<RankTab> enabledTabs = getEnabledRankTabs();
+        if (enabledTabs.isEmpty()) {
+            ModuleRunFileLogger.w(TAG, "⚠️ 没有启用任何榜单");
+            if (listener != null) listener.onTaskFinished(false, "没有启用任何榜单");
+            return;
+        }
+        ModuleRunFileLogger.i(TAG, "📋 需采集榜单: " + enabledTabs.size() + " 个");
+
+        // Step 0: 等待娱乐Tab可见
+        bridge.updateStatus("等待主界面就绪...");
+        verifyLoop("等待主界面就绪", new Condition() {
+            @Override
+            public boolean check() {
+                return a11y.isNodePresent(
+                        UiComponentConfig.HOME_TAB_ENTERTAINMENT.fullResourceId);
+            }
+        }, 0, UiComponentConfig.VERIFY_MAX_RETRIES, 3, new Runnable() {
+            @Override
+            public void run() {
+                stepClickEntertainmentTab(enabledTabs, listener);
+            }
+        }, new Runnable() {
+            @Override
+            public void run() {
+                ModuleRunFileLogger.w(TAG, "⚠️ 等待主界面超时，尝试继续");
+                stepClickEntertainmentTab(enabledTabs, listener);
+            }
+        });
+    }
+
+    // ═══════════════════════ Step 1: 点击娱乐 Tab ═══════════════════════
+
+    private void stepClickEntertainmentTab(final List<RankTab> enabledTabs,
+                                            final TaskFinishListener listener) {
+        if (shouldStop()) return;
+
+        bridge.updateStatus("点击娱乐Tab...");
+        ModuleRunFileLogger.i(TAG, "🏠 点击娱乐Tab");
+
+        // 先尝试容器 ID，再尝试文本 ID
+        boolean clicked = a11y.clickNodeByResourceId(
+                UiComponentConfig.HOME_TAB_ENTERTAINMENT_CONTAINER.fullResourceId);
+        if (!clicked) {
+            clicked = a11y.clickNodeByResourceId(
+                    UiComponentConfig.HOME_TAB_ENTERTAINMENT.fullResourceId);
+        }
+        if (!clicked) {
+            clicked = a11y.clickNodeByText("娱乐");
+        }
+        ModuleRunFileLogger.i(TAG, "🏠 娱乐Tab点击结果: " + clicked);
+
+        // 延迟 2 秒后验证：榜单 TabLayout 可见
+        delayThenVerify("验证已进入娱乐界面", 2000L, new Condition() {
+            @Override
+            public boolean check() {
+                return a11y.isNodePresent(UiComponentConfig.RANK_TAB_LAYOUT_ID);
+            }
+        }, UiComponentConfig.VERIFY_MAX_RETRIES, 3, new Runnable() {
+            @Override
+            public void run() {
+                processRankTabs(enabledTabs, 0, listener);
+            }
+        }, new Runnable() {
+            @Override
+            public void run() {
+                ModuleRunFileLogger.w(TAG, "⚠️ 未能确认进入娱乐界面，尝试继续");
                 processRankTabs(enabledTabs, 0, listener);
             }
         });
     }
 
-    // ─────────────────────── 榜单类型 ───────────────────────
+    // ═══════════════════════ 榜单 ═══════════════════════
 
     enum RankTab {
-        GODDESS("女神"),
-        GOD("男神"),
-        SING("点唱");
-
+        GODDESS("女神"), GOD("男神"), SING("点唱");
         final String label;
         RankTab(String label) { this.label = label; }
     }
 
     private List<RankTab> getEnabledRankTabs() {
+        SharedPreferences prefs = ModuleSettings.appPrefs(a11y);
         List<RankTab> tabs = new ArrayList<>();
-        if (ModuleSettings.isRankGoddessEnabled()) tabs.add(RankTab.GODDESS);
-        if (ModuleSettings.isRankGodEnabled()) tabs.add(RankTab.GOD);
-        if (ModuleSettings.isRankSingEnabled()) tabs.add(RankTab.SING);
+        if (ModuleSettings.getRankGoddessEnabled(prefs)) tabs.add(RankTab.GODDESS);
+        if (ModuleSettings.getRankGodEnabled(prefs)) tabs.add(RankTab.GOD);
+        if (ModuleSettings.getRankSingEnabled(prefs)) tabs.add(RankTab.SING);
         return tabs;
     }
 
-    // ─────────────────────── Step 1: 点击娱乐 Tab ───────────────────────
-
-    private void clickEntertainmentTab(final Runnable onDone) {
-        if (shouldStop()) return;
-
-        View decor = activity.getWindow().getDecorView();
-        View tabView = findViewByResourceId(decor,
-                UiComponentConfig.HOME_TAB_ENTERTAINMENT.fullResourceId);
-        if (tabView == null) {
-            // 尝试找容器
-            tabView = findViewByResourceId(decor,
-                    UiComponentConfig.HOME_TAB_ENTERTAINMENT_CONTAINER.fullResourceId);
-        }
-
-        if (tabView != null) {
-            ModuleRunFileLogger.i(TAG, "点击娱乐Tab");
-            tabView.performClick();
-            handler.postDelayed(onDone, UiComponentConfig.CLICK_WAIT_MS);
-        } else {
-            ModuleRunFileLogger.w(TAG, "未找到娱乐Tab，尝试继续");
-            handler.postDelayed(onDone, UiComponentConfig.CLICK_WAIT_MS);
-        }
-    }
-
-    // ─────────────────────── Step 2: 切换榜单 Tab ───────────────────────
+    // ═══════════════════════ Step 2: 切换榜单 Tab ═══════════════════════
 
     private void processRankTabs(final List<RankTab> tabs, final int index,
                                   final TaskFinishListener listener) {
         if (shouldStop() || index >= tabs.size()) {
-            ModuleRunFileLogger.i(TAG, "=== 所有榜单处理完成 总采集=" + totalCollected
+            ModuleRunFileLogger.i(TAG, "📊📊📊 === 所有榜单处理完成 总采集=" + totalCollected
                     + " 总房间=" + totalRoomsEntered + " ===");
             if (listener != null) {
                 listener.onTaskFinished(true,
@@ -141,358 +206,472 @@ final class LiveRoomTaskScriptRunner {
 
         final RankTab tab = tabs.get(index);
         bridge.updateStatus("切换到 " + tab.label + " 榜单");
-        ModuleRunFileLogger.i(TAG, "切换到榜单: " + tab.label);
+        ModuleRunFileLogger.i(TAG, "📌 切换到榜单: " + tab.label);
 
-        clickRankTab(tab, new Runnable() {
+        boolean clicked = a11y.clickNodeByText(tab.label);
+        ModuleRunFileLogger.i(TAG, "📌 点击榜单Tab[" + tab.label + "] 结果: " + clicked);
+
+        // 延迟 2 秒后验证：有房间卡片
+        delayThenVerify("验证已进入" + tab.label + "榜单", 2000L, new Condition() {
+            @Override
+            public boolean check() {
+                List<String> rooms = a11y.getTextListByResourceId(
+                        UiComponentConfig.ROOM_CARD_NAME_ID);
+                return rooms != null && rooms.size() > 0;
+            }
+        }, UiComponentConfig.VERIFY_MAX_RETRIES, 0, new Runnable() {
             @Override
             public void run() {
-                // Step 3: 遍历房间列表
                 visitedRoomNames.clear();
-                processRoomList(0, tab, new Runnable() {
+                refreshAndProcessRooms(tab, new Runnable() {
                     @Override
                     public void run() {
-                        // 下一个榜单
                         processRankTabs(tabs, index + 1, listener);
                     }
                 });
             }
+        }, new Runnable() {
+            @Override
+            public void run() {
+                ModuleRunFileLogger.w(TAG, "⚠️ " + tab.label + " 榜单无房间，跳过");
+                processRankTabs(tabs, index + 1, listener);
+            }
         });
     }
 
-    private void clickRankTab(RankTab tab, final Runnable onDone) {
-        View decor = activity.getWindow().getDecorView();
-        View tabView = findViewByText(decor, tab.label, "android.widget.TextView");
-        if (tabView != null) {
-            ModuleRunFileLogger.i(TAG, "点击榜单Tab: " + tab.label);
-            tabView.performClick();
-        } else {
-            ModuleRunFileLogger.w(TAG, "未找到榜单Tab: " + tab.label);
-        }
-        handler.postDelayed(onDone, UiComponentConfig.CLICK_WAIT_MS);
-    }
+    // ═══════════════════════ Step 3: 遍历房间列表 ═══════════════════════
 
-    // ─────────────────────── Step 3: 遍历房间列表 ───────────────────────
-
-    private void processRoomList(final int retryCount, final RankTab rankTab,
-                                  final Runnable onAllDone) {
+    private void refreshAndProcessRooms(final RankTab rankTab, final Runnable onAllDone) {
         if (shouldStop()) return;
 
-        View decor = activity.getWindow().getDecorView();
-        ViewGroup recycler = (ViewGroup) findViewByResourceId(decor,
-                UiComponentConfig.ROOM_LIST_RECYCLER_ID);
+        bridge.updateStatus("读取 " + rankTab.label + " 房间列表...");
+        ModuleRunFileLogger.i(TAG, "🔃 读取房间列表");
 
-        if (recycler == null) {
-            ModuleRunFileLogger.w(TAG, "未找到房间列表 RecyclerView");
-            if (retryCount < UiComponentConfig.NO_NEW_CONTENT_MAX_RETRIES) {
-                handler.postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        processRoomList(retryCount + 1, rankTab, onAllDone);
-                    }
-                }, UiComponentConfig.SCROLL_WAIT_MS);
-            } else {
-                onAllDone.run();
+        // 等待列表加载完成后直接读取
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                processRoomList(rankTab, onAllDone);
             }
-            return;
-        }
+        }, 1500L);
+    }
 
-        // 收集当前可见的房间卡片
-        final List<View> roomCards = findRoomCards(recycler);
-        if (roomCards.isEmpty()) {
-            ModuleRunFileLogger.w(TAG, "没有找到房间卡片");
+    private void processRoomList(final RankTab rankTab, final Runnable onAllDone) {
+        if (shouldStop()) return;
+
+        List<String> roomNames = a11y.getTextListByResourceId(
+                UiComponentConfig.ROOM_CARD_NAME_ID);
+
+        if (roomNames == null || roomNames.isEmpty()) {
+            ModuleRunFileLogger.w(TAG, "⚠️ 没有找到房间卡片");
             onAllDone.run();
             return;
         }
 
-        processRoomCards(roomCards, 0, recycler, rankTab, onAllDone);
+        ModuleRunFileLogger.i(TAG, "🏠 找到 " + roomNames.size() + " 个房间卡片");
+        processRoomByIndex(roomNames, 0, rankTab, onAllDone);
     }
 
-    private List<View> findRoomCards(ViewGroup recycler) {
-        List<View> cards = new ArrayList<>();
-        for (int i = 0; i < recycler.getChildCount(); i++) {
-            View child = recycler.getChildAt(i);
-            if (child instanceof ViewGroup) {
-                // 检查卡片内是否有房间名节点
-                View roomNameView = findViewByResourceId(child,
-                        UiComponentConfig.ROOM_CARD_NAME_ID);
-                if (roomNameView != null) {
-                    cards.add(child);
-                }
-            }
-        }
-        return cards;
-    }
-
-    private void processRoomCards(final List<View> cards, final int index,
-                                   final ViewGroup recycler, final RankTab rankTab,
-                                   final Runnable onAllDone) {
-        if (shouldStop() || index >= cards.size()) {
-            // 滚动加载更多
-            tryScrollForMoreRooms(recycler, rankTab, onAllDone);
+    private void processRoomByIndex(final List<String> roomNames, final int index,
+                                     final RankTab rankTab, final Runnable onAllDone) {
+        if (shouldStop() || index >= roomNames.size()) {
+            tryScrollForMoreRooms(rankTab, onAllDone);
             return;
         }
 
-        View card = cards.get(index);
-        String roomName = getTextFromChild(card, UiComponentConfig.ROOM_CARD_NAME_ID);
-        String hostName = getTextFromChild(card, UiComponentConfig.ROOM_CARD_HOST_ID);
-
-        if (TextUtils.isEmpty(roomName)) {
-            processRoomCards(cards, index + 1, recycler, rankTab, onAllDone);
-            return;
-        }
-
-        if (visitedRoomNames.contains(roomName)) {
-            ModuleRunFileLogger.i(TAG, "跳过已访问房间: " + roomName);
-            processRoomCards(cards, index + 1, recycler, rankTab, onAllDone);
+        final String roomName = roomNames.get(index);
+        if (TextUtils.isEmpty(roomName) || visitedRoomNames.contains(roomName)) {
+            processRoomByIndex(roomNames, index + 1, rankTab, onAllDone);
             return;
         }
 
         visitedRoomNames.add(roomName);
         bridge.updateStatus("进入房间: " + roomName);
-        ModuleRunFileLogger.i(TAG, "点击进入房间: " + roomName + " 主播: " + hostName);
+        ModuleRunFileLogger.i(TAG, "🚪 点击进入房间: " + roomName);
 
-        card.performClick();
+        // 通过房间名 resource-id 的第 index 个节点点击
+        boolean clicked = a11y.clickNthNodeByResourceId(
+                UiComponentConfig.ROOM_CARD_NAME_ID, index);
+        ModuleRunFileLogger.i(TAG, "🚪 点击房间卡片结果: " + clicked);
         totalRoomsEntered++;
 
-        handler.postDelayed(new Runnable() {
+        // 延迟 3 秒后验证：房间代号文本非空
+        delayThenVerify("验证已进入房间[" + roomName + "]", 3000L, new Condition() {
+            @Override
+            public boolean check() {
+                String code = a11y.getTextByResourceId(UiComponentConfig.LIVE_ROOM_CODE_ID);
+                return !TextUtils.isEmpty(code);
+            }
+        }, UiComponentConfig.VERIFY_MAX_RETRIES, 3, new Runnable() {
             @Override
             public void run() {
-                // 在房间内执行采集
                 collectInRoom(new Runnable() {
                     @Override
                     public void run() {
-                        // 返回房间列表
-                        bridge.updateStatus("返回房间列表");
-                        pressBack();
-                        handler.postDelayed(new Runnable() {
-                            @Override
-                            public void run() {
-                                processRoomCards(cards, index + 1, recycler, rankTab, onAllDone);
-                            }
-                        }, UiComponentConfig.BACK_WAIT_MS);
+                        backToRankList(rankTab, onAllDone);
                     }
                 });
             }
-        }, UiComponentConfig.ENTER_ROOM_WAIT_MS);
+        }, new Runnable() {
+            @Override
+            public void run() {
+                ModuleRunFileLogger.w(TAG, "⚠️ 未能进入房间: " + roomName + "，跳过");
+                a11y.performGlobalBack();
+                handler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        // 重新获取房间列表
+                        List<String> freshRooms = a11y.getTextListByResourceId(
+                                UiComponentConfig.ROOM_CARD_NAME_ID);
+                        processRoomByIndex(freshRooms, 0, rankTab, onAllDone);
+                    }
+                }, UiComponentConfig.BACK_WAIT_MS);
+            }
+        });
     }
 
-    private void tryScrollForMoreRooms(final ViewGroup recycler, final RankTab rankTab,
-                                        final Runnable onAllDone) {
-        if (shouldStop()) {
-            onAllDone.run();
-            return;
-        }
+    /** 从房间返回榜单列表 */
+    private void backToRankList(final RankTab rankTab, final Runnable onAllDone) {
+        bridge.updateStatus("返回房间列表");
+        ModuleRunFileLogger.i(TAG, "⬅️ 返回房间列表");
+        a11y.performGlobalBack();
+
+        delayThenVerify("验证已返回榜单列表", 2000L, new Condition() {
+            @Override
+            public boolean check() {
+                // 榜单 layout 可见 且 房间代号不可见
+                boolean hasLayout = a11y.isNodePresent(UiComponentConfig.RANK_TAB_LAYOUT_ID);
+                String code = a11y.getTextByResourceId(UiComponentConfig.LIVE_ROOM_CODE_ID);
+                return hasLayout && TextUtils.isEmpty(code);
+            }
+        }, UiComponentConfig.VERIFY_MAX_RETRIES, 3, new Runnable() {
+            @Override
+            public void run() {
+                List<String> freshRooms = a11y.getTextListByResourceId(
+                        UiComponentConfig.ROOM_CARD_NAME_ID);
+                processRoomByIndex(freshRooms, 0, rankTab, onAllDone);
+            }
+        }, new Runnable() {
+            @Override
+            public void run() {
+                ModuleRunFileLogger.w(TAG, "⚠️ 未能确认返回榜单，尝试继续");
+                List<String> freshRooms = a11y.getTextListByResourceId(
+                        UiComponentConfig.ROOM_CARD_NAME_ID);
+                if (freshRooms != null && !freshRooms.isEmpty()) {
+                    processRoomByIndex(freshRooms, 0, rankTab, onAllDone);
+                } else {
+                    onAllDone.run();
+                }
+            }
+        });
+    }
+
+    private void tryScrollForMoreRooms(final RankTab rankTab, final Runnable onAllDone) {
+        if (shouldStop()) { onAllDone.run(); return; }
         bridge.updateStatus("滚动加载更多房间");
-        int prevCount = recycler.getChildCount();
-        scrollDown(recycler);
+        ModuleRunFileLogger.i(TAG, "📜 滚动加载更多房间");
+        a11y.performScrollDownByResourceId(UiComponentConfig.ROOM_LIST_RECYCLER_ID);
 
         handler.postDelayed(new Runnable() {
             @Override
             public void run() {
-                int newCount = recycler.getChildCount();
-                List<View> newCards = findRoomCards(recycler);
-                // 过滤已访问
-                List<View> unvisited = new ArrayList<>();
-                for (View card : newCards) {
-                    String name = getTextFromChild(card, UiComponentConfig.ROOM_CARD_NAME_ID);
-                    if (!TextUtils.isEmpty(name) && !visitedRoomNames.contains(name)) {
-                        unvisited.add(card);
+                List<String> names = a11y.getTextListByResourceId(
+                        UiComponentConfig.ROOM_CARD_NAME_ID);
+                List<String> unvisited = new ArrayList<>();
+                if (names != null) {
+                    for (String name : names) {
+                        if (!TextUtils.isEmpty(name) && !visitedRoomNames.contains(name)) {
+                            unvisited.add(name);
+                        }
                     }
                 }
                 if (unvisited.isEmpty()) {
-                    ModuleRunFileLogger.i(TAG, "没有新的未访问房间，完成当前榜单");
+                    ModuleRunFileLogger.i(TAG, "📜 没有新的未访问房间，完成当前榜单");
                     onAllDone.run();
                 } else {
-                    processRoomCards(unvisited, 0, recycler, rankTab, onAllDone);
+                    ModuleRunFileLogger.i(TAG, "📜 找到 " + unvisited.size() + " 个新房间");
+                    processRoomByIndex(names, 0, rankTab, onAllDone);
                 }
             }
         }, UiComponentConfig.SCROLL_WAIT_MS);
     }
 
-    // ─────────────────────── Step 4-7: 房间内采集 ───────────────────────
+    // ═══════════════════════ Step 4-7: 房间内采集 ═══════════════════════
 
+    /**
+     * 房间内采集流程：
+     * 1. 获取房间名/ID
+     * 2. 点击在线榜 → 验证打开
+     * 3. 读取用户列表，逐个采集
+     * 4. 每次采集完返回房间后，重新打开在线榜继续
+     * 5. 在线榜滚动加载更多用户，直到无新用户
+     */
     private void collectInRoom(final Runnable onDone) {
         if (shouldStop()) { onDone.run(); return; }
 
-        View decor = activity.getWindow().getDecorView();
+        final String roomName = a11y.getTextByResourceId(UiComponentConfig.LIVE_ROOM_NAME_ID);
+        final String roomId = a11y.getTextByResourceId(UiComponentConfig.LIVE_ROOM_CODE_ID);
+        ModuleRunFileLogger.i(TAG, "🏠 房间内: name=" + roomName + " id=" + roomId);
 
-        // 获取房间名和 ID
-        final String roomName = getTextFromView(decor, UiComponentConfig.LIVE_ROOM_NAME_ID);
-        final String roomId = getTextFromView(decor, UiComponentConfig.LIVE_ROOM_CODE_ID);
-        ModuleRunFileLogger.i(TAG, "房间内: name=" + roomName + " id=" + roomId);
+        // 开始在线榜采集循环
+        openOnlineListAndCollect(roomName, roomId, 0, onDone);
+    }
 
-        // 点击在线榜入口
-        View onlineLayout = findViewByResourceId(decor, UiComponentConfig.ONLINE_USER_LAYOUT_ID);
-        if (onlineLayout == null) {
-            ModuleRunFileLogger.w(TAG, "未找到在线榜入口");
+    /**
+     * 打开在线榜，然后开始采集循环。
+     * scrollRetry: 当前滚动重试次数（无新用户时递增）
+     */
+    private void openOnlineListAndCollect(final String roomName, final String roomId,
+                                           final int scrollRetry, final Runnable onDone) {
+        if (shouldStop()) { onDone.run(); return; }
+
+        // 检查在线榜入口
+        boolean hasOnline = a11y.isNodePresent(UiComponentConfig.ONLINE_USER_LAYOUT_ID);
+        if (!hasOnline) {
+            ModuleRunFileLogger.w(TAG, "⚠️ 未找到在线榜入口，跳过此房间");
             onDone.run();
             return;
         }
 
         bridge.updateStatus("打开在线列表");
-        onlineLayout.performClick();
+        ModuleRunFileLogger.i(TAG, "👥 点击在线榜");
+        boolean clicked = a11y.clickNodeByResourceId(UiComponentConfig.ONLINE_USER_LAYOUT_ID);
+        ModuleRunFileLogger.i(TAG, "👥 在线榜点击结果: " + clicked);
 
-        handler.postDelayed(new Runnable() {
+        delayThenVerify("验证在线榜已打开", 2000L, new Condition() {
             @Override
-            public void run() {
-                collectUsersInOnlineList(roomName, roomId, 0, onDone);
+            public boolean check() {
+                return a11y.isNodePresent(UiComponentConfig.USER_NICKNAME_ID);
             }
-        }, UiComponentConfig.ONLINE_LIST_WAIT_MS);
-    }
-
-    private void collectUsersInOnlineList(final String roomName, final String roomId,
-                                           final int scrollRetry, final Runnable onDone) {
-        if (shouldStop()) { onDone.run(); return; }
-
-        View decor = activity.getWindow().getDecorView();
-        ViewGroup userRecycler = findUserRecycler(decor);
-        if (userRecycler == null) {
-            ModuleRunFileLogger.w(TAG, "未找到用户列表 RecyclerView");
-            // 关闭在线榜
-            pressBack();
-            handler.postDelayed(onDone, UiComponentConfig.BACK_WAIT_MS);
-            return;
-        }
-
-        final List<View> userCards = findUserCards(userRecycler);
-        if (userCards.isEmpty() && scrollRetry >= UiComponentConfig.NO_NEW_CONTENT_MAX_RETRIES) {
-            ModuleRunFileLogger.i(TAG, "用户列表为空或已遍历完成");
-            pressBack();
-            handler.postDelayed(onDone, UiComponentConfig.BACK_WAIT_MS);
-            return;
-        }
-
-        processUserCards(userCards, 0, roomName, roomId, userRecycler, new Runnable() {
+        }, UiComponentConfig.VERIFY_MAX_RETRIES, 0, new Runnable() {
             @Override
             public void run() {
-                // 滚动加载更多用户
-                tryScrollForMoreUsers(userRecycler, roomName, roomId, scrollRetry, onDone);
+                // 在线榜已打开，开始逐个采集用户
+                collectNextUser(roomName, roomId, scrollRetry, onDone);
+            }
+        }, new Runnable() {
+            @Override
+            public void run() {
+                ModuleRunFileLogger.w(TAG, "⚠️ 在线榜未能打开，跳过此房间");
+                onDone.run();
             }
         });
     }
 
-    private void processUserCards(final List<View> cards, final int index,
-                                   final String roomName, final String roomId,
-                                   final ViewGroup userRecycler, final Runnable onBatchDone) {
-        if (shouldStop() || index >= cards.size()) {
-            onBatchDone.run();
+    /**
+     * 在线榜中寻找下一个未采集用户，点击采集。
+     * 采集完返回房间后会重新调用 openOnlineListAndCollect 继续。
+     */
+    private void collectNextUser(final String roomName, final String roomId,
+                                  final int scrollRetry, final Runnable onDone) {
+        if (shouldStop()) {
+            exitOnlineList(onDone);
             return;
         }
 
-        View card = cards.get(index);
-        String userId = getTextFromChild(card, UiComponentConfig.USER_CODE_ID);
-        String nickname = getTextFromChild(card, UiComponentConfig.USER_NICKNAME_ID);
+        // 每次都重新读取最新的用户列表
+        List<String> nicknames = a11y.getTextListByResourceId(UiComponentConfig.USER_NICKNAME_ID);
+        List<String> userIds = a11y.getTextListByResourceId(UiComponentConfig.USER_CODE_ID);
 
-        // 过滤管理员/房主（有 iv_room_role 图标的）
-        View roleIcon = findViewByResourceId(card, UiComponentConfig.USER_ROOM_ROLE_ICON_ID);
-        boolean isAdminOrOwner = (roleIcon != null && roleIcon.getVisibility() == View.VISIBLE);
-
-        if (isAdminOrOwner) {
-            ModuleRunFileLogger.i(TAG, "跳过管理员/房主: " + nickname);
-            processUserCards(cards, index + 1, roomName, roomId, userRecycler, onBatchDone);
+        if (nicknames == null || nicknames.isEmpty()) {
+            ModuleRunFileLogger.i(TAG, "👥 在线榜无用户");
+            exitOnlineList(onDone);
             return;
         }
 
-        // 过滤忽略的用户 ID
+        int count = nicknames.size();
+        ModuleRunFileLogger.i(TAG, "👥 当前可见 " + count + " 个用户");
+
+        // 加载忽略列表
+        SharedPreferences prefs = ModuleSettings.appPrefs(a11y);
         Set<String> ignoreIds = ModuleSettings.parseIgnoreUserIdSet(
-                ModuleSettings.getIgnoreUserIds());
-        if (!TextUtils.isEmpty(userId) && ignoreIds.contains(userId)) {
-            ModuleRunFileLogger.i(TAG, "跳过忽略用户: " + userId);
-            processUserCards(cards, index + 1, roomName, roomId, userRecycler, onBatchDone);
+                ModuleSettings.getIgnoreUserIds(prefs));
+
+        // 查找第一个未采集的用户
+        int targetIndex = -1;
+        String targetNickname = null;
+        String targetUserId = null;
+
+        for (int i = 0; i < count; i++) {
+            String nick = nicknames.get(i);
+            String uid = (userIds != null && i < userIds.size()) ? userIds.get(i) : "";
+
+            // 跳过已采集
+            if (!TextUtils.isEmpty(uid) && collectedUserIds.contains(uid)) continue;
+            // 跳过忽略用户
+            if (!TextUtils.isEmpty(uid) && ignoreIds.contains(uid)) {
+                ModuleRunFileLogger.i(TAG, "⏭️ 跳过忽略用户: " + nick + " (" + uid + ")");
+                continue;
+            }
+            // 跳过管理员/房主
+            if (a11y.isAdminUserAtIndex(i)) {
+                ModuleRunFileLogger.i(TAG, "⏭️ 跳过管理员/房主: " + nick);
+                if (!TextUtils.isEmpty(uid)) collectedUserIds.add(uid);
+                continue;
+            }
+            // 跳过空昵称
+            if (TextUtils.isEmpty(nick)) continue;
+
+            targetIndex = i;
+            targetNickname = nick;
+            targetUserId = uid;
+            break;
+        }
+
+        if (targetIndex < 0) {
+            // 当前可见用户全部已采集，尝试滚动加载更多
+            ModuleRunFileLogger.i(TAG, "📜 当前用户全部已处理，尝试滚动加载更多 (重试 "
+                    + scrollRetry + "/" + UiComponentConfig.NO_NEW_CONTENT_MAX_RETRIES + ")");
+            tryScrollForMoreUsers(roomName, roomId, scrollRetry, onDone);
             return;
         }
 
-        // 跳过已采集用户
-        if (!TextUtils.isEmpty(userId) && collectedUserIds.contains(userId)) {
-            processUserCards(cards, index + 1, roomName, roomId, userRecycler, onBatchDone);
-            return;
-        }
+        // 找到目标用户，开始采集
+        final int idx = targetIndex;
+        final String nick = targetNickname;
+        final String uid = targetUserId;
 
-        // 点击用户卡片获取详细信息
-        bridge.updateStatus("采集用户: " + nickname);
-        card.performClick();
+        bridge.updateStatus("采集用户: " + nick);
+        ModuleRunFileLogger.i(TAG, "👤 点击用户: " + nick + " (ID:" + uid + ")");
 
-        handler.postDelayed(new Runnable() {
+        boolean userClicked = a11y.clickNthNodeByResourceId(
+                UiComponentConfig.USER_NICKNAME_ID, idx);
+        ModuleRunFileLogger.i(TAG, "👤 用户点击结果: " + userClicked);
+
+        delayThenVerify("验证用户详情[" + nick + "]", 2000L, new Condition() {
+            @Override
+            public boolean check() {
+                return a11y.isNodePresent(UiComponentConfig.USER_DETAIL_LOCATION_ID)
+                        || a11y.isNodePresent(UiComponentConfig.USER_DETAIL_AGE_ID);
+            }
+        }, UiComponentConfig.VERIFY_MAX_RETRIES, 0, new Runnable() {
             @Override
             public void run() {
                 // 读取用户详情
-                View detailDecor = activity.getWindow().getDecorView();
-                String location = getTextFromView(detailDecor,
+                String location = a11y.getTextByResourceId(
                         UiComponentConfig.USER_DETAIL_LOCATION_ID);
-                String age = getTextFromView(detailDecor,
+                String age = a11y.getTextByResourceId(
                         UiComponentConfig.USER_DETAIL_AGE_ID);
 
-                String userId2 = getTextFromChild(cards.get(index),
-                        UiComponentConfig.USER_CODE_ID);
-                String nickname2 = getTextFromChild(cards.get(index),
-                        UiComponentConfig.USER_NICKNAME_ID);
+                ModuleRunFileLogger.i(TAG, "📝 采集: " + nick
+                        + " 地区=" + location + " 年龄=" + age);
 
-                // 保存数据
-                saveUserData(userId2, nickname2, "", age, "", "", "", location,
-                        roomName, roomId);
+                saveUserData(uid, nick, "", age, "", "", "",
+                        location, roomName, roomId);
 
-                // 关闭用户详情（按返回）
-                pressBack();
+                // 返回房间（关闭用户详情）
+                a11y.performGlobalBack();
+                ModuleRunFileLogger.i(TAG, "⬅️ 关闭用户详情，返回房间");
 
+                // 验证已返回房间（可见在线榜入口 = 在房间内）
+                delayThenVerify("验证已返回房间", 1500L, new Condition() {
+                    @Override
+                    public boolean check() {
+                        return a11y.isNodePresent(UiComponentConfig.ONLINE_USER_LAYOUT_ID);
+                    }
+                }, UiComponentConfig.VERIFY_MAX_RETRIES, 3, new Runnable() {
+                    @Override
+                    public void run() {
+                        // 已回到房间，重新打开在线榜继续采集下一个
+                        openOnlineListAndCollect(roomName, roomId, 0, onDone);
+                    }
+                }, new Runnable() {
+                    @Override
+                    public void run() {
+                        // 返回失败，可能在线榜还开着，直接继续
+                        ModuleRunFileLogger.w(TAG, "⚠️ 返回房间验证失败，尝试继续");
+                        // 检查是否还在线榜界面
+                        if (a11y.isNodePresent(UiComponentConfig.USER_NICKNAME_ID)) {
+                            collectNextUser(roomName, roomId, 0, onDone);
+                        } else {
+                            openOnlineListAndCollect(roomName, roomId, 0, onDone);
+                        }
+                    }
+                });
+            }
+        }, new Runnable() {
+            @Override
+            public void run() {
+                ModuleRunFileLogger.w(TAG, "⚠️ 用户详情未打开，跳过: " + nick);
+                // 标记为已访问避免死循环
+                if (!TextUtils.isEmpty(uid)) collectedUserIds.add(uid);
+                a11y.performGlobalBack();
                 handler.postDelayed(new Runnable() {
                     @Override
                     public void run() {
-                        processUserCards(cards, index + 1, roomName, roomId,
-                                userRecycler, onBatchDone);
+                        // 检查当前在哪里，决定下一步
+                        if (a11y.isNodePresent(UiComponentConfig.USER_NICKNAME_ID)) {
+                            // 还在在线榜
+                            collectNextUser(roomName, roomId, 0, onDone);
+                        } else {
+                            // 回到了房间
+                            openOnlineListAndCollect(roomName, roomId, 0, onDone);
+                        }
                     }
                 }, UiComponentConfig.BACK_WAIT_MS);
             }
-        }, UiComponentConfig.USER_CARD_WAIT_MS);
+        });
     }
 
-    private void tryScrollForMoreUsers(final ViewGroup userRecycler,
-                                        final String roomName, final String roomId,
+    /** 退出在线榜回到房间 */
+    private void exitOnlineList(final Runnable onDone) {
+        ModuleRunFileLogger.i(TAG, "👥 退出在线榜");
+        a11y.performGlobalBack();
+        delayThenVerify("验证已退出在线榜", 2000L, new Condition() {
+            @Override
+            public boolean check() {
+                return a11y.isNodePresent(UiComponentConfig.ONLINE_USER_LAYOUT_ID);
+            }
+        }, UiComponentConfig.VERIFY_MAX_RETRIES, 3, onDone, onDone);
+    }
+
+    /**
+     * 在线榜中滚动加载更多用户。
+     */
+    private void tryScrollForMoreUsers(final String roomName, final String roomId,
                                         final int prevRetry, final Runnable onDone) {
         if (shouldStop()) {
-            pressBack();
-            handler.postDelayed(onDone, UiComponentConfig.BACK_WAIT_MS);
+            exitOnlineList(onDone);
             return;
         }
 
-        int prevChildCount = userRecycler.getChildCount();
-        scrollDown(userRecycler);
+        if (prevRetry >= UiComponentConfig.NO_NEW_CONTENT_MAX_RETRIES) {
+            ModuleRunFileLogger.i(TAG, "📜 用户列表无新内容（已重试 " + prevRetry + " 次），完成当前房间");
+            exitOnlineList(onDone);
+            return;
+        }
+
+        ModuleRunFileLogger.i(TAG, "📜 滑动加载更多用户 (第 " + (prevRetry + 1) + " 次)");
+        a11y.performSmallScrollDown();
 
         handler.postDelayed(new Runnable() {
             @Override
             public void run() {
-                List<View> newCards = findUserCards(userRecycler);
-                List<View> uncollected = new ArrayList<>();
-                for (View card : newCards) {
-                    String uid = getTextFromChild(card, UiComponentConfig.USER_CODE_ID);
-                    if (!TextUtils.isEmpty(uid) && !collectedUserIds.contains(uid)) {
-                        uncollected.add(card);
+                // 检查是否有新的未采集用户
+                List<String> userIds = a11y.getTextListByResourceId(
+                        UiComponentConfig.USER_CODE_ID);
+                boolean hasNew = false;
+                if (userIds != null) {
+                    for (String uid : userIds) {
+                        if (!TextUtils.isEmpty(uid) && !collectedUserIds.contains(uid)) {
+                            hasNew = true;
+                            break;
+                        }
                     }
                 }
 
-                if (uncollected.isEmpty()) {
-                    int nextRetry = prevRetry + 1;
-                    if (nextRetry >= UiComponentConfig.NO_NEW_CONTENT_MAX_RETRIES) {
-                        ModuleRunFileLogger.i(TAG, "用户列表无新内容，完成当前房间");
-                        pressBack();
-                        handler.postDelayed(onDone, UiComponentConfig.BACK_WAIT_MS);
-                    } else {
-                        collectUsersInOnlineList(roomName, roomId, nextRetry, onDone);
-                    }
+                if (hasNew) {
+                    ModuleRunFileLogger.i(TAG, "📜 发现新用户，继续采集");
+                    collectNextUser(roomName, roomId, 0, onDone);
                 } else {
-                    processUserCards(uncollected, 0, roomName, roomId, userRecycler,
-                            new Runnable() {
-                                @Override
-                                public void run() {
-                                    tryScrollForMoreUsers(userRecycler, roomName, roomId,
-                                            0, onDone);
-                                }
-                            });
+                    // 没有新用户，递增重试
+                    collectNextUser(roomName, roomId, prevRetry + 1, onDone);
                 }
             }
         }, UiComponentConfig.SCROLL_WAIT_MS);
     }
 
-    // ─────────────────────── 保存数据 ───────────────────────
+    // ═══════════════════════ 保存数据 ═══════════════════════
 
     private void saveUserData(String userId, String userName, String gender,
                                String age, String wealthLevel, String charmLevel,
@@ -503,27 +682,29 @@ final class LiveRoomTaskScriptRunner {
                 userId, userName, gender, age, wealthLevel, charmLevel,
                 followers, location, roomName, roomId, now
         );
-        boolean success = LiveRoomRankCsvStore.appendRow(activity, row);
+        boolean success = LiveRoomRankCsvStore.appendRow(a11y, row);
         if (success) {
             totalCollected++;
             if (!TextUtils.isEmpty(userId)) {
                 collectedUserIds.add(userId);
             }
-            ModuleRunFileLogger.i(TAG, "已采集 #" + totalCollected + ": "
+            ModuleRunFileLogger.i(TAG, "💾 已采集 #" + totalCollected + ": "
                     + userName + " (ID:" + userId + ") 房间:" + roomName);
-
-            // 推送到飞书
             sendToFeishu(userId, userName, age, location, roomName, roomId);
         } else {
-            ModuleRunFileLogger.e(TAG, "CSV 保存失败: " + userName);
+            ModuleRunFileLogger.e(TAG, "❌ CSV 保存失败: " + userName);
         }
     }
 
     private void sendToFeishu(String userId, String userName, String age,
                                String location, String roomName, String roomId) {
-        if (!ModuleSettings.isFeishuPushEnabled()) return;
-        final String text = "新用户采集\n"
-                + "昵称: " + safeTrim(userName) + "\n"
+        SharedPreferences prefs = ModuleSettings.appPrefs(a11y);
+        if (!ModuleSettings.getFeishuPushEnabled(prefs)) return;
+        final String webhookUrl = ModuleSettings.getFeishuWebhookUrl(prefs);
+        final String signSecret = ModuleSettings.getFeishuSignSecret(prefs);
+        if (TextUtils.isEmpty(webhookUrl)) return;
+
+        final String text = "昵称: " + safeTrim(userName) + "\n"
                 + "ID: " + safeTrim(userId) + "\n"
                 + "年龄: " + safeTrim(age) + "\n"
                 + "地区: " + safeTrim(location) + "\n"
@@ -531,129 +712,16 @@ final class LiveRoomTaskScriptRunner {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                FeishuWebhookSender.sendText(text);
+                try {
+                    FeishuWebhookSender.doSendText(webhookUrl, signSecret, text);
+                } catch (Throwable e) {
+                    ModuleRunFileLogger.e(TAG, "飞书发送失败: " + e.getMessage());
+                }
             }
         }).start();
     }
 
-    // ─────────────────────── View 查找工具 ───────────────────────
-
-    private View findViewByResourceId(View root, String fullResourceId) {
-        if (root == null || TextUtils.isEmpty(fullResourceId)) return null;
-        String shortId = UiComponentConfig.shortResourceId(fullResourceId);
-        if (TextUtils.isEmpty(shortId)) return null;
-        int resId = activity.getResources().getIdentifier(
-                shortId, "id", UiComponentConfig.TARGET_PACKAGE);
-        if (resId != 0) {
-            View found = root.findViewById(resId);
-            if (found != null) return found;
-        }
-        // 备用：递归搜索
-        return findViewByResourceIdRecursive(root, fullResourceId);
-    }
-
-    private View findViewByResourceIdRecursive(View root, String fullResourceId) {
-        if (root == null) return null;
-        try {
-            int id = root.getId();
-            if (id != View.NO_ID) {
-                try {
-                    String entryName = root.getResources().getResourceEntryName(id);
-                    String pkg = root.getResources().getResourcePackageName(id);
-                    String full = pkg + ":id/" + entryName;
-                    if (full.equals(fullResourceId)) return root;
-                } catch (Throwable ignore) {
-                }
-            }
-        } catch (Throwable ignore) {
-        }
-        if (root instanceof ViewGroup) {
-            ViewGroup vg = (ViewGroup) root;
-            for (int i = 0; i < vg.getChildCount(); i++) {
-                View found = findViewByResourceIdRecursive(vg.getChildAt(i), fullResourceId);
-                if (found != null) return found;
-            }
-        }
-        return null;
-    }
-
-    private View findViewByText(View root, String text, String className) {
-        if (root == null || TextUtils.isEmpty(text)) return null;
-        if (root instanceof TextView) {
-            CharSequence ct = ((TextView) root).getText();
-            if (ct != null && ct.toString().equals(text)) {
-                if (TextUtils.isEmpty(className)
-                        || root.getClass().getName().contains(className.replace("android.widget.", ""))) {
-                    return root;
-                }
-            }
-        }
-        if (root instanceof ViewGroup) {
-            ViewGroup vg = (ViewGroup) root;
-            for (int i = 0; i < vg.getChildCount(); i++) {
-                View found = findViewByText(vg.getChildAt(i), text, className);
-                if (found != null) return found;
-            }
-        }
-        return null;
-    }
-
-    private String getTextFromView(View root, String fullResourceId) {
-        View v = findViewByResourceId(root, fullResourceId);
-        if (v instanceof TextView) {
-            CharSequence ct = ((TextView) v).getText();
-            return ct != null ? ct.toString().trim() : "";
-        }
-        return "";
-    }
-
-    private String getTextFromChild(View parent, String fullResourceId) {
-        return getTextFromView(parent, fullResourceId);
-    }
-
-    private ViewGroup findUserRecycler(View root) {
-        // 在线榜的用户列表与房间列表共用同一 resource-id
-        // 但此时应该是在线榜弹出层中
-        View v = findViewByResourceId(root, UiComponentConfig.USER_LIST_RECYCLER_ID);
-        if (v instanceof ViewGroup) return (ViewGroup) v;
-        return null;
-    }
-
-    private List<View> findUserCards(ViewGroup recycler) {
-        List<View> cards = new ArrayList<>();
-        if (recycler == null) return cards;
-        for (int i = 0; i < recycler.getChildCount(); i++) {
-            View child = recycler.getChildAt(i);
-            if (child instanceof ViewGroup) {
-                View nicknameView = findViewByResourceId(child,
-                        UiComponentConfig.USER_NICKNAME_ID);
-                if (nicknameView != null) {
-                    cards.add(child);
-                }
-            }
-        }
-        return cards;
-    }
-
-    // ─────────────────────── 控制操作 ───────────────────────
-
-    private void scrollDown(View view) {
-        if (view == null) return;
-        try {
-            int height = view.getHeight();
-            view.scrollBy(0, (int) (height * 0.7));
-        } catch (Throwable e) {
-            ModuleRunFileLogger.e(TAG, "scrollDown 失败", e);
-        }
-    }
-
-    private void pressBack() {
-        try {
-            activity.onBackPressed();
-        } catch (Throwable e) {
-            ModuleRunFileLogger.e(TAG, "pressBack 失败", e);
-        }
-    }
+    // ═══════════════════════ 工具方法 ═══════════════════════
 
     private boolean shouldStop() {
         return bridge != null && bridge.shouldStop();

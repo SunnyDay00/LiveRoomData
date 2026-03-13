@@ -67,7 +67,7 @@ final class ModuleSettings {
 
     // ─────────────────────── 广告处理 ───────────────────────
     static final String KEY_AD_PROCESS_ENABLED = "ad_process_enabled";
-    static final boolean DEFAULT_AD_PROCESS_ENABLED = false;
+    static final boolean DEFAULT_AD_PROCESS_ENABLED = true;
 
     static boolean isAdProcessEnabled() {
         XSharedPreferences xsp = getXsp();
@@ -87,7 +87,7 @@ final class ModuleSettings {
 
     // ─────────────────────── 无障碍广告服务 ───────────────────────
     static final String KEY_ACCESSIBILITY_AD_SERVICE_ENABLED = "accessibility_ad_service_enabled";
-    static final boolean DEFAULT_ACCESSIBILITY_AD_SERVICE_ENABLED = false;
+    static final boolean DEFAULT_ACCESSIBILITY_AD_SERVICE_ENABLED = true;
 
     static boolean isAccessibilityAdServiceEnabled() {
         XSharedPreferences xsp = getXsp();
@@ -374,6 +374,7 @@ final class ModuleSettings {
 
     // Intent Actions
     static final String ACTION_SYNC_FLOAT_STATE = MODULE_PACKAGE + ".ACTION_SYNC_FLOAT_STATE";
+    static final String ACTION_ENGINE_COMMAND = MODULE_PACKAGE + ".ACTION_ENGINE_COMMAND";
     static final String ACTION_ENGINE_STATUS_REPORT = MODULE_PACKAGE + ".ACTION_ENGINE_STATUS_REPORT";
     static final String ACTION_RUNTIME_STATS_REPORT = MODULE_PACKAGE + ".ACTION_RUNTIME_STATS_REPORT";
     static final String ACTION_CYCLE_COMPLETE_NOTICE = MODULE_PACKAGE + ".ACTION_CYCLE_COMPLETE_NOTICE";

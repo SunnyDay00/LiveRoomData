@@ -163,6 +163,10 @@ final class UiComponentConfig {
     static final long USER_CARD_WAIT_MS = 1800L;
     /** 检查新内容最大重试次数 */
     static final int NO_NEW_CONTENT_MAX_RETRIES = 3;
+    /** 状态验证循环间隔 */
+    static final long VERIFY_INTERVAL_MS = 1500L;
+    /** 状态验证最大重试次数 */
+    static final int VERIFY_MAX_RETRIES = 10;
     /** 广告实时检测循环间隔 */
     static final long AD_REALTIME_LOOP_INTERVAL_MS = 2000L;
     /** HTTP 连接超时 */

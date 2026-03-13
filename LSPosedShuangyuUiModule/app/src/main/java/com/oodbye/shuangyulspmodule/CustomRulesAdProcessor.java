@@ -11,8 +11,8 @@ final class CustomRulesAdProcessor {
 
     private final AccessibilityCustomRulesAdEngine engine;
 
-    CustomRulesAdProcessor() {
-        this.engine = new AccessibilityCustomRulesAdEngine();
+    CustomRulesAdProcessor(android.content.Context context) {
+        this.engine = new AccessibilityCustomRulesAdEngine(context);
     }
 
     void reloadRules() {

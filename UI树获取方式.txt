@@ -34,51 +34,51 @@ Android UI 树获取方式说明
 ------------------------------------------------------------------------
 
 # 最简单，adb 自动抓取（自动选择唯一在线设备）
-python uiautomator2.py
+python3 uiautomator2.py
 
 # 指定输出文件路径
-python uiautomator2.py --output my_ui.xml
+python3 uiautomator2.py --output my_ui.xml
 
 # 多台设备时指定序列号
-python uiautomator2.py --serial <device-serial>
+python3 uiautomator2.py --serial <device-serial>
 
 # 开启详细日志
-python uiautomator2.py --verbose
+python3 uiautomator2.py --verbose
 
 ------------------------------------------------------------------------
 抓取方式选择（--method）
 ------------------------------------------------------------------------
 
 # adb 方式（默认，调用 uiautomator dump）
-python uiautomator2.py --method adb
+python3 uiautomator2.py --method adb
 
 # adb 方式 + 遇到 idle 错误时重试
-python uiautomator2.py --method adb --retry 3 --retry-interval 0.5
+python3 uiautomator2.py --method adb --retry 3 --retry-interval 0.5
 
 # uiautomator2 库方式
-python uiautomator2.py --method u2
+python3 uiautomator2.py --method u2
 
 # uiautomator2 库方式 + 关闭 idle 等待（直播/视频界面推荐）
-python uiautomator2.py --method u2-no-idle
+python3 uiautomator2.py --method u2-no-idle
 
 # appium 方式（自动拉起本地 Appium 服务）
-python uiautomator2.py --method appium
+python3 uiautomator2.py --method appium
 
 # auto 模式：adb 失败后自动切换 appium（推荐用于直播场景）
-python uiautomator2.py --method auto --retry 3
+python3 uiautomator2.py --method auto --retry 3
 
 ------------------------------------------------------------------------
 直播场景专用命令（动态内容/视频画面）
 ------------------------------------------------------------------------
 
 # 方式1：关闭 idle 等待，避免 "could not get idle state" 错误
-python uiautomator2.py --method u2-no-idle
+python3 uiautomator2.py --method u2-no-idle
 
 # 方式2：auto 模式 + 重试
-python uiautomator2.py --method auto --retry 3 --retry-interval 0.5
+python3 uiautomator2.py --method auto --retry 3 --retry-interval 0.5
 
 # 方式3：appium 方式 + 关闭 idle 等待
-python uiautomator2.py --method appium --appium-wait-for-idle-timeout 0
+python3 uiautomator2.py --method appium --appium-wait-for-idle-timeout 0
 
 ------------------------------------------------------------------------
 其他常用参数

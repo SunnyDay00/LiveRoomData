@@ -16,6 +16,12 @@ import android.widget.ScrollView;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.content.Intent;
+import android.provider.Settings;
+import android.net.Uri;
+import android.os.Build;
+import android.content.ComponentName;
+import android.text.TextUtils;
 
 /**
  * 模块设置界面（程序化构建 UI）。
@@ -54,6 +60,14 @@ public class ModuleSettingsActivity extends Activity {
             @Override
             public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
                 ModuleSettings.setGlobalFloatButtonEnabled(ModuleSettingsActivity.this, isChecked);
+                if (isChecked) {
+                    ensureOverlayPermissionIfNeeded();
+                    FloatServiceBootstrap.startFloatService(ModuleSettingsActivity.this);
+                    Toast.makeText(ModuleSettingsActivity.this, "已开启全局悬浮按钮", Toast.LENGTH_SHORT).show();
+                } else {
+                    FloatServiceBootstrap.stopFloatService(ModuleSettingsActivity.this);
+                    Toast.makeText(ModuleSettingsActivity.this, "已关闭全局悬浮按钮", Toast.LENGTH_SHORT).show();
+                }
             }
         });
 
@@ -64,6 +78,13 @@ public class ModuleSettingsActivity extends Activity {
             @Override
             public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
                 ModuleSettings.setFloatInfoWindowEnabled(ModuleSettingsActivity.this, isChecked);
+                if (ModuleSettings.getGlobalFloatButtonEnabled(ModuleSettings.appPrefs(ModuleSettingsActivity.this))
+                        && canDrawOverlaysCompat()) {
+                    FloatServiceBootstrap.startFloatService(ModuleSettingsActivity.this);
+                }
+                Toast.makeText(ModuleSettingsActivity.this,
+                        isChecked ? "已开启悬浮信息窗口" : "已关闭悬浮信息窗口",
+                        Toast.LENGTH_SHORT).show();
             }
         });
 
@@ -84,6 +105,16 @@ public class ModuleSettingsActivity extends Activity {
             @Override
             public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
                 ModuleSettings.setAccessibilityAdServiceEnabled(ModuleSettingsActivity.this, isChecked);
+                if (!isChecked) {
+                    Toast.makeText(ModuleSettingsActivity.this, "已切换为普通广告处理", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                if (isAccessibilityServiceEnabledCompat()) {
+                    Toast.makeText(ModuleSettingsActivity.this, "无障碍广告服务已启用", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                Toast.makeText(ModuleSettingsActivity.this, "请开启无障碍服务权限", Toast.LENGTH_LONG).show();
+                openAccessibilitySettings();
             }
         });
 
@@ -352,6 +383,68 @@ public class ModuleSettingsActivity extends Activity {
             return Math.max(0, Integer.parseInt(text.trim()));
         } catch (NumberFormatException e) {
             return defaultValue;
+        }
+    }
+
+    // ─────────────────────── 权限与设置跳转 ───────────────────────
+
+    private void ensureOverlayPermissionIfNeeded() {
+        if (!canDrawOverlaysCompat()) {
+            Toast.makeText(this, "请授予悬浮窗权限", Toast.LENGTH_LONG).show();
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                try {
+                    Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:" + getPackageName()));
+                    startActivity(intent);
+                } catch (Throwable e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
+
+    private boolean canDrawOverlaysCompat() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            return Settings.canDrawOverlays(this);
+        }
+        return true;
+    }
+
+    private boolean isAccessibilityServiceEnabledCompat() {
+        int accessibilityEnabled = 0;
+        final String service = getPackageName() + "/" + ShuangyuAccessibilityAdService.class.getCanonicalName();
+        try {
+            accessibilityEnabled = Settings.Secure.getInt(
+                    getApplicationContext().getContentResolver(),
+                    android.provider.Settings.Secure.ACCESSIBILITY_ENABLED);
+        } catch (Settings.SettingNotFoundException e) {
+            e.printStackTrace();
+        }
+        if (accessibilityEnabled == 1) {
+            String settingValue = Settings.Secure.getString(
+                    getApplicationContext().getContentResolver(),
+                    Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            if (settingValue != null) {
+                TextUtils.SimpleStringSplitter splitter = new TextUtils.SimpleStringSplitter(':');
+                splitter.setString(settingValue);
+                while (splitter.hasNext()) {
+                    String accessibilityService = splitter.next();
+                    if (accessibilityService.equalsIgnoreCase(service)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private void openAccessibilitySettings() {
+        try {
+            Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
+            startActivity(intent);
+        } catch (Throwable e) {
+            e.printStackTrace();
+            Toast.makeText(this, "无法打开无障碍设置", Toast.LENGTH_SHORT).show();
         }
     }
 }
