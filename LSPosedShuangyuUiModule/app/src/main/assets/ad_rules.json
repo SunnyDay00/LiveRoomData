@@ -89,5 +89,14 @@
     "actionText": "知道了",
     "actionResourceId": "com.sybl.voiceroom:id/tvIKnow",
     "actionClassName": ""
+  },
+  {
+    "name": "未正常退出重进房间弹窗",
+    "matchText": "未正常退出",
+    "matchResourceId": "com.sybl.voiceroom:id/tvContent",
+    "matchClassName": "",
+    "actionText": "取消",
+    "actionResourceId": "com.sybl.voiceroom:id/tvCancel",
+    "actionClassName": ""
   }
 ]

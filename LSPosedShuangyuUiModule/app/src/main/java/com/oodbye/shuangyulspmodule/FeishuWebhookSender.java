@@ -38,13 +38,45 @@ final class FeishuWebhookSender {
 
     // ─────────────────────── 公开 API ───────────────────────
 
-    /** 探测 Webhook 是否可用 */
+    /**
+     * 探测 Webhook 是否可用（不发送实际消息）。
+     * 只发送签名字段，不带 msg_type，飞书会拒绝但不投递消息。
+     * 通过错误码判断 URL 可达性和签名正确性。
+     */
     static SendResult probeWebhook(Context context, String webhookUrl, String signSecret) {
         if (TextUtils.isEmpty(webhookUrl)) {
             return new SendResult(false, "Webhook URL 为空");
         }
         try {
-            return doSendText(webhookUrl, signSecret, "[连接测试] 双鱼直播数据采集模块");
+            // 只发签名字段，不带 msg_type/content，飞书不会投递任何消息
+            JSONObject body = new JSONObject();
+            addSignIfNeeded(body, signSecret);
+            SendResult result = doPost(webhookUrl, body.toString());
+
+            String detail = result.detail;
+
+            // 签名错误 → 明确报错
+            if (detail.contains("sign match fail") || detail.contains("19021")) {
+                return new SendResult(false, "签名校验失败，请检查签名密钥");
+            }
+            // token 无效（URL 不对）
+            if (detail.contains("token is invalid") || detail.contains("19024")) {
+                return new SendResult(false, "Webhook URL 无效");
+            }
+
+            // 其他业务错误（如 msg_type 缺失/param invalid）说明 URL 可达 + 签名正确
+            if (detail.contains("msg_type") || detail.contains("param invalid")
+                    || detail.contains("19001") || detail.contains("19002")
+                    || detail.contains("19005")) {
+                return new SendResult(true, "连接正常（无消息发送）");
+            }
+
+            // HTTP 2xx 且业务码 = 0（不太可能但兜底）
+            if (result.success) {
+                return new SendResult(true, "连接正常（无消息发送）");
+            }
+
+            return result;
         } catch (Throwable e) {
             return new SendResult(false, "异常: " + e.getMessage());
         }

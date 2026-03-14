@@ -63,6 +63,7 @@ public class ShuangyuAccessibilityAdService extends AccessibilityService {
     public void onServiceConnected() {
         super.onServiceConnected();
         ModuleRunFileLogger.i(TAG, "无障碍服务已连接");
+        LevelDataBridge.registerReceiver(this);
         startProactiveAdCheck();
 
         // 检查是否需要恢复采集（服务重启后自动恢复）
@@ -572,35 +573,13 @@ public class ShuangyuAccessibilityAdService extends AccessibilityService {
     }
 
     /**
-     * 小幅度向下滚动（滑动屏幕 1/3 高度），适合在线列表等需要精细控制的场景。
-     * API 24+ 使用 GestureDescription，否则回退到 ACTION_SCROLL_FORWARD。
+     * 小幅度向下滚动，适合在线列表等需要精细控制的场景。
+     * 使用无障碍 ACTION_SCROLL_FORWARD 在可滚动控件上执行滚动。
      */
     boolean performSmallScrollDown() {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
-            try {
-                android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
-                int screenWidth = dm.widthPixels;
-                int screenHeight = dm.heightPixels;
-                int startX = screenWidth / 2;
-                int startY = screenHeight * 2 / 3;   // 从下方 2/3 处
-                int endY = screenHeight / 3;          // 滑到上方 1/3 处（向上滑 = 列表向下）
-                android.graphics.Path path = new android.graphics.Path();
-                path.moveTo(startX, startY);
-                path.lineTo(startX, endY);
-
-                android.accessibilityservice.GestureDescription.Builder builder =
-                        new android.accessibilityservice.GestureDescription.Builder();
-                builder.addStroke(
-                        new android.accessibilityservice.GestureDescription.StrokeDescription(
-                                path, 0, 300));
-                dispatchGesture(builder.build(), null, null);
-                return true;
-            } catch (Throwable e) {
-                Log.e(TAG, "performSmallScrollDown gesture error", e);
-            }
-        }
-        // 回退
-        return performScrollDownByResourceId(null);
+        boolean result = performScrollDownByResourceId(null);
+        ModuleRunFileLogger.i(TAG, "📜 performSmallScrollDown (accessibility) result=" + result);
+        return result;
     }
 
     /** 执行全局返回。 */

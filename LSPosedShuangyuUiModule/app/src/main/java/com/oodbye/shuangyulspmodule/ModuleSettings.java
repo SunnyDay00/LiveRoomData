@@ -380,6 +380,10 @@ final class ModuleSettings {
     static final String ACTION_CYCLE_COMPLETE_NOTICE = MODULE_PACKAGE + ".ACTION_CYCLE_COMPLETE_NOTICE";
     static final String ACTION_CYCLE_LIMIT_FINISHED = MODULE_PACKAGE + ".ACTION_CYCLE_LIMIT_FINISHED";
     static final String ACTION_AI_ANALYSIS_REQUEST = MODULE_PACKAGE + ".ACTION_AI_ANALYSIS_REQUEST";
+    static final String ACTION_LEVEL_DATA_REPORT = MODULE_PACKAGE + ".ACTION_LEVEL_DATA_REPORT";
+
+    // Intent Extras (Level Data)
+    static final String EXTRA_LEVEL_DATA_JSON = "level_data_json";
 
     // Intent Extras
     static final String EXTRA_ENGINE_STATUS = "engine_status";

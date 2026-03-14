@@ -512,6 +512,31 @@ final class LiveRoomTaskScriptRunner {
             // 跳过空昵称
             if (TextUtils.isEmpty(nick)) continue;
 
+            // 跳过低于等级要求的用户
+            int minWealth = ModuleSettings.getMinWealthLevel(prefs);
+            int minCharm = ModuleSettings.getMinCharmLevel(prefs);
+            if (minWealth > 0 || minCharm > 0) {
+                LevelDataBridge.LevelInfo lvl =
+                        LevelDataBridge.readLevelEntry(a11y, uid);
+                if (lvl != null) {
+                    if (minWealth > 0 && lvl.wealthLevel >= 0
+                            && lvl.wealthLevel < minWealth) {
+                        ModuleRunFileLogger.i(TAG, "⏭️ 跳过低财富等级: " + nick
+                                + " (财富=" + lvl.wealthLevel + " < " + minWealth + ")");
+                        if (!TextUtils.isEmpty(uid)) collectedUserIds.add(uid);
+                        continue;
+                    }
+                    if (minCharm > 0 && lvl.charmLevel >= 0
+                            && lvl.charmLevel < minCharm) {
+                        ModuleRunFileLogger.i(TAG, "⏭️ 跳过低魅力等级: " + nick
+                                + " (魅力=" + lvl.charmLevel + " < " + minCharm + ")");
+                        if (!TextUtils.isEmpty(uid)) collectedUserIds.add(uid);
+                        continue;
+                    }
+                }
+                // 注意: lvl == null 时不过滤（可能 DataBinding 还没渲染到该用户）
+            }
+
             targetIndex = i;
             targetNickname = nick;
             targetUserId = uid;
@@ -556,7 +581,34 @@ final class LiveRoomTaskScriptRunner {
                 ModuleRunFileLogger.i(TAG, "📝 采集: " + nick
                         + " 地区=" + location + " 年龄=" + age);
 
-                saveUserData(uid, nick, "", age, "", "", "",
+                // 从跨进程共享文件读取等级数据
+                String gender = "";
+                String wealthLevelStr = "";
+                String charmLevelStr = "";
+                LevelDataBridge.LevelInfo levelEntry =
+                        LevelDataBridge.readLevelEntry(a11y, uid);
+                if (levelEntry != null) {
+                    String rawGender = levelEntry.gender != null ? levelEntry.gender : "";
+                    if (rawGender.equals("male") || rawGender.contains("boy")
+                            || rawGender.equals("resId:1")) {
+                        gender = "男";
+                    } else if (rawGender.equals("female") || rawGender.contains("girl")
+                            || rawGender.equals("resId:2")) {
+                        gender = "女";
+                    }
+                    wealthLevelStr = levelEntry.wealthLevel >= 0
+                            ? String.valueOf(levelEntry.wealthLevel) : "";
+                    charmLevelStr = levelEntry.charmLevel >= 0
+                            ? String.valueOf(levelEntry.charmLevel) : "";
+                    ModuleRunFileLogger.i(TAG, "📊 等级数据: gender=" + gender
+                            + " wealth=" + wealthLevelStr
+                            + " charm=" + charmLevelStr);
+                } else {
+                    ModuleRunFileLogger.w(TAG, "⚠️ 未找到用户等级数据: " + uid);
+                }
+
+                saveUserData(uid, nick, gender, age,
+                        wealthLevelStr, charmLevelStr, "",
                         location, roomName, roomId);
 
                 // 返回房间（关闭用户详情）
@@ -690,25 +742,39 @@ final class LiveRoomTaskScriptRunner {
             }
             ModuleRunFileLogger.i(TAG, "💾 已采集 #" + totalCollected + ": "
                     + userName + " (ID:" + userId + ") 房间:" + roomName);
-            sendToFeishu(userId, userName, age, location, roomName, roomId);
+            sendToFeishu(userId, userName, gender, age,
+                    wealthLevel, charmLevel, followers,
+                    location, roomName, roomId);
         } else {
             ModuleRunFileLogger.e(TAG, "❌ CSV 保存失败: " + userName);
         }
     }
 
-    private void sendToFeishu(String userId, String userName, String age,
-                               String location, String roomName, String roomId) {
+    private void sendToFeishu(String userId, String userName, String gender,
+                               String age, String wealthLevel, String charmLevel,
+                               String followers, String location,
+                               String roomName, String roomId) {
         SharedPreferences prefs = ModuleSettings.appPrefs(a11y);
         if (!ModuleSettings.getFeishuPushEnabled(prefs)) return;
         final String webhookUrl = ModuleSettings.getFeishuWebhookUrl(prefs);
         final String signSecret = ModuleSettings.getFeishuSignSecret(prefs);
         if (TextUtils.isEmpty(webhookUrl)) return;
 
-        final String text = "昵称: " + safeTrim(userName) + "\n"
-                + "ID: " + safeTrim(userId) + "\n"
+        java.text.SimpleDateFormat sdf =
+                new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US);
+        String timeStr = sdf.format(new java.util.Date());
+
+        final String text = "时间: " + timeStr + "\n"
+                + "用户ID: " + safeTrim(userId) + "\n"
+                + "用户昵称: " + safeTrim(userName) + "\n"
+                + "性别: " + safeTrim(gender) + "\n"
                 + "年龄: " + safeTrim(age) + "\n"
+                + "财富等级: " + safeTrim(wealthLevel) + "\n"
+                + "魅力等级: " + safeTrim(charmLevel) + "\n"
+                + "粉丝数: " + safeTrim(followers) + "\n"
                 + "地区: " + safeTrim(location) + "\n"
-                + "房间: " + safeTrim(roomName) + " (" + safeTrim(roomId) + ")";
+                + "所在房间: " + safeTrim(roomName) + "\n"
+                + "所在房间ID: " + safeTrim(roomId);
         new Thread(new Runnable() {
             @Override
             public void run() {

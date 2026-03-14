@@ -46,6 +46,385 @@ public class ShuangyuHookEntry implements IXposedHookLoadPackage {
         ModuleRunFileLogger.i(TAG, "模块加载到进程: " + lpparam.packageName);
 
         hookActivityLifecycle(lpparam);
+        // hookImageViewSetDrawable(lpparam); // 调试用侦查 hook，已完成使命，关闭以减少日志噪音
+        // hookImageLoaderSetIcon 延迟到 Activity.onCreate 后调用（类还没加载）
+    }
+
+    private volatile boolean sImageLoaderHooked = false;
+
+    // ─────────────────────── setImageDrawable Hook（侦查等级数据来源）───────────────────────
+
+    private void hookImageViewSetDrawable(final XC_LoadPackage.LoadPackageParam lpparam) {
+        try {
+            XposedHelpers.findAndHookMethod(
+                    android.widget.ImageView.class,
+                    "setImageDrawable",
+                    android.graphics.drawable.Drawable.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                android.widget.ImageView iv = (android.widget.ImageView) param.thisObject;
+                                int viewId = iv.getId();
+                                if (viewId == android.view.View.NO_ID) return;
+                                String idName = "";
+                                try {
+                                    idName = iv.getResources().getResourceEntryName(viewId);
+                                } catch (Throwable ignore) { return; }
+
+                                if (!"iv_wealth".equals(idName) && !"iv_charm".equals(idName)) return;
+
+                                // 打印调用栈
+                                StringBuilder sb = new StringBuilder();
+                                sb.append("🔎 setImageDrawable 拦截: id=").append(idName);
+                                android.graphics.drawable.Drawable d = (android.graphics.drawable.Drawable) param.args[0];
+                                if (d != null) {
+                                    sb.append(" drawable=").append(d.getClass().getName());
+                                    if (d instanceof android.graphics.drawable.BitmapDrawable) {
+                                        android.graphics.Bitmap bmp = ((android.graphics.drawable.BitmapDrawable) d).getBitmap();
+                                        if (bmp != null) sb.append(" ").append(bmp.getWidth()).append("x").append(bmp.getHeight());
+                                    }
+                                }
+
+                                // 调用栈（只打印目标应用包的帧）
+                                sb.append("\n  调用栈:");
+                                StackTraceElement[] stack = Thread.currentThread().getStackTrace();
+                                int printed = 0;
+                                for (StackTraceElement e : stack) {
+                                    String cls = e.getClassName();
+                                    if (cls.contains("sybl") || cls.contains("voiceroom")
+                                            || cls.contains("shuangyu") || cls.contains("oodbye")) {
+                                        sb.append("\n    → ").append(cls).append(".")
+                                          .append(e.getMethodName()).append("(").append(e.getLineNumber()).append(")");
+                                        printed++;
+                                    }
+                                    if (printed >= 15) break;
+                                }
+
+                                ModuleRunFileLogger.i(TAG, sb.toString());
+                            } catch (Throwable ignore) {}
+                        }
+                    });
+            ModuleRunFileLogger.i(TAG, "🔎 ImageView.setImageDrawable Hook 已安装");
+        } catch (Throwable e) {
+            ModuleRunFileLogger.e(TAG, "hookImageViewSetDrawable 失败", e);
+        }
+    }
+
+    // 存储收集到的等级数据 (userId → LevelEntry)
+    private static volatile boolean sCardFieldsDumped = false;
+    private static final Map<String, LevelEntry> sLevelDataMap = new java.util.concurrent.ConcurrentHashMap<>();
+
+    static class LevelEntry {
+        String userId;
+        String nickName;
+        int wealthLevel;
+        int charmLevel;
+        String wealthImg;
+        String charmImg;
+        String gender; // "male" / "female" / "unknown"
+        int genderResId;
+        long timestamp;
+    }
+
+    /** 查询指定用户的等级数据（从 DataBinding hook 采集） */
+    static LevelEntry getLevelData(String userId) {
+        if (userId == null) return null;
+        // 尝试直接匹配
+        LevelEntry entry = sLevelDataMap.get(userId);
+        if (entry != null) return entry;
+        // userId 可能带 "ID:" 前缀，去掉后再试
+        String cleanId = userId.replace("ID:", "").trim();
+        return sLevelDataMap.get(cleanId);
+    }
+
+    private void hookImageLoaderSetIcon(final XC_LoadPackage.LoadPackageParam lpparam) {
+        try {
+            Class<?> bindingCls = XposedHelpers.findClass(
+                    "com.sybl.voiceroom.databinding.ItemRoomOnlineUserListBindingImpl", lpparam.classLoader);
+
+            XposedBridge.hookAllMethods(bindingCls, "executeBindings", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    try {
+                        Object binding = param.thisObject;
+
+                        // 在整个类层次中找 mViewModel 字段
+                        Object viewModel = null;
+                        Class<?> cls = binding.getClass();
+                        while (cls != null && !cls.getName().equals("java.lang.Object")) {
+                            try {
+                                java.lang.reflect.Field vmField = cls.getDeclaredField("mViewModel");
+                                vmField.setAccessible(true);
+                                viewModel = vmField.get(binding);
+                                if (viewModel != null) break;
+                            } catch (NoSuchFieldException ignore) {}
+                            cls = cls.getSuperclass();
+                        }
+                        if (viewModel == null) return;
+
+                        // 读取 ObservableField 值
+                        String userId = getObservableFieldValue(viewModel, "userId");
+                        if (userId == null || userId.isEmpty()) return;
+
+                        String nickName = getObservableFieldValue(viewModel, "nickName");
+                        String wealthImg = getObservableFieldValue(viewModel, "wealthImg");
+                        String charmImg = getObservableFieldValue(viewModel, "charmImg");
+                        String genderStr = getObservableFieldValue(viewModel, "gender");
+
+                        LevelEntry entry = new LevelEntry();
+                        entry.userId = userId;
+                        entry.nickName = nickName != null ? nickName : "";
+                        entry.wealthImg = wealthImg != null ? wealthImg : "";
+                        entry.charmImg = charmImg != null ? charmImg : "";
+                        entry.wealthLevel = parseLevelFromUrl(wealthImg);
+                        entry.charmLevel = parseLevelFromUrl(charmImg);
+                        entry.timestamp = System.currentTimeMillis();
+
+                        // 解析性别资源ID
+                        if (genderStr != null && !genderStr.isEmpty()) {
+                            try {
+                                entry.genderResId = Integer.parseInt(genderStr);
+                                // 尝试通过 View 的 context 解析资源名
+                                Object rootView = XposedHelpers.getObjectField(binding, "mRoot");
+                                if (rootView instanceof View) {
+                                    String resName = ((View) rootView).getResources().getResourceEntryName(entry.genderResId);
+                                    String rn = resName != null ? resName.toLowerCase() : "";
+                                    if (rn.contains("boy") || (rn.contains("male") && !rn.contains("female"))) {
+                                        entry.gender = "male";
+                                    } else if (rn.contains("girl") || rn.contains("female")) {
+                                        entry.gender = "female";
+                                    } else {
+                                        entry.gender = resName;
+                                    }
+                                } else {
+                                    entry.gender = "resId:" + genderStr;
+                                }
+                            } catch (Throwable e) {
+                                entry.gender = "resId:" + genderStr;
+                            }
+                        } else {
+                            entry.gender = "unknown";
+                        }
+
+                        sLevelDataMap.put(userId, entry);
+
+                        // 通过广播发送等级数据到模块进程
+                        try {
+                            Object rootView = XposedHelpers.getObjectField(binding, "mRoot");
+                            if (rootView instanceof View) {
+                                LevelDataBridge.broadcastEntry(
+                                        ((View) rootView).getContext(),
+                                        userId, entry.nickName,
+                                        entry.wealthLevel, entry.charmLevel,
+                                        entry.wealthImg, entry.charmImg,
+                                        entry.gender, entry.genderResId);
+                            }
+                        } catch (Throwable broadcastErr) {
+                            // 忽略广播失败
+                        }
+                    } catch (Throwable ignore) {}
+                }
+            });
+            ModuleRunFileLogger.i(TAG, "📊 等级采集 Hook 已安装 (在线榜 executeBindings)");
+        } catch (Throwable e) {
+            ModuleRunFileLogger.e(TAG, "hookDataBinding 失败: " + e.getMessage());
+        }
+
+        // 用户名片弹窗 Hook（点击用户后打开的详情卡片）
+        try {
+            Class<?> cardBindingCls = XposedHelpers.findClass(
+                    "com.sybl.voiceroom.databinding.DialogFragmentUserCardBindingImpl", lpparam.classLoader);
+
+            XposedBridge.hookAllMethods(cardBindingCls, "executeBindings", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    try {
+                        Object binding = param.thisObject;
+
+                        // 遍历类层次找 ViewModel（可能叫 mViewModel 或其他名字）
+                        Object viewModel = null;
+                        String vmFieldName = "";
+                        Class<?> cls = binding.getClass();
+                        while (cls != null && !cls.getName().equals("java.lang.Object")) {
+                            for (java.lang.reflect.Field f : cls.getDeclaredFields()) {
+                                String fn = f.getName();
+                                // 优先匹配 mViewModel, 也尝试其他可能包含用户数据的字段
+                                if (fn.equals("mViewModel") || fn.toLowerCase().contains("viewmodel")
+                                        || fn.toLowerCase().contains("usercard")
+                                        || fn.toLowerCase().contains("muser")) {
+                                    f.setAccessible(true);
+                                    Object val = f.get(binding);
+                                    if (val != null) {
+                                        viewModel = val;
+                                        vmFieldName = fn;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (viewModel != null) break;
+                            cls = cls.getSuperclass();
+                        }
+
+                        if (viewModel == null) {
+                            // 打印所有字段帮助诊断（仅首次）
+                            if (!sCardFieldsDumped) {
+                                sCardFieldsDumped = true;
+                                StringBuilder sb = new StringBuilder("📊 UserCard 字段列表: ");
+                                cls = binding.getClass();
+                                while (cls != null && !cls.getName().equals("java.lang.Object")) {
+                                    for (java.lang.reflect.Field f : cls.getDeclaredFields()) {
+                                        sb.append(f.getName()).append("(").append(f.getType().getSimpleName()).append("), ");
+                                    }
+                                    cls = cls.getSuperclass();
+                                }
+                                ModuleRunFileLogger.i(TAG, sb.toString());
+                            }
+                            return;
+                        }
+
+                        String userId = getObservableFieldValue(viewModel, "userId");
+                        if (userId == null || userId.isEmpty()) {
+                            // 也尝试 uid 字段名
+                            userId = getObservableFieldValue(viewModel, "uid");
+                        }
+                        if (userId == null || userId.isEmpty()) return;
+
+                        // 防止重复广播同一用户（2秒内）
+                        LevelEntry existing = sLevelDataMap.get(userId);
+                        if (existing != null && (System.currentTimeMillis() - existing.timestamp) < 2000) {
+                            return;
+                        }
+
+                        String nickName = getObservableFieldValue(viewModel, "nickName");
+                        String wealthImg = getObservableFieldValue(viewModel, "wealthImg");
+                        String charmImg = getObservableFieldValue(viewModel, "charmImg");
+                        String genderStr = getObservableFieldValue(viewModel, "gender");
+
+                        LevelEntry entry = new LevelEntry();
+                        entry.userId = userId;
+                        entry.nickName = nickName != null ? nickName : "";
+                        entry.wealthImg = wealthImg != null ? wealthImg : "";
+                        entry.charmImg = charmImg != null ? charmImg : "";
+                        entry.wealthLevel = parseLevelFromUrl(wealthImg);
+                        entry.charmLevel = parseLevelFromUrl(charmImg);
+                        entry.timestamp = System.currentTimeMillis();
+
+                        // 解析性别
+                        if (genderStr != null && !genderStr.isEmpty()) {
+                            try {
+                                entry.genderResId = Integer.parseInt(genderStr);
+                                Object rootView = XposedHelpers.getObjectField(binding, "mRoot");
+                                if (rootView instanceof View) {
+                                    String resName = ((View) rootView).getResources().getResourceEntryName(entry.genderResId);
+                                    String rn = resName != null ? resName.toLowerCase() : "";
+                                    if (rn.contains("boy") || (rn.contains("male") && !rn.contains("female"))) {
+                                        entry.gender = "male";
+                                    } else if (rn.contains("girl") || rn.contains("female")) {
+                                        entry.gender = "female";
+                                    } else {
+                                        entry.gender = resName;
+                                    }
+                                } else {
+                                    entry.gender = "resId:" + genderStr;
+                                }
+                            } catch (Throwable e) {
+                                entry.gender = "resId:" + genderStr;
+                            }
+                        } else {
+                            entry.gender = "unknown";
+                        }
+
+                        sLevelDataMap.put(userId, entry);
+
+                        // 广播到模块进程
+                        try {
+                            Object rootView = XposedHelpers.getObjectField(binding, "mRoot");
+                            if (rootView instanceof View) {
+                                LevelDataBridge.broadcastEntry(
+                                        ((View) rootView).getContext(),
+                                        userId, entry.nickName,
+                                        entry.wealthLevel, entry.charmLevel,
+                                        entry.wealthImg, entry.charmImg,
+                                        entry.gender, entry.genderResId);
+                            }
+                        } catch (Throwable broadcastErr) {
+                            // 忽略
+                        }
+                    } catch (Throwable ignore) {}
+                }
+            });
+            ModuleRunFileLogger.i(TAG, "📊 等级采集 Hook 已安装 (用户名片 executeBindings)");
+        } catch (Throwable e) {
+            ModuleRunFileLogger.e(TAG, "hookUserCardBinding 失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 从 ViewModel 的 ObservableField 字段中读取实际值
+     */
+    private static String getObservableFieldValue(Object viewModel, String fieldName) {
+        try {
+            java.lang.reflect.Field f = viewModel.getClass().getDeclaredField(fieldName);
+            f.setAccessible(true);
+            Object observableField = f.get(viewModel);
+            if (observableField == null) return null;
+            java.lang.reflect.Method getMethod = observableField.getClass().getMethod("get");
+            Object val = getMethod.invoke(observableField);
+            return val != null ? val.toString() : null;
+        } catch (Throwable e) {
+            return null;
+        }
+    }
+
+    /**
+     * 从等级图片 URL 中解析等级数字
+     * URL格式: https://res-eo.shuangyuxingqiu.com/等级/财富/55.png → 55
+     */
+    private static int parseLevelFromUrl(String url) {
+        if (url == null || url.isEmpty()) return -1;
+        try {
+            String fileName = url.substring(url.lastIndexOf('/') + 1); // "55.png"
+            String levelStr = fileName.replace(".png", "").replace(".jpg", ""); // "55"
+            return Integer.parseInt(levelStr);
+        } catch (Throwable e) {
+            return -1;
+        }
+    }
+
+    /**
+     * 收集当前缓存的等级数据，发送广播回传
+     */
+    private void broadcastLevelData(Context context, long seq) {
+        try {
+            org.json.JSONArray jsonArray = new org.json.JSONArray();
+            for (LevelEntry entry : sLevelDataMap.values()) {
+                org.json.JSONObject obj = new org.json.JSONObject();
+                obj.put("userId", entry.userId);
+                obj.put("nickName", entry.nickName);
+                obj.put("wealthLevel", entry.wealthLevel);
+                obj.put("charmLevel", entry.charmLevel);
+                obj.put("wealthImg", entry.wealthImg);
+                obj.put("charmImg", entry.charmImg);
+                obj.put("gender", entry.gender);
+                obj.put("genderResId", entry.genderResId);
+                obj.put("timestamp", entry.timestamp);
+                jsonArray.put(obj);
+            }
+            String json = jsonArray.toString();
+            ModuleRunFileLogger.i(TAG, "📊 LEVEL_DATA 收集到 " + sLevelDataMap.size() + " 条等级数据");
+            ModuleRunFileLogger.i(TAG, "📊 LEVEL_JSON: " + json);
+
+            // 发送广播
+            Intent intent = new Intent(ModuleSettings.ACTION_LEVEL_DATA_REPORT);
+            intent.setPackage(ModuleSettings.MODULE_PACKAGE);
+            intent.putExtra(ModuleSettings.EXTRA_LEVEL_DATA_JSON, json);
+            intent.putExtra(ModuleSettings.EXTRA_ENGINE_COMMAND_SEQ, seq);
+            context.sendBroadcast(intent);
+            ModuleRunFileLogger.i(TAG, "📊 等级数据广播已发送");
+        } catch (Throwable e) {
+            ModuleRunFileLogger.e(TAG, "broadcastLevelData 失败", e);
+        }
     }
 
     // ─────────────────────── Activity 生命周期 Hook ───────────────────────
@@ -62,6 +441,12 @@ public class ShuangyuHookEntry implements IXposedHookLoadPackage {
                             ModuleRunFileLogger.i(TAG, "Activity.onCreate: " + actName);
 
                             ensureCommandReceiver(activity);
+
+                            // 延迟 Hook ImageLoader（此时应用类已加载）
+                            if (!sImageLoaderHooked) {
+                                sImageLoaderHooked = true;
+                                hookImageLoaderSetIcon(lpparam);
+                            }
                             UiSession session = new UiSession(activity);
                             synchronized (sUiSessions) {
                                 sUiSessions.put(activity, session);
@@ -164,7 +549,9 @@ public class ShuangyuHookEntry implements IXposedHookLoadPackage {
         } else if (ModuleSettings.ENGINE_CMD_STOP.equals(command)) {
             session.stopEngine(seq);
         } else if ("dump_levels".equals(command)) {
-            // 遍历所有活跃 Activity 的 View 树
+            // 广播收集到的等级数据
+            broadcastLevelData(session.activity, seq);
+            // 也保留 View 树 dump（调试用）
             synchronized (sUiSessions) {
                 for (java.util.Map.Entry<Activity, UiSession> entry : sUiSessions.entrySet()) {
                     Activity act = entry.getKey();
