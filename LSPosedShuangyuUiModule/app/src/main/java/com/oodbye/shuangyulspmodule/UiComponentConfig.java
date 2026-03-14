@@ -133,8 +133,10 @@ final class UiComponentConfig {
     /** 用户卡片列表 RecyclerView (与房间列表共用同一 resource-id) */
     static final String USER_LIST_RECYCLER_ID = "com.sybl.voiceroom:id/mRecyclerView";
 
-    /** 用户 ID */
+    /** 用户 ID (普通用户) */
     static final String USER_CODE_ID = "com.sybl.voiceroom:id/tv_user_code";
+    /** 用户 ID (高级/靓号用户，替代 tv_user_code) */
+    static final String USER_NICE_NUM_ID = "com.sybl.voiceroom:id/tv_nice_num";
     /** 用户昵称 */
     static final String USER_NICKNAME_ID = "com.sybl.voiceroom:id/tv_nickname";
     /** 用户昵称容器 */

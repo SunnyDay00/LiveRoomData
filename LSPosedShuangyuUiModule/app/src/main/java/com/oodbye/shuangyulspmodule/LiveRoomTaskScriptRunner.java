@@ -275,7 +275,7 @@ final class LiveRoomTaskScriptRunner {
     private void processRoomByIndex(final List<String> roomNames, final int index,
                                      final RankTab rankTab, final Runnable onAllDone) {
         if (shouldStop() || index >= roomNames.size()) {
-            tryScrollForMoreRooms(rankTab, onAllDone);
+            tryScrollForMoreRooms(rankTab, 0, onAllDone);
             return;
         }
 
@@ -366,10 +366,25 @@ final class LiveRoomTaskScriptRunner {
         });
     }
 
-    private void tryScrollForMoreRooms(final RankTab rankTab, final Runnable onAllDone) {
+    private void tryScrollForMoreRooms(final RankTab rankTab, final int prevRetry,
+                                        final Runnable onAllDone) {
         if (shouldStop()) { onAllDone.run(); return; }
+
+        final int CONFIRM_RETRIES = 2;
+        if (prevRetry >= CONFIRM_RETRIES) {
+            ModuleRunFileLogger.i(TAG, "📜 房间列表已到底（连续 " + prevRetry
+                    + " 次滑动无变化），完成当前榜单");
+            onAllDone.run();
+            return;
+        }
+
+        // 记录滑动前的房间名列表
+        final List<String> beforeNames = a11y.getTextListByResourceId(
+                UiComponentConfig.ROOM_CARD_NAME_ID);
+
         bridge.updateStatus("滚动加载更多房间");
-        ModuleRunFileLogger.i(TAG, "📜 滚动加载更多房间");
+        ModuleRunFileLogger.i(TAG, "📜 滚动加载更多房间" + (prevRetry > 0
+                ? " (确认到底 " + prevRetry + "/" + CONFIRM_RETRIES + ")" : ""));
         a11y.performGestureSwipeDown();
 
         handler.postDelayed(new Runnable() {
@@ -377,20 +392,30 @@ final class LiveRoomTaskScriptRunner {
             public void run() {
                 List<String> names = a11y.getTextListByResourceId(
                         UiComponentConfig.ROOM_CARD_NAME_ID);
-                List<String> unvisited = new ArrayList<>();
+                // 检查是否有新的未访问房间
+                boolean hasNew = false;
                 if (names != null) {
                     for (String name : names) {
                         if (!TextUtils.isEmpty(name) && !visitedRoomNames.contains(name)) {
-                            unvisited.add(name);
+                            hasNew = true;
+                            break;
                         }
                     }
                 }
-                if (unvisited.isEmpty()) {
-                    ModuleRunFileLogger.i(TAG, "📜 没有新的未访问房间，完成当前榜单");
-                    onAllDone.run();
-                } else {
-                    ModuleRunFileLogger.i(TAG, "📜 找到 " + unvisited.size() + " 个新房间");
+                if (hasNew) {
+                    ModuleRunFileLogger.i(TAG, "📜 找到新房间，继续采集");
                     processRoomByIndex(names, 0, rankTab, onAllDone);
+                } else {
+                    // 没有新房间，比较滑动前后列表是否变化
+                    boolean listChanged = !nicksEqual(beforeNames, names);
+                    if (listChanged) {
+                        ModuleRunFileLogger.i(TAG, "📜 房间列表有变化但无新房间，继续滑动");
+                        tryScrollForMoreRooms(rankTab, 0, onAllDone);
+                    } else {
+                        ModuleRunFileLogger.i(TAG, "📜 房间列表无变化，确认到底 ("
+                                + (prevRetry + 1) + "/" + CONFIRM_RETRIES + ")");
+                        tryScrollForMoreRooms(rankTab, prevRetry + 1, onAllDone);
+                    }
                 }
             }
         }, UiComponentConfig.SCROLL_WAIT_MS);
@@ -716,7 +741,7 @@ final class LiveRoomTaskScriptRunner {
 
         // prevRetry 表示连续"滑动后可见用户完全没变化"的次数
         // 达到 3 次确认后才认为真正到底
-        final int CONFIRM_RETRIES = 3;
+        final int CONFIRM_RETRIES = 2;
         if (prevRetry >= CONFIRM_RETRIES) {
             ModuleRunFileLogger.i(TAG, "📜 用户列表已到底（连续 " + prevRetry
                     + " 次滑动无变化），完成当前房间");

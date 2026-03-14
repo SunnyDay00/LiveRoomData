@@ -923,6 +923,15 @@ public class ShuangyuAccessibilityAdService extends AccessibilityService {
                     CharSequence text = codeNodes.get(0).getText();
                     userCode = text != null ? text.toString().trim() : "";
                 }
+                // 高级/靓号用户使用 tv_nice_num 替代 tv_user_code
+                if (TextUtils.isEmpty(userCode)) {
+                    List<AccessibilityNodeInfo> niceNodes =
+                            cardNode.findAccessibilityNodeInfosByViewId(UiComponentConfig.USER_NICE_NUM_ID);
+                    if (niceNodes != null && !niceNodes.isEmpty()) {
+                        CharSequence text = niceNodes.get(0).getText();
+                        userCode = text != null ? text.toString().trim() : "";
+                    }
+                }
 
                 List<AccessibilityNodeInfo> roleNodes =
                         cardNode.findAccessibilityNodeInfosByViewId(UiComponentConfig.USER_ROOM_ROLE_ICON_ID);
