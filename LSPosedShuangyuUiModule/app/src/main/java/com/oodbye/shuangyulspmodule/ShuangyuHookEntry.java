@@ -168,6 +168,7 @@ public class ShuangyuHookEntry implements IXposedHookLoadPackage {
                         if (userId == null || userId.isEmpty()) return;
 
                         String nickName = getObservableFieldValue(viewModel, "nickName");
+                        String userCode = getObservableFieldValue(viewModel, "userCode");
                         String wealthImg = getObservableFieldValue(viewModel, "wealthImg");
                         String charmImg = getObservableFieldValue(viewModel, "charmImg");
                         String genderStr = getObservableFieldValue(viewModel, "gender");
@@ -216,6 +217,7 @@ public class ShuangyuHookEntry implements IXposedHookLoadPackage {
                                 LevelDataBridge.broadcastEntry(
                                         ((View) rootView).getContext(),
                                         userId, entry.nickName,
+                                        userCode != null ? userCode : "",
                                         entry.wealthLevel, entry.charmLevel,
                                         entry.wealthImg, entry.charmImg,
                                         entry.gender, entry.genderResId);

@@ -370,7 +370,7 @@ final class LiveRoomTaskScriptRunner {
         if (shouldStop()) { onAllDone.run(); return; }
         bridge.updateStatus("滚动加载更多房间");
         ModuleRunFileLogger.i(TAG, "📜 滚动加载更多房间");
-        a11y.performScrollDownByResourceId(UiComponentConfig.ROOM_LIST_RECYCLER_ID);
+        a11y.performGestureSwipeDown();
 
         handler.postDelayed(new Runnable() {
             @Override
@@ -469,52 +469,58 @@ final class LiveRoomTaskScriptRunner {
             return;
         }
 
-        // 每次都重新读取最新的用户列表
-        List<String> nicknames = a11y.getTextListByResourceId(UiComponentConfig.USER_NICKNAME_ID);
-        List<String> userIds = a11y.getTextListByResourceId(UiComponentConfig.USER_CODE_ID);
+        // 结构化读取在线榜的用户卡片（从同一个 ViewGroup 中同时提取 nickname/userCode/isAdmin）
+        List<ShuangyuAccessibilityAdService.OnlineUserCard> userCards = a11y.getOnlineUserCards();
 
-        if (nicknames == null || nicknames.isEmpty()) {
-            ModuleRunFileLogger.i(TAG, "👥 在线榜无用户");
+        if (userCards == null || userCards.isEmpty()) {
+            ModuleRunFileLogger.i(TAG, "👥 在线榜无用户卡片");
             exitOnlineList(onDone);
             return;
         }
 
-        int count = nicknames.size();
-        ModuleRunFileLogger.i(TAG, "👥 当前可见 " + count + " 个用户");
+        int count = userCards.size();
+        ModuleRunFileLogger.i(TAG, "👥 当前可见 " + count + " 个用户卡片");
 
-        // 加载忽略列表
+        // 加载过滤设置
         SharedPreferences prefs = ModuleSettings.appPrefs(a11y);
         Set<String> ignoreIds = ModuleSettings.parseIgnoreUserIdSet(
                 ModuleSettings.getIgnoreUserIds(prefs));
+        int minWealth = ModuleSettings.getMinWealthLevel(prefs);
+        int minCharm = ModuleSettings.getMinCharmLevel(prefs);
 
-        // 查找第一个未采集的用户
-        int targetIndex = -1;
-        String targetNickname = null;
-        String targetUserId = null;
+        // 查找第一个未采集、未过滤的用户
+        ShuangyuAccessibilityAdService.OnlineUserCard targetCard = null;
 
         for (int i = 0; i < count; i++) {
-            String nick = nicknames.get(i);
-            String uid = (userIds != null && i < userIds.size()) ? userIds.get(i) : "";
+            ShuangyuAccessibilityAdService.OnlineUserCard card = userCards.get(i);
+            String nick = card.nickname;
+            String uid = card.userCode;  // 原始格式如 "ID:22222877"
+            String cleanUid = cleanUserId(uid);
+
+            // 生成唯一标识（优先用 cleanUid，没有的话用昵称）
+            String trackingKey = !TextUtils.isEmpty(cleanUid) ? cleanUid : nick;
 
             // 跳过已采集
-            if (!TextUtils.isEmpty(uid) && collectedUserIds.contains(uid)) continue;
-            // 跳过忽略用户
-            if (!TextUtils.isEmpty(uid) && ignoreIds.contains(uid)) {
+            if (collectedUserIds.contains(trackingKey)) continue;
+
+            // 跳过管理员/房主（卡片内检测到 iv_room_role）
+            if (card.isAdmin) {
+                ModuleRunFileLogger.i(TAG, "⏭️ 跳过管理员/房主: " + nick + " (" + uid + ")");
+                collectedUserIds.add(trackingKey);
+                continue;
+            }
+
+            // 跳过忽略用户（使用清理后的 ID 比较）
+            if (!TextUtils.isEmpty(cleanUid) && ignoreIds.contains(cleanUid)) {
                 ModuleRunFileLogger.i(TAG, "⏭️ 跳过忽略用户: " + nick + " (" + uid + ")");
+                collectedUserIds.add(trackingKey);
                 continue;
             }
-            // 跳过管理员/房主
-            if (a11y.isAdminUserAtIndex(i)) {
-                ModuleRunFileLogger.i(TAG, "⏭️ 跳过管理员/房主: " + nick);
-                if (!TextUtils.isEmpty(uid)) collectedUserIds.add(uid);
-                continue;
-            }
-            // 跳过空昵称
-            if (TextUtils.isEmpty(nick)) continue;
+
+            // 跳过空昵称或特殊用户
+            if (TextUtils.isEmpty(nick) || "神秘人".equals(nick)) continue;
 
             // 跳过低于等级要求的用户
-            int minWealth = ModuleSettings.getMinWealthLevel(prefs);
-            int minCharm = ModuleSettings.getMinCharmLevel(prefs);
             if (minWealth > 0 || minCharm > 0) {
                 LevelDataBridge.LevelInfo lvl =
                         LevelDataBridge.readLevelEntry(a11y, uid);
@@ -523,28 +529,26 @@ final class LiveRoomTaskScriptRunner {
                             && lvl.wealthLevel < minWealth) {
                         ModuleRunFileLogger.i(TAG, "⏭️ 跳过低财富等级: " + nick
                                 + " (财富=" + lvl.wealthLevel + " < " + minWealth + ")");
-                        if (!TextUtils.isEmpty(uid)) collectedUserIds.add(uid);
+                        collectedUserIds.add(trackingKey);
                         continue;
                     }
                     if (minCharm > 0 && lvl.charmLevel >= 0
                             && lvl.charmLevel < minCharm) {
                         ModuleRunFileLogger.i(TAG, "⏭️ 跳过低魅力等级: " + nick
                                 + " (魅力=" + lvl.charmLevel + " < " + minCharm + ")");
-                        if (!TextUtils.isEmpty(uid)) collectedUserIds.add(uid);
+                        collectedUserIds.add(trackingKey);
                         continue;
                     }
                 }
-                // 注意: lvl == null 时不过滤（可能 DataBinding 还没渲染到该用户）
+                // lvl == null 时不过滤（等级数据可能还没被 Hook 采集到）
             }
 
-            targetIndex = i;
-            targetNickname = nick;
-            targetUserId = uid;
+            targetCard = card;
             break;
         }
 
-        if (targetIndex < 0) {
-            // 当前可见用户全部已采集，尝试滚动加载更多
+        if (targetCard == null) {
+            // 当前可见用户全部已采集/过滤，尝试滚动加载更多
             ModuleRunFileLogger.i(TAG, "📜 当前用户全部已处理，尝试滚动加载更多 (重试 "
                     + scrollRetry + "/" + UiComponentConfig.NO_NEW_CONTENT_MAX_RETRIES + ")");
             tryScrollForMoreUsers(roomName, roomId, scrollRetry, onDone);
@@ -552,12 +556,33 @@ final class LiveRoomTaskScriptRunner {
         }
 
         // 找到目标用户，开始采集
-        final int idx = targetIndex;
-        final String nick = targetNickname;
-        final String uid = targetUserId;
+        final String nick = targetCard.nickname;
+        final String uid = targetCard.userCode;
+        final String finalTrackingKey = !TextUtils.isEmpty(cleanUserId(uid))
+                ? cleanUserId(uid) : nick;
+
+        // 通过 tv_nickname 定位用户在当前列表中的位置并点击
+        // （使用 tv_nickname 列表做匹配，因为它是稳定可见的）
+        List<String> currentNicks = a11y.getTextListByResourceId(UiComponentConfig.USER_NICKNAME_ID);
+        int clickIndex = -1;
+        if (currentNicks != null) {
+            for (int i = 0; i < currentNicks.size(); i++) {
+                if (nick.equals(currentNicks.get(i))) {
+                    clickIndex = i;
+                    break;
+                }
+            }
+        }
+        if (clickIndex < 0) {
+            ModuleRunFileLogger.w(TAG, "⚠️ 无法定位目标用户: " + nick + "，跳过");
+            collectedUserIds.add(finalTrackingKey);
+            collectNextUser(roomName, roomId, scrollRetry, onDone);
+            return;
+        }
+        final int idx = clickIndex;
 
         bridge.updateStatus("采集用户: " + nick);
-        ModuleRunFileLogger.i(TAG, "👤 点击用户: " + nick + " (ID:" + uid + ")");
+        ModuleRunFileLogger.i(TAG, "👤 点击用户: " + nick + " (" + uid + ")");
 
         boolean userClicked = a11y.clickNthNodeByResourceId(
                 UiComponentConfig.USER_NICKNAME_ID, idx);
@@ -585,8 +610,9 @@ final class LiveRoomTaskScriptRunner {
                 String gender = "";
                 String wealthLevelStr = "";
                 String charmLevelStr = "";
+                String detailCleanUid = cleanUserId(uid);
                 LevelDataBridge.LevelInfo levelEntry =
-                        LevelDataBridge.readLevelEntry(a11y, uid);
+                        LevelDataBridge.readLevelEntry(a11y, detailCleanUid);
                 if (levelEntry != null) {
                     String rawGender = levelEntry.gender != null ? levelEntry.gender : "";
                     if (rawGender.equals("male") || rawGender.contains("boy")
@@ -604,12 +630,13 @@ final class LiveRoomTaskScriptRunner {
                             + " wealth=" + wealthLevelStr
                             + " charm=" + charmLevelStr);
                 } else {
-                    ModuleRunFileLogger.w(TAG, "⚠️ 未找到用户等级数据: " + uid);
+                    ModuleRunFileLogger.w(TAG, "⚠️ 未找到用户等级数据: " + detailCleanUid);
                 }
 
-                saveUserData(uid, nick, gender, age,
+                saveUserData(detailCleanUid, nick, gender, age,
                         wealthLevelStr, charmLevelStr, "",
                         location, roomName, roomId);
+                collectedUserIds.add(finalTrackingKey);
 
                 // 返回房间（关闭用户详情）
                 a11y.performGlobalBack();
@@ -646,7 +673,7 @@ final class LiveRoomTaskScriptRunner {
             public void run() {
                 ModuleRunFileLogger.w(TAG, "⚠️ 用户详情未打开，跳过: " + nick);
                 // 标记为已访问避免死循环
-                if (!TextUtils.isEmpty(uid)) collectedUserIds.add(uid);
+                collectedUserIds.add(finalTrackingKey);
                 a11y.performGlobalBack();
                 handler.postDelayed(new Runnable() {
                     @Override
@@ -687,25 +714,39 @@ final class LiveRoomTaskScriptRunner {
             return;
         }
 
-        if (prevRetry >= UiComponentConfig.NO_NEW_CONTENT_MAX_RETRIES) {
-            ModuleRunFileLogger.i(TAG, "📜 用户列表无新内容（已重试 " + prevRetry + " 次），完成当前房间");
+        // prevRetry 表示连续"滑动后可见用户完全没变化"的次数
+        // 达到 3 次确认后才认为真正到底
+        final int CONFIRM_RETRIES = 3;
+        if (prevRetry >= CONFIRM_RETRIES) {
+            ModuleRunFileLogger.i(TAG, "📜 用户列表已到底（连续 " + prevRetry
+                    + " 次滑动无变化），完成当前房间");
             exitOnlineList(onDone);
             return;
         }
 
-        ModuleRunFileLogger.i(TAG, "📜 滑动加载更多用户 (第 " + (prevRetry + 1) + " 次)");
+        // 记录滑动前的可见用户昵称列表
+        final List<String> beforeNicks = a11y.getTextListByResourceId(
+                UiComponentConfig.USER_NICKNAME_ID);
+
+        ModuleRunFileLogger.i(TAG, "📜 滑动加载更多用户" + (prevRetry > 0
+                ? " (确认到底 " + prevRetry + "/" + CONFIRM_RETRIES + ")" : ""));
         a11y.performSmallScrollDown();
 
         handler.postDelayed(new Runnable() {
             @Override
             public void run() {
-                // 检查是否有新的未采集用户
-                List<String> userIds = a11y.getTextListByResourceId(
-                        UiComponentConfig.USER_CODE_ID);
+                // 检查滑动后的可见用户
+                List<ShuangyuAccessibilityAdService.OnlineUserCard> cards = a11y.getOnlineUserCards();
+
+                // 检查是否有新的可采集用户（非管理员且未采集）
                 boolean hasNew = false;
-                if (userIds != null) {
-                    for (String uid : userIds) {
-                        if (!TextUtils.isEmpty(uid) && !collectedUserIds.contains(uid)) {
+                if (cards != null) {
+                    for (ShuangyuAccessibilityAdService.OnlineUserCard card : cards) {
+                        if (card.isAdmin) continue;
+                        if ("神秘人".equals(card.nickname)) continue;
+                        String trackingKey = !TextUtils.isEmpty(cleanUserId(card.userCode))
+                                ? cleanUserId(card.userCode) : card.nickname;
+                        if (!collectedUserIds.contains(trackingKey)) {
                             hasNew = true;
                             break;
                         }
@@ -713,14 +754,41 @@ final class LiveRoomTaskScriptRunner {
                 }
 
                 if (hasNew) {
+                    // 发现新用户，继续采集
                     ModuleRunFileLogger.i(TAG, "📜 发现新用户，继续采集");
                     collectNextUser(roomName, roomId, 0, onDone);
                 } else {
-                    // 没有新用户，递增重试
-                    collectNextUser(roomName, roomId, prevRetry + 1, onDone);
+                    // 没有新用户，检查可见用户列表是否变化
+                    List<String> afterNicks = a11y.getTextListByResourceId(
+                            UiComponentConfig.USER_NICKNAME_ID);
+                    boolean listChanged = !nicksEqual(beforeNicks, afterNicks);
+
+                    if (listChanged) {
+                        // 列表有变化（可能滑过了一批管理员），继续滑动
+                        ModuleRunFileLogger.i(TAG, "📜 列表有变化但无新可采集用户，继续滑动");
+                        collectNextUser(roomName, roomId, 0, onDone);
+                    } else {
+                        // 列表完全没变化，进入确认到底阶段
+                        ModuleRunFileLogger.i(TAG, "📜 列表无变化，确认到底 ("
+                                + (prevRetry + 1) + "/" + CONFIRM_RETRIES + ")");
+                        collectNextUser(roomName, roomId, prevRetry + 1, onDone);
+                    }
                 }
             }
         }, UiComponentConfig.SCROLL_WAIT_MS);
+    }
+
+    /**
+     * 比较两个昵称列表是否相同（用于判断列表是否滑动了）。
+     */
+    private static boolean nicksEqual(List<String> a, List<String> b) {
+        if (a == null && b == null) return true;
+        if (a == null || b == null) return false;
+        if (a.size() != b.size()) return false;
+        for (int i = 0; i < a.size(); i++) {
+            if (!TextUtils.equals(a.get(i), b.get(i))) return false;
+        }
+        return true;
     }
 
     // ═══════════════════════ 保存数据 ═══════════════════════
@@ -754,6 +822,14 @@ final class LiveRoomTaskScriptRunner {
                                String age, String wealthLevel, String charmLevel,
                                String followers, String location,
                                String roomName, String roomId) {
+        // 关键字段校验：缺少用户 ID、财富等级、魅力等级时不发送
+        if (TextUtils.isEmpty(userId) || TextUtils.isEmpty(wealthLevel)
+                || TextUtils.isEmpty(charmLevel)) {
+            ModuleRunFileLogger.w(TAG, "⚠️ 飞书跳过: 关键数据缺失 (ID="
+                    + safeTrim(userId) + " 财富=" + safeTrim(wealthLevel)
+                    + " 魅力=" + safeTrim(charmLevel) + ") 用户: " + userName);
+            return;
+        }
         SharedPreferences prefs = ModuleSettings.appPrefs(a11y);
         if (!ModuleSettings.getFeishuPushEnabled(prefs)) return;
         final String webhookUrl = ModuleSettings.getFeishuWebhookUrl(prefs);
@@ -778,11 +854,29 @@ final class LiveRoomTaskScriptRunner {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                try {
-                    FeishuWebhookSender.doSendText(webhookUrl, signSecret, text);
-                } catch (Throwable e) {
-                    ModuleRunFileLogger.e(TAG, "飞书发送失败: " + e.getMessage());
+                final int MAX_RETRIES = 3;
+                for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+                    try {
+                        FeishuWebhookSender.SendResult result =
+                                FeishuWebhookSender.doSendText(webhookUrl, signSecret, text);
+                        if (result.success) {
+                            return; // 发送成功
+                        }
+                        ModuleRunFileLogger.w(TAG, "⚠️ 飞书发送失败 (第" + attempt + "次): "
+                                + result.detail);
+                    } catch (Throwable e) {
+                        ModuleRunFileLogger.w(TAG, "⚠️ 飞书发送异常 (第" + attempt + "次): "
+                                + e.getMessage());
+                    }
+                    if (attempt < MAX_RETRIES) {
+                        try {
+                            // 指数退避：3s, 6s, 12s
+                            Thread.sleep(3000L * (1L << (attempt - 1)));
+                        } catch (InterruptedException ignored) {}
+                    }
                 }
+                ModuleRunFileLogger.e(TAG, "❌ 飞书发送最终失败（已重试" + MAX_RETRIES + "次）: "
+                        + userName);
             }
         }).start();
     }
@@ -796,5 +890,13 @@ final class LiveRoomTaskScriptRunner {
     private static String safeTrim(String value) {
         if (value == null) return "";
         return value.trim();
+    }
+
+    /** 去掉 "ID:" 前缀，返回纯用户 ID。例如 "ID:23084913" → "23084913" */
+    private static String cleanUserId(String uid) {
+        if (uid == null) return "";
+        String cleaned = uid.trim();
+        if (cleaned.startsWith("ID:")) cleaned = cleaned.substring(3).trim();
+        return cleaned;
     }
 }

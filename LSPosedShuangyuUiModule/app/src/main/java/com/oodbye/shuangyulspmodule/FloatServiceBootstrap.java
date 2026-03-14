@@ -13,29 +13,16 @@ final class FloatServiceBootstrap {
     }
 
     static void startFloatService(Context context) {
-        startFloatService(context, -1, false);
+        // 悬浮按钮已由无障碍服务 TYPE_ACCESSIBILITY_OVERLAY 管理，
+        // 不再需要启动 GlobalFloatService
     }
 
     static void startFloatService(Context context, int displayId, boolean requestRestart) {
-        try {
-            Intent intent = new Intent(context, GlobalFloatService.class);
-            if (displayId >= 0) {
-                intent.putExtra(ModuleSettings.EXTRA_TARGET_DISPLAY_ID, displayId);
-            }
-            if (requestRestart) {
-                intent.putExtra(ModuleSettings.EXTRA_REQUEST_RESTART_TARGET_APP, true);
-            }
-            context.startForegroundService(intent);
-        } catch (Throwable ignore) {
-            try {
-                Intent intent = new Intent(context, GlobalFloatService.class);
-                context.startService(intent);
-            } catch (Throwable ignore2) {
-            }
-        }
+        // 已禁用
     }
 
     static void stopFloatService(Context context) {
+        // 停止旧服务（如果还在运行）
         try {
             Intent intent = new Intent(context, GlobalFloatService.class);
             context.stopService(intent);

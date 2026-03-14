@@ -8,6 +8,7 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.Typeface;
@@ -62,7 +63,7 @@ public class GlobalFloatService extends Service {
     private boolean isDragging;
     private int currentDisplayId = -1;
     private Handler keepAliveHandler;
-    private static final long KEEP_ALIVE_INTERVAL_MS = 5000L;
+    private static final long KEEP_ALIVE_INTERVAL_MS = 3000L;
 
     @Override
     public void onCreate() {
@@ -70,8 +71,8 @@ public class GlobalFloatService extends Service {
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         createNotificationChannel();
         startForeground(NOTIFICATION_ID, buildNotification());
-        addFloatButton();
-        startKeepAlive();
+        // 悬浮按钮已由无障碍服务使用 TYPE_ACCESSIBILITY_OVERLAY 创建，
+        // GlobalFloatService 不再创建自己的悬浮按钮
     }
 
     @Override
@@ -93,6 +94,27 @@ public class GlobalFloatService extends Service {
         removeFloatButton();
         removeInfoWindow();
         super.onDestroy();
+    }
+
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        Log.w(TAG, "onTaskRemoved: 服务被清理，尝试自动重启");
+        // 被用户滑动清除后台时自动重启服务
+        try {
+            Intent restartIntent = new Intent(this, GlobalFloatService.class);
+            startForegroundService(restartIntent);
+        } catch (Throwable e) {
+            Log.e(TAG, "自动重启失败", e);
+        }
+        super.onTaskRemoved(rootIntent);
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        Log.i(TAG, "onConfigurationChanged: 屏幕配置变更，重建悬浮按钮");
+        // 屏幕旋转、多屏连接/断开、分屏模式切换时重建悬浮按钮
+        recreateFloatButton();
     }
 
     // ─────────────────────── 通知栏 ───────────────────────
@@ -161,11 +183,35 @@ public class GlobalFloatService extends Service {
     private final Runnable keepAliveRunnable = new Runnable() {
         @Override
         public void run() {
-            // 检查悬浮按钮是否仍然存在
-            if (floatButton == null || !floatButton.isAttachedToWindow()) {
-                Log.w(TAG, "悬浮按钮丢失，重新创建");
+            // 检查悬浮按钮是否仍然存在并可见
+            boolean needRecreate = false;
+            if (floatButton == null) {
+                Log.w(TAG, "悬浮按钮为 null，重新创建");
+                needRecreate = true;
+            } else if (!floatButton.isAttachedToWindow()) {
+                Log.w(TAG, "悬浮按钮未附加到窗口，重新创建");
+                needRecreate = true;
+            } else if (!floatButton.isShown()) {
+                Log.w(TAG, "悬浮按钮不可见（可能被多屏切换隐藏），重新创建");
+                needRecreate = true;
+            } else {
+                // 额外验证：尝试更新一下 layout，如果抛异常说明视图已失效
+                try {
+                    WindowManager.LayoutParams lp =
+                            (WindowManager.LayoutParams) floatButton.getLayoutParams();
+                    if (lp != null) {
+                        windowManager.updateViewLayout(floatButton, lp);
+                    }
+                } catch (Throwable e) {
+                    Log.w(TAG, "悬浮按钮 layout 刷新失败，重新创建: " + e.getMessage());
+                    needRecreate = true;
+                }
+            }
+
+            if (needRecreate) {
                 recreateFloatButton();
             }
+
             if (keepAliveHandler != null) {
                 keepAliveHandler.postDelayed(this, KEEP_ALIVE_INTERVAL_MS);
             }
@@ -175,7 +221,17 @@ public class GlobalFloatService extends Service {
     private void recreateFloatButton() {
         removeFloatButton();
         removeInfoWindow();
-        addFloatButton();
+        // 延迟 100ms 重建，给系统时间清理旧视图（多屏场景下重要）
+        if (keepAliveHandler != null) {
+            keepAliveHandler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    addFloatButton();
+                }
+            }, 100);
+        } else {
+            addFloatButton();
+        }
     }
 
     // ─────────────────────── 悬浮按钮 ───────────────────────
@@ -209,8 +265,21 @@ public class GlobalFloatService extends Service {
 
         try {
             windowManager.addView(floatButton, params);
+            Log.i(TAG, "悬浮按钮已添加");
         } catch (Throwable e) {
-            Log.e(TAG, "Failed to add float button", e);
+            Log.e(TAG, "添加悬浮按钮失败，将在 1 秒后重试: " + e.getMessage());
+            floatButton = null;
+            // 延迟 1 秒后重试一次
+            if (keepAliveHandler != null) {
+                keepAliveHandler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (floatButton == null) {
+                            addFloatButton();
+                        }
+                    }
+                }, 1000);
+            }
         }
     }
 

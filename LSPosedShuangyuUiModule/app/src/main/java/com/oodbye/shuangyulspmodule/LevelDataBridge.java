@@ -5,6 +5,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.os.Build;
+import android.util.Log;
 import org.json.JSONObject;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -38,10 +39,21 @@ final class LevelDataBridge {
                                int wealthLevel, int charmLevel,
                                String wealthImg, String charmImg,
                                String gender, int genderResId) {
+        broadcastEntry(context, userId, nickName, "",
+                wealthLevel, charmLevel, wealthImg, charmImg, gender, genderResId);
+    }
+
+    /** Hook 端：采集到一条等级数据后，立刻发送广播（含 userCode） */
+    static void broadcastEntry(Context context, String userId, String nickName,
+                               String userCode,
+                               int wealthLevel, int charmLevel,
+                               String wealthImg, String charmImg,
+                               String gender, int genderResId) {
         try {
             JSONObject obj = new JSONObject();
             obj.put("userId", userId);
             obj.put("nickName", nickName);
+            obj.put("userCode", userCode != null ? userCode : "");
             obj.put("wealthLevel", wealthLevel);
             obj.put("charmLevel", charmLevel);
             obj.put("wealthImg", wealthImg != null ? wealthImg : "");
@@ -53,9 +65,6 @@ final class LevelDataBridge {
             intent.setPackage("com.oodbye.shuangyulspmodule");
             intent.putExtra(EXTRA_LEVEL_JSON, obj.toString());
             context.sendBroadcast(intent);
-            ModuleRunFileLogger.i(TAG, "📊 广播等级数据: " + userId
-                    + " wealth=" + wealthLevel + " charm=" + charmLevel
-                    + " gender=" + gender);
         } catch (Throwable e) {
             ModuleRunFileLogger.e(TAG, "LevelDataBridge.broadcastEntry 失败", e);
         }
@@ -79,15 +88,21 @@ final class LevelDataBridge {
                     LevelInfo info = new LevelInfo();
                     info.userId = uid;
                     info.nickName = obj.optString("nickName", "");
+                    info.userCode = obj.optString("userCode", "");
                     info.wealthLevel = obj.optInt("wealthLevel", -1);
                     info.charmLevel = obj.optInt("charmLevel", -1);
                     info.gender = obj.optString("gender", "unknown");
                     info.genderResId = obj.optInt("genderResId", 0);
+                    // 按 userId 缓存
                     sCache.put(uid, info);
-                    ModuleRunFileLogger.i(TAG, "📊 接收等级数据: " + uid
-                            + " wealth=" + info.wealthLevel
-                            + " charm=" + info.charmLevel
-                            + " gender=" + info.gender);
+                    // 同时按 userCode 的纯数字部分缓存（如 "ID:22889314" → "22889314"）
+                    if (!info.userCode.isEmpty()) {
+                        String cleanCode = info.userCode;
+                        if (cleanCode.startsWith("ID:")) cleanCode = cleanCode.substring(3);
+                        if (!cleanCode.isEmpty() && !cleanCode.equals(uid)) {
+                            sCache.put(cleanCode, info);
+                        }
+                    }
                 } catch (Throwable e) {
                     ModuleRunFileLogger.e(TAG, "LevelDataBridge 接收失败", e);
                 }
@@ -119,6 +134,7 @@ final class LevelDataBridge {
     /** 等级数据 POJO（不依赖 Xposed） */
     static class LevelInfo {
         String userId;
+        String userCode;   // 展示 ID（如 "ID:22889314"），与 userId（内部ID）可能不同
         String nickName;
         int wealthLevel;
         int charmLevel;
